@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hancode"
 version = "0.1.0"
-description = "一个轻量级的编码智能体框架（Coding Agent Harness），具有护栏机制和基于反馈的自我修正能力。"
+description = "面向学生课程项目的轻量级 Coding Agent Harness，支持 workspace 隔离、阶段门禁、执行追踪和 checkpoint 回退。"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

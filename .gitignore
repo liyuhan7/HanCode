@@ -40,5 +40,6 @@ Thumbs.db
 *.log
 
 # 智能体本地状态
+.hancode/
 .agent_state/
 .local_memory/

@@ -1,7 +1,21 @@
 # HanCode 实现计划
 
-> 状态：草稿  
-> 在 SPEC 和 PLAN 通过冷启动验证之前，不得开始实现。
+> 状态：设计草案  
+> 仓库处于规范和规划阶段。完整实现必须在 SPEC、PLAN 和冷启动验证完成后开始。
+
+## 项目定位
+
+HanCode 是一个面向学生课程项目的轻量级 Coding Agent Harness。它通过 Workspace
+隔离、阶段门禁、工具权限控制、执行追踪和 Checkpoint 回退机制，引导 Agent
+按课程项目流程完成需求分析、计划制定、编码实现、测试验证、审查交付与知识沉淀。
+
+主线保持一致：
+
+- Project Workspace 管课程项目级上下文与长期经验。
+- Task Workspace 管单次课程任务的 SPEC、PLAN、Trace、Checkpoint 和学习产物。
+- Phase Mode 管需求、计划、编码、测试、审查、交付各阶段的工具权限。
+- Checkpoint Rollback 管代码修改失败后的恢复。
+- Knowledge Delivery 管最终的项目复盘、错误记录和知识沉淀。
 
 ## 任务状态图例
 
@@ -12,402 +26,263 @@
 ## 全局规则
 
 - 遵循 Superpowers 工作流。
-- 对实现任务使用 TDD（测试驱动开发）。
-- 在实现之前编写会失败的测试。
-- 每个任务使用全新的子智能体。
-- 使用 Git 工作树管理独立功能分支。
-- 每个任务完成后更新本文件。
-- 在 `AGENT_LOG.md` 中记录智能体活动。
-- 不得提交真实的凭据。
+- 对实现任务使用 TDD：先写失败测试，再写最小实现，再重构。
+- 每个任务使用新鲜子智能体或单独执行会话。
+- 每个任务完成后更新 `PLAN.md` 和 `AGENT_LOG.md`。
+- 不得提交真实凭据。
+- 不引入复杂 Web UI、数据库、pgvector、MCP 工具市场、多用户系统或企业级权限系统。
+- 不使用 LangGraph、AutoGen、CrewAI 等现成 Agent Framework 替代 HanCode 内核。
 
 ---
 
-## 任务 0：仓库初始化
+## 任务 0：课程项目定位与模板准备
 
-- 状态：[ ]
-- 目标：创建初始的 GitHub 仓库结构。
+- 状态：[~]
+- 目标：明确项目定位、核心叙事、`.hancode/` 结构和 demo 描述，使其服务学生课程项目场景。
 - 文件：
   - `README.md`
   - `SPEC.md`
   - `PLAN.md`
-  - `SPEC_PROCESS.md`
   - `AGENT_LOG.md`
-  - `REFLECTION.md`
-  - `.gitignore`
-  - `.env.example`
-  - `pyproject.toml`
-  - `Makefile`
-  - `.github/workflows/ci.yml`
-- 实现说明：
-  - 创建文档占位符。
-  - 创建 Python 源代码和测试目录。
-  - 添加占位测试以保持 CI 通过。
-- 验证：
-  - 仓库初始化成功。
-  - 没有提交密钥。
-  - 初始提交已推送到 GitHub。
-  - `python -m pytest` 通过。
-  - `python -m ruff check src tests` 通过。
-  - `python -m mypy src` 通过。
-- 提交：
-  - TODO
-
----
-
-## 任务 1：头脑风暴与 SPEC 完成
-
-- 状态：[ ]
-- 目标：使用 Superpowers 头脑风暴工作流完成 `SPEC.md`。
-- 文件：
-  - `SPEC.md`
-  - `SPEC_PROCESS.md`
-  - `AGENT_LOG.md`
-- 实现说明：
-  - 不编写源代码实现。
-  - 使用智能体提出澄清性问题。
-  - 记录至少三次关键的规范迭代。
-  - 明确定义编码智能体框架的机制设计。
-- 验证：
-  - SPEC 包含所有必需的通用章节。
-  - SPEC 包含必需的编码智能体框架章节：领域与机制设计。
-  - 主要贡献维度已明确选择。
-- 提交：
-  - TODO
-
----
-
-## 任务 2：PLAN 完成
-
-- 状态：[ ]
-- 目标：使用 Superpowers 编写计划工作流完成 `PLAN.md`。
-- 文件：
-  - `PLAN.md`
-  - `SPEC_PROCESS.md`
-  - `AGENT_LOG.md`
-- 实现说明：
-  - 将实现分解为小任务。
-  - 每个任务应可由一个子智能体在一次专注会话中完成。
-  - 每个实现任务必须包含预期会失败的测试计划。
-  - 标记依赖关系和可并行执行的任务。
-- 验证：
-  - 每个任务都有目标、文件、实现说明和验证步骤。
-  - 依赖关系明确。
-  - 可并行执行的任务已标记。
-- 提交：
-  - TODO
-
----
-
-## 任务 3：冷启动验证
-
-- 状态：[ ]
-- 目标：使用不同的编码智能体验证 SPEC 和 PLAN。
-- 文件：
-  - `SPEC_PROCESS.md`
-  - `SPEC.md`
-  - `PLAN.md`
-- 实现说明：
-  - 使用与主开发智能体不同的编码智能体。
-  - 开始一个全新的会话。
-  - 仅提供 `SPEC.md` 和 `PLAN.md`。
-  - 让第二个智能体尝试 1–2 个任务。
-  - 不提供口头解释或隐藏上下文。
-- 验证：
-  - 记录了第二个智能体提出的问题。
-  - 记录了误解之处。
-  - 根据发现结果修订了 SPEC 和 PLAN。
-  - 记录了关键的前后差异。
-- 提交：
-  - TODO
-
----
-
-## 任务 4：验证后的项目骨架
-
-- 状态：[ ]
-- 依赖：
-  - 任务 1
-  - 任务 2
-  - 任务 3
-- 目标：在规范批准后创建最终的源代码骨架。
-- 文件：
-  - `src/hancode/agent_loop.py`
-  - `src/hancode/llm.py`
-  - `src/hancode/actions.py`
-  - `src/hancode/tools.py`
-  - `src/hancode/guardrails.py`
-  - `src/hancode/feedback.py`
-  - `src/hancode/memory.py`
-  - `src/hancode/config.py`
-  - `src/hancode/credentials.py`
-  - `src/hancode/cli.py`
+  - `.hancode/`
   - `tests/`
-- 预期失败的测试：
-  - SPEC 完成后补充 TODO。
+- 实现说明：
+  - 覆盖 Workspace、Phase Gate、Tool Policy、Trace Logging、Checkpoint Rollback、MockLLM Testing 方向。
+  - 增加课程项目导向的 `.hancode/` 模板。
+  - 使用学生成绩统计 CLI 作为课程项目 demo。
 - 验证：
-  - SPEC 完成后补充 TODO。
+  - `python -m pytest`
+  - `python -m ruff check src tests`
+  - `python -m mypy src`
 - 提交：
   - TODO
 
 ---
 
-## 任务 5：LLM 抽象层与 MockLLM
+## 任务 1：SPEC 与冷启动验证
 
 - 状态：[ ]
-- 依赖：
-  - 任务 4
-- 目标：实现可注入的 LLM 抽象层和确定性的 MockLLM。
+- 目标：完成课程项目导向的 `SPEC.md`，并用不同智能体冷启动验证。
 - 文件：
-  - `src/hancode/llm.py`
-  - `tests/test_llm.py`
-- 预期失败的测试：
-  - MockLLM 按顺序返回预设响应。
-  - MockLLM 记录收到的提示词。
-  - 智能体代码可以使用 LLM 接口而无需知道是真实还是模拟。
+  - `SPEC.md`
+  - `SPEC_PROCESS.md`
+  - `AGENT_LOG.md`
+- 预期检查：
+  - SPEC 包含问题陈述、用户故事、功能规约、非功能需求、架构、数据模型、凭据与分发、技术选型、验收标准、风险。
+  - SPEC 包含 Coding Agent Harness 的领域与机制设计。
+  - 主贡献维度是 workspace-scoped course-project context and reversible coding state。
 - 验证：
-  - `python -m pytest tests/test_llm.py`
+  - 使用第二个不同类型 agent 仅凭 `SPEC.md` + `PLAN.md` 尝试 1-2 个任务。
+  - 将问题和修订记录到 `SPEC_PROCESS.md`。
 - 提交：
   - TODO
 
 ---
 
-## 任务 6：动作模式与解析器
+## 任务 2：WorkspaceSpec 与 `.hancode/` 初始化
 
 - 状态：[ ]
-- 依赖：
-  - 任务 5
-- 目标：定义动作数据结构和解析器。
+- 依赖：任务 1
+- 目标：实现课程项目导向的 WorkspaceSpec 和本地 `.hancode/` 初始化。
+- 文件：
+  - `src/hancode/workspace.py`
+  - `src/hancode/config.py`
+  - `tests/test_workspace.py`
+- 预期失败的测试：
+  - `test_workspace_has_separate_history`
+  - 初始化生成 `project.json`、`project_memory.md`、`course_context.md`、`experience.md`。
+  - 初始化生成 `tasks/task-001/` 下的 SPEC、PLAN、REVIEW、TEST_REPORT、KNOWLEDGE、DELIVERABLES、state、trace、history 和 checkpoints。
+- 验证：
+  - `python -m pytest tests/test_workspace.py`
+- 提交：
+  - TODO
+
+---
+
+## 任务 3：Phase Mode 与 Phase Gate
+
+- 状态：[ ]
+- 依赖：任务 2
+- 目标：实现 `spec -> plan -> code -> test -> review -> deliver` 的轻量 phase gate。
+- 文件：
+  - `src/hancode/phases.py`
+  - `src/hancode/state.py`
+  - `tests/test_phase_gate.py`
+- 预期失败的测试：
+  - `test_spec_phase_rejects_edit_file`
+  - `test_plan_required_before_code_phase`
+  - `test_code_phase_allows_edit_file`
+  - deliver phase 不允许修改业务代码。
+- 验证：
+  - `python -m pytest tests/test_phase_gate.py`
+- 提交：
+  - TODO
+
+---
+
+## 任务 4：Action Schema、MockLLM 与 AgentLoop
+
+- 状态：[ ]
+- 依赖：任务 3
+- 目标：实现可注入 MockLLM 的自有 agent loop，不依赖现成 agent runner。
 - 文件：
   - `src/hancode/actions.py`
-  - `tests/test_actions.py`
-- 预期失败的测试：
-  - 解析有效的 `read_file` 动作。
-  - 解析有效的 `write_file` 动作。
-  - 解析有效的 `run_command` 动作。
-  - 拒绝格式错误的动作。
-  - 拒绝未知的动作类型。
-- 验证：
-  - `python -m pytest tests/test_actions.py`
-- 提交：
-  - TODO
-
----
-
-## 任务 7：工具调度器与文件工具
-
-- 状态：[ ]
-- 依赖：
-  - 任务 6
-- 目标：实现安全文件操作的工具调度。
-- 文件：
-  - `src/hancode/tools.py`
-  - `tests/test_tools.py`
-- 预期失败的测试：
-  - 调度 `read_file`。
-  - 调度 `write_file`。
-  - 拒绝未知工具。
-  - 返回结构化的工具结果。
-- 验证：
-  - `python -m pytest tests/test_tools.py`
-- 提交：
-  - TODO
-
----
-
-## 任务 8：护栏
-
-- 状态：[ ]
-- 依赖：
-  - 任务 6
-  - 任务 7
-- 目标：实现针对危险动作的确定性护栏。
-- 文件：
-  - `src/hancode/guardrails.py`
-  - `tests/test_guardrails.py`
-- 预期失败的测试：
-  - 阻止在工作区外写入。
-  - 如果策略要求，阻止在工作区外读取。
-  - 阻止危险的 shell 命令，如 `rm -rf /`。
-  - 允许工作区内的安全命令。
-- 验证：
-  - `python -m pytest tests/test_guardrails.py`
-- 提交：
-  - TODO
-
----
-
-## 任务 9：反馈传感器
-
-- 状态：[ ]
-- 依赖：
-  - 任务 7
-- 目标：实现测试反馈传感器和失败分类。
-- 文件：
-  - `src/hancode/feedback.py`
-  - `tests/test_feedback.py`
-- 预期失败的测试：
-  - 分类 pytest 通过的结果。
-  - 分类 pytest 失败的结果。
-  - 提取有用的错误摘要。
-  - 将命令结果转换为反馈报告。
-- 验证：
-  - `python -m pytest tests/test_feedback.py`
-- 提交：
-  - TODO
-
----
-
-## 任务 10：智能体循环
-
-- 状态：[ ]
-- 依赖：
-  - 任务 5
-  - 任务 6
-  - 任务 7
-  - 任务 8
-  - 任务 9
-- 目标：实现自包含的智能体循环。
-- 文件：
+  - `src/hancode/llm.py`
   - `src/hancode/agent_loop.py`
+  - `tests/test_actions.py`
+  - `tests/test_llm.py`
   - `tests/test_agent_loop.py`
 - 预期失败的测试：
-  - 智能体调用 MockLLM。
-  - 智能体解析动作。
-  - 智能体在执行工具前运行护栏检查。
-  - 智能体调度被允许的动作。
-  - 智能体将工具结果反馈到下一轮循环。
-  - 智能体在收到 `finish` 时停止。
+  - MockLLM 按顺序返回动作。
+  - action parser 拒绝未知动作和格式错误动作。
+  - `test_max_steps_prevents_infinite_loop`
+  - agent loop 在执行工具前调用 ToolPolicy。
 - 验证：
-  - `python -m pytest tests/test_agent_loop.py`
+  - `python -m pytest tests/test_actions.py tests/test_llm.py tests/test_agent_loop.py`
 - 提交：
   - TODO
 
 ---
 
-## 任务 11：反馈循环机制演示
+## 任务 5：ToolRegistry 与课程项目 ToolPolicy
 
 - 状态：[ ]
-- 依赖：
-  - 任务 10
-- 目标：使用 MockLLM 演示确定性的故障注入和自我修正。
+- 依赖：任务 3
+- 目标：实现工具注册、工具权限和课程项目保护规则。
 - 文件：
-  - `tests/test_feedback_loop_demo.py`
-  - `examples/broken_project/`
-  - `scripts/demo_feedback_loop.py`
+  - `src/hancode/tools.py`
+  - `src/hancode/tool_policy.py`
+  - `tests/test_tool_policy.py`
 - 预期失败的测试：
-  - 第一个 MockLLM 动作引入或保留了一个错误。
-  - 反馈传感器报告失败。
-  - 第二个 MockLLM 动作在收到反馈后改变行为。
-  - 最终反馈通过。
+  - `test_tool_not_allowed_in_workspace_is_denied`
+  - `test_edit_file_requires_reason`
+  - `test_policy_protects_assignment_files`
+  - `test_policy_protects_teacher_tests_or_grading_scripts`
+  - 禁止没有 `SPEC.md` 时修改业务代码。
+  - 禁止没有 `PLAN.md` 时修改业务代码。
+  - 禁止绕过测试或评分脚本。
 - 验证：
-  - `python -m pytest tests/test_feedback_loop_demo.py`
+  - `python -m pytest tests/test_tool_policy.py`
 - 提交：
   - TODO
 
 ---
 
-## 任务 12：记忆
+## 任务 6：TraceLogger、CheckpointManager 与 Rollback
 
 - 状态：[ ]
-- 依赖：
-  - 任务 10
-- 目标：实现简单的持久化记忆和检索。
+- 依赖：任务 5
+- 目标：实现工具调用 trace、loop-level checkpoint 和最近 checkpoint 回退。
 - 文件：
-  - `src/hancode/memory.py`
-  - `tests/test_memory.py`
+  - `src/hancode/trace.py`
+  - `src/hancode/checkpoints.py`
+  - `tests/test_trace.py`
+  - `tests/test_checkpoints.py`
 - 预期失败的测试：
-  - 写入记忆条目。
-  - 检索相关的记忆条目。
-  - 不无条件加载所有记忆。
+  - `test_edit_file_creates_checkpoint`
+  - `test_rollback_last_checkpoint_restores_file`
+  - 所有工具调用必须写入 trace。
+  - rollback 输出恢复文件列表和 checkpoint ID。
 - 验证：
-  - `python -m pytest tests/test_memory.py`
+  - `python -m pytest tests/test_trace.py tests/test_checkpoints.py`
 - 提交：
   - TODO
 
 ---
 
-## 任务 13：配置
+## 任务 7：ContextBuilder 与课程上下文
 
 - 状态：[ ]
-- 依赖：
-  - 任务 8
-  - 任务 9
-- 目标：实现配置加载。
+- 依赖：任务 2、任务 3
+- 目标：实现按 phase 装配上下文，不全量加载历史。
 - 文件：
-  - `src/hancode/config.py`
-  - `tests/test_config.py`
+  - `src/hancode/context.py`
+  - `tests/test_context_builder.py`
 - 预期失败的测试：
-  - 加载工作区路径。
-  - 加载允许的工具列表。
-  - 加载测试命令。
-  - 加载护栏策略。
-  - 拒绝无效配置。
+  - `test_context_builder_includes_course_context`
+  - code phase 必须包含 `SPEC.md` 和 `PLAN.md`。
+  - review phase 必须包含测试结果、修改文件和 checkpoint 信息。
+  - deliver phase 必须包含 SPEC、PLAN、TEST_REPORT、REVIEW、KNOWLEDGE 和 trace 摘要。
 - 验证：
-  - `python -m pytest tests/test_config.py`
+  - `python -m pytest tests/test_context_builder.py`
 - 提交：
   - TODO
 
 ---
 
-## 任务 14：凭据管理
+## 任务 8：测试报告、审查与 Knowledge Delivery
 
 - 状态：[ ]
-- 依赖：
-  - 任务 13
-- 目标：实现安全的凭据管理。
+- 依赖：任务 6、任务 7
+- 目标：实现课程项目交付产物和最终结构化输出。
+- 文件：
+  - `src/hancode/delivery.py`
+  - `src/hancode/feedback.py`
+  - `tests/test_delivery.py`
+  - `tests/test_feedback.py`
+- 预期失败的测试：
+  - `test_code_change_requires_test_or_risk_note`
+  - `test_deliver_requires_knowledge_file`
+  - `test_deliver_requires_deliverables_file`
+  - 测试失败并 rollback 时输出 checkpoint、恢复文件、未完成需求和下一步建议。
+- 验证：
+  - `python -m pytest tests/test_delivery.py tests/test_feedback.py`
+- 提交：
+  - TODO
+
+---
+
+## 任务 9：课程项目 Demo
+
+- 状态：[ ]
+- 依赖：任务 4、任务 5、任务 6、任务 7、任务 8
+- 目标：用 MockLLM 确定性演示学生成绩统计 CLI 项目流程。
+- 文件：
+  - `examples/course_project_grade_cli/`
+  - `scripts/demo_course_project.py`
+  - `tests/test_course_project_demo.py`
+- Demo 任务：
+  - 从 CSV 文件读取学生成绩。
+  - 计算平均分、最高分、最低分。
+  - 支持按课程筛选。
+  - 输出统计结果。
+  - 编写测试。
+  - 生成 README、TEST_REPORT 和 KNOWLEDGE。
+- 预期失败的测试：
+  - spec phase 生成 `SPEC.md`。
+  - plan phase 生成 `PLAN.md`。
+  - code phase 修改前创建 checkpoint。
+  - test phase 生成 `TEST_REPORT.md`。
+  - review phase 检查需求符合性和测试结果。
+  - deliver phase 生成 `DELIVERABLES.md` 和 `KNOWLEDGE.md`。
+  - `trace.jsonl` 记录全过程。
+- 验证：
+  - `python -m pytest tests/test_course_project_demo.py`
+- 提交：
+  - TODO
+
+---
+
+## 任务 10：凭据、CLI、Docker 与 CI
+
+- 状态：[ ]
+- 依赖：任务 9
+- 目标：完成真实 LLM 可选路径、CLI、Docker 分发和 CI。
 - 文件：
   - `src/hancode/credentials.py`
-  - `tests/test_credentials.py`
-- 预期失败的测试：
-  - 通过抽象层存储凭据。
-  - 检查凭据状态而不泄露密钥。
-  - 更新凭据。
-  - 清除凭据。
-  - 回退行为已记录。
-- 验证：
-  - `python -m pytest tests/test_credentials.py`
-- 提交：
-  - TODO
-
----
-
-## 任务 15：命令行界面（CLI）
-
-- 状态：[ ]
-- 依赖：
-  - 任务 10
-  - 任务 13
-  - 任务 14
-- 目标：实现 CLI 命令。
-- 文件：
   - `src/hancode/cli.py`
-  - `tests/test_cli.py`
-- 预期失败的测试：
-  - CLI 显示帮助信息。
-  - CLI 可以运行模拟演示。
-  - CLI 可以检查凭据状态。
-  - CLI 不打印密钥值。
-- 验证：
-  - `python -m pytest tests/test_cli.py`
-- 提交：
-  - TODO
-
----
-
-## 任务 16：Docker 分发
-
-- 状态：[ ]
-- 依赖：
-  - 任务 15
-- 目标：添加基于 Docker 的分发方式。
-- 文件：
   - `Dockerfile`
-  - `README.md`
   - `.github/workflows/ci.yml`
+  - `README.md`
 - 预期失败的测试：
-  - Docker 镜像构建成功。
-  - 容器可以运行帮助命令。
+  - CLI 显示帮助。
+  - CLI 可运行课程项目 demo。
+  - 凭据状态检查不打印密钥。
+  - Docker 镜像可以构建并运行帮助命令。
 - 验证：
+  - `python -m pytest`
+  - `python -m ruff check src tests`
+  - `python -m mypy src`
   - `docker build -t hancode .`
   - `docker run --rm hancode --help`
 - 提交：
@@ -415,43 +290,22 @@
 
 ---
 
-## 任务 17：CI 完成
+## 必需课程项目测试名
 
-- 状态：[ ]
-- 依赖：
-  - 任务 16
-- 目标：确保 CI 运行测试、代码检查、类型检查和 Docker 构建。
-- 文件：
-  - `.github/workflows/ci.yml`
-- 预期失败的测试：
-  - CI 在测试失败时失败。
-  - CI 在干净分支上通过。
-- 验证：
-  - GitHub Actions 在推送和拉取请求时通过。
-- 提交：
-  - TODO
+实现阶段至少覆盖：
 
----
-
-## 任务 18：最终文档
-
-- 状态：[ ]
-- 依赖：
-  - 所有实现任务
-- 目标：完成最终文档。
-- 文件：
-  - `README.md`
-  - `AGENT_LOG.md`
-  - `REFLECTION.md`
-  - `SPEC_PROCESS.md`
-  - `PLAN.md`
-- 实现说明：
-  - README 包含安装、运行、凭据设置、分发方式、已知限制。
-  - AGENT_LOG 包含按任务记录的过程证据。
-  - REFLECTION 由学生撰写。
-- 验证：
-  - 文档完整。
-  - 没有真实的凭据存在。
-  - 最终测试套件通过。
-- 提交：
-  - TODO
+- `test_spec_phase_rejects_edit_file`
+- `test_plan_required_before_code_phase`
+- `test_code_phase_allows_edit_file`
+- `test_edit_file_requires_reason`
+- `test_edit_file_creates_checkpoint`
+- `test_rollback_last_checkpoint_restores_file`
+- `test_workspace_has_separate_history`
+- `test_tool_not_allowed_in_workspace_is_denied`
+- `test_code_change_requires_test_or_risk_note`
+- `test_max_steps_prevents_infinite_loop`
+- `test_deliver_requires_knowledge_file`
+- `test_deliver_requires_deliverables_file`
+- `test_context_builder_includes_course_context`
+- `test_policy_protects_assignment_files`
+- `test_policy_protects_teacher_tests_or_grading_scripts`
