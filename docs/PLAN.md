@@ -246,12 +246,12 @@ git status --short
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成               |
 | 依赖            | T0                    |
 | 可并行           | 不并行；后续模块依赖共享类型        |
-| Worktree / PR | `codex/models-errors` |
+| Worktree / PR | `codex/t1`            |
 | 主贡献相关         | 否，基础支撑                |
-| Commit        | TODO                  |
+| Commit        | `895065e`             |
 
 ### 目标
 
@@ -312,6 +312,15 @@ python -m mypy src/hancode/models.py src/hancode/errors.py
 
 * 共享模型测试全绿。
 * 后续模块能复用同一套 phase、status、error、result。
+
+### 实际验证
+
+* Red：`$env:PYTHONPATH='src'; python -m pytest tests/test_models.py tests/test_errors.py -v` 失败，原因为 `ModuleNotFoundError: No module named 'hancode.errors'`。
+* Green：`$env:PYTHONPATH='src'; python -m pytest tests/test_models.py tests/test_errors.py -v` 通过，8 passed。
+* 全量测试：`$env:PYTHONPATH='src'; python -m pytest` 通过，27 passed；当前 worktree 下 pytest cache 写入有 warning。
+* Lint：`python -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py` 通过；当前 worktree 下 ruff cache 写入有 warning。
+* Type check：标准 `python -m mypy src/hancode/models.py src/hancode/errors.py` 因 mypy 2.2.0 sqlite cache `disk I/O error` 失败；使用 `$env:PYTHONPATH='src'; python -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-cache-t1 --show-traceback` 通过，no issues found in 2 source files。
+* 环境备注：当前 `python` 为 3.10.11，低于项目 `pyproject.toml` 的 Python 3.11+ 目标；本轮未修改解释器配置。
 
 ### 非目标 / 边界
 
