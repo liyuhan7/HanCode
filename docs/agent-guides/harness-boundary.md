@@ -48,8 +48,10 @@ All six harness dimensions need a minimal runnable implementation:
 - feedback
 - configuration
 
-The main contribution is workspace-scoped course-project context and reversible
-coding state.
+The main contribution is a deterministic feedback loop and reversible coding
+state: objective test signals, classified failure feedback, checkpoint-based
+rollback, and retry-budget-driven recovery. Workspace-scoped memory is a
+supporting dimension implemented at the minimum runnable level.
 
 ## Disallowed Shortcuts
 

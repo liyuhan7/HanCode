@@ -28,21 +28,24 @@ It should show:
 
 - self-implemented agent loop
 - action parsing and tool dispatch
-- deterministic guardrails
-- feedback-driven self-correction
-- workspace-scoped course-project context
+- deterministic guardrails, including course-file protection
+- feedback-driven self-correction with failure classification
+- checkpoint-based rollback and retry-budget recovery
 - phase-gated coding workflow
-- checkpoint-based rollback
+- workspace-scoped course-project context (supporting dimension)
 - knowledge-oriented delivery
 - MockLLM unit tests
 - safe credential handling
 - Docker-based distribution
 
-The main contribution is workspace-scoped course-project context and reversible
-coding state. Project Workspace manages course-project context and long-term
-experience; Task Workspace manages task SPEC, PLAN, Trace, Checkpoint, and
-learning artifacts; Phase Mode governs requirements, planning, coding, testing,
-review, and delivery.
+The main contribution is a deterministic feedback loop and reversible coding
+state: `run_tests` produces objective signals, FeedbackBuilder classifies
+failures and feeds them back, CheckpointManager snapshots before edits, and
+retry budget drives forced rollback. Workspace-scoped memory is a supporting
+dimension at the minimum runnable level: Project Workspace manages course-project
+context and long-term experience; Task Workspace manages task SPEC, PLAN, Trace,
+Checkpoint, and learning artifacts; Phase Mode governs requirements, planning,
+coding, testing, review, and delivery.
 
 Depth matters more than code volume. There is no required line-count floor. A
 small project with well-designed credentials, distribution, and mechanism tests

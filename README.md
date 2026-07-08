@@ -1,19 +1,21 @@
 # HanCode
 
-HanCode 是一个面向学生课程项目的轻量级 Coding Agent Harness。它通过 Workspace
-隔离、阶段门禁、工具权限控制、执行追踪和 Checkpoint 回退机制，引导 Agent
-按课程项目流程完成需求分析、计划制定、编码实现、测试验证、审查交付与知识沉淀。
+HanCode 是一个为学生课程项目调校的 Coding Agent Harness。它的核心是 AI 辅助编码
+的控制回路——修改代码、运行测试、根据失败自我修正、失败超限时回退——并把这条
+回路调校到学生场景：失败反馈带学习导向提示，危险动作集包含课程文件保护，阶段
+门禁要求先理解需求再编码。
 
-> lightweight coding-agent harness for student course projects, with
-> workspace-scoped execution, phase-gated coding, trace logging,
-> checkpoint-based rollback, and knowledge-oriented delivery.
+> a coding-agent harness tuned for student course projects, centered on a
+> deterministic feedback loop and reversible coding state, with phase-gated
+> coding, trace logging, and course-file governance.
 
 ## 核心叙事
 
-- Project Workspace 管课程项目级上下文与长期经验。
-- Task Workspace 管单次课程任务的 SPEC、PLAN、Trace、Checkpoint 和学习产物。
+- Feedback Loop 管测试信号的分类与回灌，驱动 Agent 针对性修复。
+- Checkpoint Rollback 管代码修改前快照与失败后的可回退恢复。
+- Tool Policy 管工具权限与课程文件保护（教师测试、评分脚本不可篡改）。
 - Phase Mode 管需求、计划、编码、测试、审查、交付各阶段的工具权限。
-- Checkpoint Rollback 管代码修改失败后的恢复。
+- Workspace 分层管课程项目级与任务级上下文隔离（支撑维度）。
 - Knowledge Delivery 管最终的项目复盘、错误记录和知识沉淀。
 
 ## Harness 机制

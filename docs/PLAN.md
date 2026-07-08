@@ -5,16 +5,18 @@
 
 ## 项目定位
 
-HanCode 是一个面向学生课程项目的轻量级 Coding Agent Harness。它通过 Workspace
-隔离、阶段门禁、工具权限控制、执行追踪和 Checkpoint 回退机制，引导 Agent
-按课程项目流程完成需求分析、计划制定、编码实现、测试验证、审查交付与知识沉淀。
+HanCode 是一个为学生课程项目调校的 Coding Agent Harness。它的核心是 AI 辅助编码
+的控制回路——修改代码、运行测试、根据失败自我修正、失败超限时回退——并通过阶段
+门禁、工具权限控制、执行追踪和 Checkpoint 回退机制，把这条回路约束在受控、可纠错、
+可复盘的边界内。
 
 主线保持一致：
 
-- Project Workspace 管课程项目级上下文与长期经验。
-- Task Workspace 管单次课程任务的 SPEC、PLAN、Trace、Checkpoint 和学习产物。
+- Feedback Loop 管测试信号的分类与回灌，驱动 Agent 针对性修复。
+- Checkpoint Rollback 管代码修改前快照与失败后的可回退恢复。
+- Tool Policy 管工具权限与课程文件保护。
 - Phase Mode 管需求、计划、编码、测试、审查、交付各阶段的工具权限。
-- Checkpoint Rollback 管代码修改失败后的恢复。
+- Workspace 分层管课程项目级与任务级上下文隔离（支撑维度）。
 - Knowledge Delivery 管最终的项目复盘、错误记录和知识沉淀。
 
 ## 任务状态图例
@@ -32,6 +34,18 @@ HanCode 是一个面向学生课程项目的轻量级 Coding Agent Harness。它
 - 不得提交真实凭据。
 - 不引入复杂 Web UI、数据库、pgvector、MCP 工具市场、多用户系统或企业级权限系统。
 - 不使用 LangGraph、AutoGen、CrewAI 等现成 Agent Framework 替代 HanCode 内核。
+
+## MVP 与 post-MVP 边界
+
+MVP 优先保证主贡献回路闭环与六维度最低可运行：feedback 分类、checkpoint、
+rollback、retry budget、ToolPolicy 课程文件保护、MockLLM 驱动的 spec→deliver
+全流程。以下加固项属 post-MVP（P2），在 MVP 闭环稳定后再实现，不阻塞主线：
+
+- 单 task 单活跃 runner 的并发锁。
+- blocked 后的 resume 断点续跑语义。
+- pending checkpoint 的启动崩溃恢复。
+- `confirm_before_write` 写前人工确认。
+- 跨盘符 / UNC 路径的完整规范化（MVP 覆盖 `..`、符号链接和大小写逃逸即可）。
 
 ---
 
@@ -70,7 +84,7 @@ HanCode 是一个面向学生课程项目的轻量级 Coding Agent Harness。它
 - 预期检查：
   - SPEC 包含问题陈述、用户故事、功能规约、非功能需求、架构、数据模型、凭据与分发、技术选型、验收标准、风险。
   - SPEC 包含 Coding Agent Harness 的领域与机制设计。
-  - 主贡献维度是 workspace-scoped course-project context and reversible coding state。
+  - 主贡献维度是 deterministic feedback loop and reversible coding state。
 - 验证：
   - 使用第二个不同类型 agent 仅凭 `SPEC.md` + `PLAN.md` 尝试 1-2 个任务。
   - 将问题和修订记录到 `SPEC_PROCESS.md`。
@@ -214,17 +228,26 @@ HanCode 是一个面向学生课程项目的轻量级 Coding Agent Harness。它
 
 - 状态：[ ]
 - 依赖：任务 6、任务 7
-- 目标：实现课程项目交付产物和最终结构化输出。
+- 目标：实现主贡献回路的反馈分类、课程项目交付产物和最终结构化输出。
 - 文件：
   - `src/hancode/delivery.py`
   - `src/hancode/feedback.py`
   - `tests/test_delivery.py`
   - `tests/test_feedback.py`
 - 预期失败的测试：
+  - `test_feedback_classifies_syntax_error`
+  - `test_feedback_classifies_import_error`
+  - `test_feedback_classifies_assertion_failure`
+  - `test_feedback_classification_is_deterministic_on_fixture`
+  - `test_feedback_hint_matches_category`
   - `test_code_change_requires_test_or_risk_note`
   - `test_deliver_requires_knowledge_file`
   - `test_deliver_requires_deliverables_file`
   - 测试失败并 rollback 时输出 checkpoint、恢复文件、未完成需求和下一步建议。
+- 实现说明：
+  - `FeedbackBuilder` 将 `run_tests` 输出确定性分类为 `syntax_error`、`import_error`、
+    `assertion_failure`、`error_exception`、`timeout_or_crash`、`unknown`，
+    并附随类别确定的纠正建议（见 `SPEC.md` §11.3.1）。
 - 验证：
   - `python -m pytest tests/test_delivery.py tests/test_feedback.py`
 - 提交：
