@@ -1,195 +1,351 @@
 # HanCode 实现计划
 
-> 状态：设计草案  
-> 仓库处于规范和规划阶段。完整实现必须在 SPEC、PLAN 和冷启动验证完成后开始。  
-> **For agentic workers:** REQUIRED SUB-SKILL: 使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 按任务卡逐项执行。实现任务必须使用 TDD：先红、再绿、再重构。
-
-## 项目定位
-
-HanCode 是一个为学生课程项目调校的 Coding Agent Harness。它的核心是 AI 辅助编码的控制回路：修改代码、运行测试、根据失败自我修正、失败超限时回退。实现计划必须把这条回路落到确定性代码机制中，而不是依赖提示词或宿主智能体行为。
-
-主线保持一致：
-
-- Feedback Loop 管测试信号的分类与回灌，驱动 Agent 针对性修复。
-- Checkpoint Rollback 管代码修改前快照与失败后的可回退恢复。
-- Tool Policy 管工具权限与课程文件保护。
-- Phase Mode 管需求、计划、编码、测试、审查、交付各阶段的工具权限。
-- Workspace 分层管课程项目级与任务级上下文隔离（支撑维度）。
-- Knowledge Delivery 管最终的项目复盘、错误记录和知识沉淀。
-
-## 全局规则
-
-- 遵循 Superpowers 工作流：`brainstorming` -> `writing-plans` -> `using-git-worktrees` -> `subagent-driven-development` / `executing-plans` -> `test-driven-development` -> `requesting-code-review` -> `finishing-a-development-branch`。
-- 在 `SPEC.md`、`PLAN.md`、冷启动验证和 `SPEC_PROCESS.md` 修订记录完成前，不得修改 `src/hancode/` 下的 harness kernel 实现模块。
-- 实现任务使用 TDD：先写失败测试并观察红色结果，再写最小实现，再重构。
-- 每个实现任务使用独立 worktree 或独立执行会话。
-- 每个任务完成后更新本文件状态、提交 hash、验证结果，并在 `docs/AGENT_LOG.md` 记录过程证据。
-- 核心机制测试不得依赖网络、真实 LLM、真实 API key 或宿主编码智能体能力。
-- 不得提交真实凭据，不得在日志、trace、README、测试快照或错误信息中打印 secret。
-- 不引入 LangChain `AgentExecutor`、AutoGen、CrewAI、LlamaIndex agent runner 或宿主编码智能体 runner 充当交付 harness 内核。
-- `state.json` 是唯一机器状态源；Markdown 产物可读可编辑，但不作为状态机唯一依据。
-- `docs/SPEC.md` 是需求契约；`docs/系统架构.md` 是实现组织参考；二者冲突时以 `docs/SPEC.md` 为准。
-
-## MVP 与 post-MVP 边界
-
-MVP 必须完成：
-
-- Python 3.11+ 包结构、CLI 入口和 MockLLM 模式。
-- Project Workspace / Task Workspace 文件系统隔离。
-- `spec -> plan -> code -> test -> review -> deliver` 六阶段路由与门禁。
-- Action schema、ActionParser、MockLLM、AgentLoop、ToolRegistry、ToolExecutor。
-- PathClassifier、ToolPolicy、课程文件保护和受限测试命令。
-- TraceLogger、CheckpointManager、Rollback、retry budget。
-- FeedbackBuilder 的确定性失败分类与 observation 回灌。
-- ContextBuilder 的 phase-based 最小上下文选择。
-- TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES 生成。
-- MockLLM 机制演示：policy denial、测试失败反馈、retry、强制 rollback。
-- Python package build 与 CI `unit-test` job。
-
-post-MVP：
-
-- 单 task 单活跃 runner 的并发锁。
-- blocked 后的 resume 断点续跑语义。
-- pending checkpoint 的启动崩溃恢复。
-- `confirm_before_write` 写前人工确认。
-- Docker demo image。
-- 复杂 TUI、WebUI、多语言测试命令扩展、完整 Git 分支管理。
-
-## 任务依赖图
-
-```text
-M0 规划与冷启动
-  T0 统一规划文档与冷启动验证准备
-
-M1 骨架（串行）
-  T1 Workspace 初始化
-    -> T2 配置与状态模型
-    -> T3 PhaseGate 与 WorkspaceRouter
-
-M2 主贡献回路（部分并行）
-  T3 -> T4 ActionParser / MockLLM / AgentLoop
-  T3 -> T5 ToolRegistry / PathClassifier / ToolPolicy
-  T5 -> T6 TraceLogger / CheckpointManager / Rollback
-  T2 -> T7 ContextBuilder
-  T4, T5, T6 -> T8 FeedbackBuilder 失败分类与 retry 回灌 ★
-
-M3 集成与交付
-  T4, T5, T6, T7, T8 -> T9 Knowledge Delivery 与 MockLLM demo
-  T9 -> T10 CLI / 凭据 / package / CI
-
-★ = 主贡献核心任务，优先保证。
-并行组 A：T4 与 T5 可在 T3 完成后并行。
-并行组 B：T7 可在 T2 完成后独立推进，不依赖 T4/T5。
-并行组 C：T6 依赖 T5，但可与 T7 并行。
-```
-
-## 里程碑
-
-| 里程碑 | 完成条件 | 对应 SPEC 验收 |
-| --- | --- | --- |
-| M0 计划可冷启动 | `docs/PLAN.md` 能让陌生 agent 仅凭 SPEC + PLAN 尝试 1-2 个任务，并把问题记录到 `docs/SPEC_PROCESS.md` | 通用要求 §4.3, §4.5 |
-| M1 骨架可跑 | MockLLM 能驱动 task 创建与 phase 路由；缺 SPEC / PLAN 时业务代码写入被拒 | SPEC FR-1, FR-2, FR-10, FR-11, §10.5, §10.9 |
-| M2 主贡献闭环 | 测试失败分类 -> observation -> retry budget -> 强制 rollback 在 MockLLM 下确定性复现 | SPEC FR-7, FR-14, FR-15, §10.11, §10.13, §11.8 |
-| M3 可交付 | `hancode demo --provider mock` 全流程生成 trace、TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES；package build 与 CI unit-test 通过 | SPEC §10.1, §10.18, §10.21 |
-
-## 任务卡片
-
-### 任务 0：统一 PLAN 并准备冷启动验证
-
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [~] 进行中 |
-| 依赖 | 无 |
-| 可并行 | 不并行；这是实现前置任务 |
-| Worktree / PR | 当前规划分支；实现阶段另建 worktree |
-| 主贡献相关 | 否 |
-| Commit | 完成后填写实际 hash |
-
-**目标**  
-生成可执行、可追溯、可冷启动验证的 `docs/PLAN.md`，使陌生 agent 能仅凭 `docs/SPEC.md` 和本计划理解任务边界。
-
-**涉及文件**
-
-- `docs/PLAN.md`：重写为依赖图、里程碑、任务卡片和需求追溯表。
-- `docs/SPEC_PROCESS.md`：记录 PLAN 生成与冷启动验证安排。
-- `docs/AGENT_LOG.md`：记录本次 writing-plans 活动。
-
-**SPEC 依据**
-
-- `docs/SPEC.md` §10 验收标准。
-- `docs/SPEC.md` §11 领域与机制设计。
-- `docs/agent-guides/workflow.md` Phase Gate 与 Cold-Start Validation。
-
-**接口契约**
-
-```text
-输入：docs/SPEC.md、docs/系统架构.md、课程通用要求、A 类 Harness 要求。
-输出：docs/PLAN.md 固定任务卡结构。
-不变量：实现任务不得在冷启动验证前修改 src/hancode/ harness kernel。
-错误处理：若冷启动 agent 无法执行某任务，记录到 SPEC_PROCESS.md 并修订 SPEC/PLAN。
-```
-
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
-
-- 本任务是规划任务，不写 runtime 测试。
-- 文档验证锚点：
-  - `test_plan_contains_dependency_graph`：断言 `docs/PLAN.md` 包含 `## 任务依赖图`。
-  - `test_plan_contains_traceability_table`：断言 `docs/PLAN.md` 包含 `## 需求→任务追溯`。
-  - `test_plan_tasks_use_fixed_card_fields`：断言每个任务卡包含 `元信息`、`SPEC 依据`、`接口契约`、`预期失败测试`、`非目标 / 边界`。
-
-**实现要点（绿阶段最小实现的方向，非逐行）**
-
-- 保留已有定位、全局规则和 MVP 边界。
-- 把原粗粒度任务改为固定卡片。
-- 在追溯表中覆盖全部 P0/P1 harness 机制。
-- 在冷启动验证前不新增 `src/hancode/` 实现模块。
-
-**验证步骤（可复制粘贴执行）**
-
-```powershell
-Get-Content -Raw -Encoding UTF8 docs\PLAN.md
-Select-String -Path docs\PLAN.md -Pattern '## 任务依赖图','## 里程碑','## 需求→任务追溯','### 任务 8'
-git status --short
-```
-
-完成判定：上述命令能读出新结构，且 `git status --short` 只显示规划相关文档变化。
-
-**非目标 / 边界**
-
-- 不实现 harness kernel。
-- 不改测试占位文件。
-- 不启动真实 LLM。
+> 状态：设计草案
+> 项目类型：A · Coding Agent Harness
+> 项目定位：面向学生课程项目的轻量级 Coding Agent Harness
+> 实现原则：完整实现必须在 `docs/SPEC.md`、`docs/PLAN.md`、冷启动验证和 `docs/SPEC_PROCESS.md` 修订记录完成后开始。
+> Agentic workers：实现任务必须按任务卡逐项执行，并采用 TDD：先红、再绿、再重构。
 
 ---
 
-### 任务 1：创建 Workspace 初始化机制
+## 1. 项目定位
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 0 |
-| 可并行 | 不并行；后续任务依赖 workspace 结构 |
-| Worktree / PR | `codex/workspace-init` -> PR 创建后填写 |
-| 主贡献相关 | 否，支撑维度 |
-| Commit | 完成后填写实际 hash |
+HanCode 是一个为学生课程项目调校的 Coding Agent Harness。它的核心不是让 AI 更快替学生完成作业，而是让 AI 辅助课程项目开发过程可控、可追踪、可回退、可复盘、可沉淀。
 
-**目标**  
+HanCode 的主线保持为：
+
+* Feedback Loop：管理测试信号分类与反馈回灌，驱动 Agent 针对性修复。
+* Checkpoint Rollback：管理代码修改前快照与失败后的可回退恢复。
+* Tool Policy：管理工具权限、路径边界和课程文件保护。
+* Phase Mode：管理 spec、plan、code、test、review、deliver 六阶段权限。
+* Workspace 分层：管理项目级上下文与任务级上下文隔离。
+* Knowledge Delivery：管理最终复盘、错误记录和知识沉淀。
+
+HanCode 的核心交付不是 prompt、规则文件或宿主 Coding Agent 的能力，而是本仓库自实现的 Harness kernel。
+
+---
+
+## 2. 全局规则
+
+* 遵循工作流：brainstorming -> writing-plans -> using-git-worktrees -> subagent-driven-development / executing-plans -> test-driven-development -> requesting-code-review -> finishing-a-development-branch。
+* 在 `docs/SPEC.md`、`docs/PLAN.md`、冷启动验证和 `docs/SPEC_PROCESS.md` 修订记录完成前，不得修改 `src/hancode/` 下的 harness kernel 实现模块。
+* 实现任务必须使用 TDD：先写失败测试并观察红色结果，再写最小实现，再重构。
+* 每个实现任务使用独立 worktree、独立分支或独立执行会话。
+* 每个任务完成后更新本文件状态、提交 hash、验证结果，并在 `docs/AGENT_LOG.md` 记录过程证据。
+* 核心机制测试不得依赖网络、真实 LLM、真实 API key 或宿主 Coding Agent 能力。
+* 不得提交真实凭据，不得在日志、trace、README、测试快照或错误信息中打印 secret。
+* 不引入 LangChain `AgentExecutor`、AutoGen、CrewAI、LlamaIndex agent runner 或宿主 Coding Agent runner 充当交付 harness 内核。
+* `state.json` 是唯一机器状态源；Markdown 产物可读可编辑，但不作为状态机唯一依据。
+* `docs/SPEC.md` 是需求契约；`docs/系统架构.md` 是实现组织参考；二者冲突时以 `docs/SPEC.md` 为准。
+* 每个任务的“非目标 / 边界”必须遵守，避免一次任务扩大范围。
+
+---
+
+## 3. MVP 与 post-MVP 边界
+
+### 3.1 MVP 必须完成
+
+* Python 3.11+ 包结构、CLI 入口和 MockLLM 模式。
+* Project Workspace / Task Workspace 文件系统隔离。
+* `spec -> plan -> code -> test -> review -> deliver` 六阶段路由与门禁。
+* Action schema、ActionParser、MockLLM、AgentLoop。
+* ToolRegistry、ToolExecutor、FileTools。
+* PathClassifier、ToolPolicy、课程文件保护和受限测试命令。
+* TraceLogger、CheckpointManager、Rollback、retry budget。
+* FeedbackBuilder 的确定性失败分类与 observation 回灌。
+* ContextBuilder 的 phase-based 最小上下文选择。
+* TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES 生成。
+* MockLLM 机制演示：policy denial、测试失败反馈、retry、强制 rollback。
+* Python package build 与 CI unit-test job。
+
+### 3.2 post-MVP
+
+* 单 task 单活跃 runner 的并发锁。
+* blocked 后的 resume 断点续跑语义。
+* pending checkpoint 的启动崩溃恢复。
+* `confirm_before_write` 写前人工确认。
+* Docker demo image。
+* 复杂 TUI。
+* WebUI。
+* 多语言测试命令扩展。
+* 完整 Git 分支管理。
+* 真实 LLM provider smoke test 作为 CI 必需项。
+
+---
+
+## 4. 任务状态图例
+
+| 标记  | 含义           |
+| --- | ------------ |
+| [ ] | 未开始          |
+| [~] | 进行中          |
+| [x] | 已完成          |
+| [!] | 阻塞           |
+| [>] | 延后到 post-MVP |
+
+---
+
+## 5. 任务依赖图
+
+```text
+M0 规划与冷启动
+  T0 规划文档一致性与冷启动验证准备
+
+M1 基础骨架
+  T1 共享模型与错误类型
+    -> T2 Workspace 初始化
+    -> T3 ConfigLoader
+    -> T4 StateStore
+    -> T5 Phase 枚举与 PhaseGate
+    -> T6 WorkspaceRouter
+
+M2 Action 与 Loop 基础
+  T7 Action Schema
+    -> T8 ActionParser
+    -> T9 MockLLM
+    -> T10 AgentLoop 最小循环骨架
+
+M3 Tool 与 Governance
+  T11 ToolResult 与 ToolRegistry
+    -> T12 FileTools 最小读写
+    -> T13 PathClassifier
+    -> T14 ToolPolicy 基础规则
+    -> T15 Course File Protection
+
+M4 Trace 与可恢复状态
+  T16 TraceLogger
+    -> T17 CheckpointManager
+    -> T18 RollbackManager
+
+M5 Context 与 Feedback
+  T19 ContextBuilder
+  T20 FeedbackBuilder 失败分类
+    -> T21 AgentLoop 集成 feedback / retry / rollback
+
+M6 Delivery 与 Demo
+  T22 Delivery Artifacts 生成
+    -> T23 MockLLM 机制 Demo
+
+M7 CLI / 凭据 / CI
+  T24 CLI 最小入口
+    -> T25 CredentialProvider
+    -> T26 Package Build 与 CI
+    -> T27 README 运行与分发文档
+```
+
+### 5.1 并行建议
+
+```text
+T3 ConfigLoader 与 T4 StateStore 可在 T1 后并行。
+T7 Action Schema 与 T11 ToolResult / ToolRegistry 可在 T1 后并行。
+T16 TraceLogger 可在 T1 / T4 后提前做，不必等待完整 AgentLoop。
+T19 ContextBuilder 可在 T2 / T4 / T5 后独立推进。
+T20 FeedbackBuilder 可在 T11 后独立推进，不必等待完整 AgentLoop。
+T24 CLI 可先实现 --help / init 骨架，demo 命令等 T23 后接入。
+```
+
+---
+
+## 6. 里程碑
+
+| 里程碑           | 完成条件                                                                    | 对应任务    |
+| ------------- | ----------------------------------------------------------------------- | ------- |
+| M0 计划可冷启动     | 陌生 agent 仅凭 `docs/SPEC.md` + `docs/PLAN.md` 可尝试 1-2 个任务，并把问题记录到 `docs/SPEC_PROCESS.md` | T0      |
+| M1 骨架可跑       | workspace、config、state、phase、router 可独立测试；缺 SPEC / PLAN 时拒绝进入 code      | T1-T6   |
+| M2 最小 loop 可跑 | MockLLM 能驱动 parse -> policy -> tool -> observation 的受控链路                | T7-T15  |
+| M3 可恢复状态成立    | trace、checkpoint、rollback 可独立测试，secret 不泄露                              | T16-T18 |
+| M4 主贡献闭环成立    | 测试失败 -> feedback -> retry -> rollback 可在 MockLLM 下确定性复现                 | T19-T21 |
+| M5 Demo 可证明机制 | MockLLM demo 生成 trace、TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES         | T22-T23 |
+| M6 可交付        | CLI、凭据边界、package build、CI、README 完成                                     | T24-T27 |
+
+---
+
+# 7. 任务卡片
+
+---
+
+## T0：规划文档一致性与冷启动验证准备
+
+| 元信息           | 值          |
+| ------------- | ---------- |
+| 状态            | [x] 已完成    |
+| 依赖            | 无          |
+| 可并行           | 不并行；实现前置任务 |
+| Worktree / PR | 当前规划分支     |
+| 主贡献相关         | 否          |
+| Commit        | 未提交；本轮为规划文档修订 |
+| 验证            | UTF-8 读取、锚点扫描、路径一致性扫描、git status |
+| 备注            | 冷启动验证安排已准备；正式冷启动验证仍需由第二个不同 agent 执行 |
+
+### 目标
+
+确保 `docs/SPEC.md`、`docs/PLAN.md`、`docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`README.md`、`AGENTS.md` 的路径、术语、任务编号和 Source of Truth 一致，并准备冷启动验证。
+
+### 涉及文件
+
+* `docs/PLAN.md`
+* `docs/SPEC_PROCESS.md`
+* `docs/AGENT_LOG.md`
+* `README.md`
+* `AGENTS.md`
+
+### SPEC 依据
+
+* 通用项目要求中的规划、过程记录和冷启动验证要求。
+* A 类 Coding Agent Harness 对 SPEC、PLAN、MockLLM 测试和自实现机制的要求。
+
+### 接口契约
+
+```text
+输入：`docs/SPEC.md`、`docs/系统架构.md`、课程通用要求、A 类 Harness 要求。
+输出：可执行、可追溯、可冷启动验证的 `docs/PLAN.md`。
+不变量：实现任务不得在冷启动验证完成前修改 src/hancode/ harness kernel。
+错误处理：若冷启动 agent 无法执行某任务，记录到 `docs/SPEC_PROCESS.md` 并修订 SPEC / PLAN。
+```
+
+### 预期失败测试 / 文档检查
+
+* `test_plan_contains_fine_grained_tasks`
+* `test_source_of_truth_paths_are_consistent`
+* `test_plan_has_cold_start_validation_section`
+* `test_plan_tasks_use_fixed_card_fields`
+
+### 实现要点
+
+* 将粗粒度任务拆为机制级任务。
+* 每个任务包含目标、涉及文件、SPEC 依据、接口契约、预期失败测试、验证步骤、完成判定、非目标。
+* 冷启动验证前不新增 runtime 实现模块。
+
+### 验证步骤
+
+```powershell
+Get-Content -Raw -Encoding UTF8 docs/PLAN.md
+Select-String -Path docs/PLAN.md -Pattern '## T1','## T27','# 8. 需求→任务追溯','# 9. 冷启动验证安排'
+git status --short
+```
+
+### 完成判定
+
+* `docs/PLAN.md` 可被陌生 agent 直接用于执行任务。
+* 文档中路径、术语和任务编号一致。
+* `docs/SPEC_PROCESS.md` 中记录冷启动验证安排。
+
+### 非目标 / 边界
+
+* 不实现 harness kernel。
+* 不改 `src/hancode/`。
+* 不启动真实 LLM。
+
+---
+
+# M1：基础骨架
+
+---
+
+## T1：共享模型与错误类型
+
+| 元信息           | 值                     |
+| ------------- | --------------------- |
+| 状态            | [ ] 未开始               |
+| 依赖            | T0                    |
+| 可并行           | 不并行；后续模块依赖共享类型        |
+| Worktree / PR | `codex/models-errors` |
+| 主贡献相关         | 否，基础支撑                |
+| Commit        | TODO                  |
+
+### 目标
+
+建立跨模块共享的基础数据结构和结构化错误格式，避免后续各模块重复定义 status、phase、error、result。
+
+### 涉及文件
+
+* `src/hancode/models.py`
+* `src/hancode/errors.py`
+* `tests/test_models.py`
+* `tests/test_errors.py`
+
+### SPEC 依据
+
+* `state.json` 状态约束。
+* Trace、ToolResult、PolicyDecision、FeedbackReport、AgentRunResult 等结构化输出要求。
+* 核心机制必须可测试、可序列化、可审查。
+
+### 接口契约
+
+```python
+class Phase(str, Enum): ...
+class TaskStatus(str, Enum): ...
+class StructuredError: ...
+class OperationResult: ...
+class Risk: ...
+```
+
+输入：枚举值、错误字段、结果字段。
+输出：统一模型对象，可序列化为 dict / JSON。
+不变量：Phase 只能包含 spec、plan、code、test、review、deliver；TaskStatus 只能包含 created、running、blocked、failed、completed、inconsistent。
+错误处理：未知枚举值应被拒绝或触发明确错误。
+
+### 预期失败测试
+
+* `test_task_status_allows_only_defined_values`
+* `test_phase_allows_only_six_project_phases`
+* `test_structured_error_has_code_message_hint`
+* `test_operation_result_serializes_to_dict`
+
+### 实现要点
+
+* 优先使用标准库 `dataclass`、`Enum`。
+* 必要时使用 pydantic，但不引入复杂依赖。
+* 错误结构至少包含 `code`、`message`、`hint`、`details`。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_models.py tests/test_errors.py -v
+python -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py
+python -m mypy src/hancode/models.py src/hancode/errors.py
+```
+
+### 完成判定
+
+* 共享模型测试全绿。
+* 后续模块能复用同一套 phase、status、error、result。
+
+### 非目标 / 边界
+
+* 不实现 workspace。
+* 不实现 config。
+* 不实现 agent loop。
+
+---
+
+## T2：Workspace 初始化
+
+| 元信息           | 值                       |
+| ------------- | ----------------------- |
+| 状态            | [ ] 未开始                 |
+| 依赖            | T1                      |
+| 可并行           | 不并行；后续任务依赖 workspace 结构 |
+| Worktree / PR | `codex/workspace-init`  |
+| 主贡献相关         | 否，支撑维度                  |
+| Commit        | TODO                    |
+
+### 目标
+
 实现 Project Workspace 与 Task Workspace 初始化，使 `.hancode/` 能稳定保存项目记忆、任务状态、trace、checkpoint 和阶段产物。
 
-**涉及文件**
+### 涉及文件
 
-- `src/hancode/workspace.py`：新建，承载 `WorkspaceManager`、路径解析和 task workspace 初始化。
-- `src/hancode/models.py`：新建，承载共享 dataclass / pydantic 模型。
-- `tests/test_workspace.py`：新建，覆盖 workspace 初始化与 task 隔离。
+* `src/hancode/workspace.py`
+* `tests/test_workspace.py`
 
-**SPEC 依据**
+### SPEC 依据
 
-- SPEC FR-10：Project Workspace 与 Task Workspace。
-- SPEC §7.3 文件持久化映射。
-- SPEC §10.6 Workspace 与任务隔离验收。
-- 系统架构 §5.5 Persistence Layer。
+* Project Workspace 与 Task Workspace。
+* 文件持久化映射。
+* Workspace 与任务隔离验收。
 
-**接口契约**
+### 接口契约
 
 ```python
 from pathlib import Path
@@ -199,207 +355,278 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path: ...
 def task_path(project_root: Path, task_id: str) -> Path: ...
 ```
 
-输入：课程项目根目录、project ID、course name、assignment name、task ID。  
-输出：`.hancode/` 与 `.hancode/tasks/<task_id>/` 的实际路径。  
-不变量：不同 task 的 `state.json`、`trace.jsonl`、`history.jsonl`、`checkpoints/` 不混用。  
-错误处理：workspace root 不存在时创建；路径不在 project root 内时返回结构化错误或抛出项目自定义异常。
+输入：课程项目根目录、project ID、course name、assignment name、task ID。
+输出：`.hancode/` 与 `.hancode/tasks/<task_id>/` 的实际路径。
+不变量：不同 task 的 `state.json`、`trace.jsonl`、`history.jsonl`、`checkpoints/` 不混用。
+错误处理：路径不在 project root 内时返回结构化错误或抛出项目自定义异常。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_workspace_initializes_project_files`
-  - 构造：`tmp_path` 作为 project root。
-  - 断言：生成 `.hancode/project.json`、`project_memory.md`、`course_context.md`、`experience.md`。
-- `test_task_workspace_initializes_required_artifacts`
-  - 构造：调用 `init_task_workspace(tmp_path, "task-001")`。
-  - 断言：生成 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`、`state.json`、`trace.jsonl`、`history.jsonl`、`checkpoints/`。
-- `test_workspace_has_separate_history`
-  - 构造：创建 `task-001` 和 `task-002`。
-  - 断言：两个 task 的 history 与 trace 路径不同。
+* `test_workspace_initializes_project_files`
+* `test_task_workspace_initializes_required_artifacts`
+* `test_workspace_has_separate_history`
+* `test_workspace_rejects_path_outside_project_root`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- 使用 `Path.resolve()` 做 root 内路径约束。
-- 初始化 Markdown 文件时写入最小标题，不写空白文件。
-- `state.json` 初始化为机器可读 JSON，包含 `task_id`、`status="created"`、`current_phase="spec"`、`artifacts`、`retry_budget_remaining=2`。
+* 使用 `Path.resolve()` 做 root 内路径约束。
+* 初始化 Markdown 文件时写入最小标题，不写空白文件。
+* 初始化 `trace.jsonl`、`history.jsonl` 为空文件。
+* 初始化 `checkpoints/` 目录，但不创建真实 checkpoint。
 
-**验证步骤（可复制粘贴执行）**
+### 验证步骤
 
 ```powershell
 python -m pytest tests/test_workspace.py -v
-python -m ruff check src/hancode/workspace.py src/hancode/models.py tests/test_workspace.py
-python -m mypy src/hancode/workspace.py src/hancode/models.py
+python -m ruff check src/hancode/workspace.py tests/test_workspace.py
+python -m mypy src/hancode/workspace.py
 ```
 
-完成判定：上述全绿，并且 task 隔离测试证明不同 task 的 trace/history/checkpoint 不混用。
+### 完成判定
 
-**非目标 / 边界**
+* 能在 `tmp_path` 中生成完整 workspace。
+* 不同 task 的状态、trace、history、checkpoint 互不混用。
 
-- 不实现 ContextBuilder。
-- 不实现 checkpoint 文件快照。
-- 不实现真实 LLM 或 CLI。
+### 非目标 / 边界
+
+* 不实现 state 读写逻辑。
+* 不实现 checkpoint 快照。
+* 不实现 ContextBuilder。
 
 ---
 
-### 任务 2：实现配置加载与状态模型
+## T3：ConfigLoader
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 1 |
-| 可并行 | 完成后释放任务 3 与任务 7 |
-| Worktree / PR | `codex/config-state` -> PR 创建后填写 |
-| 主贡献相关 | 否，支撑维度 |
-| Commit | 完成后填写实际 hash |
+| 元信息           | 值                     |
+| ------------- | --------------------- |
+| 状态            | [ ] 未开始               |
+| 依赖            | T1, T2                |
+| 可并行           | 可与 T4 并行              |
+| Worktree / PR | `codex/config-loader` |
+| 主贡献相关         | 否，支撑维度                |
+| Commit        | TODO                  |
 
-**目标**  
-实现配置对象、状态读写和启动一致性检查，使 AgentLoop、ToolPolicy、ContextBuilder 能共享同一机器状态源。
+### 目标
 
-**涉及文件**
+实现配置加载、默认值、非法配置拒绝，使 AgentLoop、ToolPolicy、ContextBuilder 共享同一配置对象。
 
-- `src/hancode/config.py`：新建，承载 `HanCodeConfig` 与配置加载。
-- `src/hancode/state.py`：新建，承载 `TaskState`、`StateStore` 与 state reconciliation。
-- `src/hancode/errors.py`：新建，承载结构化错误类型。
-- `tests/test_config.py`：新建，覆盖默认配置与非法配置。
-- `tests/test_state.py`：新建，覆盖 state 读写和不一致检测。
+### 涉及文件
 
-**SPEC 依据**
+* `src/hancode/config.py`
+* `tests/test_config.py`
 
-- SPEC FR-9：配置加载与运行约束。
-- SPEC §7.4 `state.json` 状态约束。
-- SPEC §7.8 数据一致性。
-- SPEC §10.7 ConfigLoader 验收。
-- 系统架构 §6.1 ConfigLoader。
+### SPEC 依据
 
-**接口契约**
+* 配置加载与运行约束。
+* 凭据不得明文写入配置。
+* `max_steps`、`retry_budget`、工具权限、测试命令、保护路径等必须显式配置并校验。
+
+### 接口契约
 
 ```python
 from pathlib import Path
 
 class HanCodeConfig: ...
+
+def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig: ...
+```
+
+输入：project root、可选 task ID、`.hancode/project.json`。
+输出：`HanCodeConfig`。
+不变量：配置不得包含明文真实凭据；凭据只保存来源类型或引用。
+错误处理：`max_steps <= 0`、`retry_budget < 0`、未知 provider、非法路径配置必须拒绝启动。
+
+### 预期失败测试
+
+* `test_config_loads_defaults`
+* `test_config_loads_project_json`
+* `test_invalid_retry_budget_is_rejected`
+* `test_invalid_max_steps_is_rejected`
+* `test_config_does_not_accept_plaintext_secret`
+
+### 实现要点
+
+* 默认值：
+
+  * `max_steps = 30`
+  * `retry_budget = 2`
+  * `max_checkpoints_per_task = 5`
+  * `max_context_chars = 12000`
+  * `max_trace_events = 20`
+* 默认 protected patterns 包含作业说明、教师测试、评分脚本、样例数据、`.env` 和凭据文件。
+* 不读取真实 secret，只读取 secret source 配置。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_config.py -v
+python -m ruff check src/hancode/config.py tests/test_config.py
+python -m mypy src/hancode/config.py
+```
+
+### 完成判定
+
+* 配置错误会清晰失败。
+* 默认配置足够驱动 MockLLM demo。
+* 配置对象可被 ToolPolicy、ContextBuilder、AgentLoop 复用。
+
+### 非目标 / 边界
+
+* 不实现 CredentialProvider。
+* 不实现 CLI 配置命令。
+* 不实现真实 provider 调用。
+
+---
+
+## T4：StateStore
+
+| 元信息           | 值                   |
+| ------------- | ------------------- |
+| 状态            | [ ] 未开始             |
+| 依赖            | T1, T2              |
+| 可并行           | 可与 T3 并行            |
+| Worktree / PR | `codex/state-store` |
+| 主贡献相关         | 否，控制流基础             |
+| Commit        | TODO                |
+
+### 目标
+
+实现 `state.json` 的机器状态读写和一致性检查，使状态机、PhaseGate、WorkspaceRouter 和 ToolPolicy 都只依赖机器状态源。
+
+### 涉及文件
+
+* `src/hancode/state.py`
+* `tests/test_state.py`
+
+### SPEC 依据
+
+* `state.json` 是唯一机器状态源。
+* Markdown 产物不作为状态机判断的唯一依据。
+* 启动时发现 artifact drift 应进入 `inconsistent`，不得自动修复。
+
+### 接口契约
+
+```python
+from pathlib import Path
+
 class TaskState: ...
 
-def load_config(project_root: Path, task_id: str) -> HanCodeConfig: ...
 def load_state(task_root: Path) -> TaskState: ...
 def save_state(task_root: Path, state: TaskState) -> None: ...
 def reconcile_state(task_root: Path, state: TaskState) -> TaskState: ...
 ```
 
-输入：project root、task ID、task root、已有 `state.json`。  
-输出：配置对象与任务状态对象。  
-不变量：`state.json` 是唯一机器状态源；发现 artifact 漂移时进入 `inconsistent`，不自动回写为 completed。  
-错误处理：JSON 损坏时返回 `blocked` 或抛出结构化配置错误；`max_steps <= 0`、`retry_budget < 0` 拒绝启动。
+输入：task root、已有 `state.json`。
+输出：`TaskState`。
+不变量：`state.json` 是唯一机器状态源；发现 artifact 漂移时进入 `inconsistent`，不自动回写为 completed。
+错误处理：JSON 损坏时返回 blocked / inconsistent 错误摘要或抛出结构化状态错误。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_config_loads_defaults`
-  - 构造：最小 `.hancode/project.json`。
-  - 断言：`max_steps == 30`、`retry_budget == 2`、`max_checkpoints_per_task == 5`。
-- `test_invalid_retry_budget_is_rejected`
-  - 构造：`retry_budget = -1`。
-  - 断言：加载失败，错误字段包含 `retry_budget`。
-- `test_state_json_is_single_machine_source`
-  - 构造：`state.json.artifacts.SPEC = false`，但文件系统存在 `SPEC.md`。
-  - 断言：reconcile 后状态为 `inconsistent`，不把 SPEC 自动置为 true。
-- `test_state_parse_error_blocks_task`
-  - 构造：损坏的 `state.json`。
-  - 断言：返回 blocked 错误摘要。
+* `test_state_json_is_single_machine_source`
+* `test_state_parse_error_blocks_task`
+* `test_reconcile_detects_artifact_drift_without_auto_fix`
+* `test_state_save_preserves_allowed_status_values`
+* `test_files_changed_updated_only_by_code_write`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- 优先使用标准库 dataclass；若使用 pydantic，仅用于配置校验。
-- 状态枚举限制为 `created`、`running`、`blocked`、`failed`、`completed`、`inconsistent`。
-- 默认 protected patterns 包含作业说明、教师测试、评分脚本、样例数据、`.env` 和凭据文件。
+* `TaskState` 至少包含：
 
-**验证步骤（可复制粘贴执行）**
+  * `task_id`
+  * `status`
+  * `current_phase`
+  * `retry_budget_remaining`
+  * `latest_checkpoint`
+  * `latest_test_status`
+  * `artifacts`
+  * `files_changed`
+  * `inconsistent`
+* `reconcile_state` 只检测漂移，不自动把 Markdown 文件存在转换为 artifact completed。
+* 损坏 JSON 不应导致高风险工具继续执行。
+
+### 验证步骤
 
 ```powershell
-python -m pytest tests/test_config.py tests/test_state.py -v
-python -m ruff check src/hancode/config.py src/hancode/state.py src/hancode/errors.py
-python -m mypy src/hancode/config.py src/hancode/state.py src/hancode/errors.py
+python -m pytest tests/test_state.py -v
+python -m ruff check src/hancode/state.py tests/test_state.py
+python -m mypy src/hancode/state.py
 ```
 
-完成判定：配置与状态测试全绿，且不一致检测不会自动修复 `state.json`。
+### 完成判定
 
-**非目标 / 边界**
+* `state.json` 读写稳定。
+* artifact drift 被检测为 inconsistent。
+* 不会从文件系统反向自动修复状态。
 
-- 不实现 CLI 配置命令。
-- 不实现 OS keyring。
-- 不实现 task 并发锁。
+### 非目标 / 边界
+
+* 不实现 router。
+* 不实现 trace。
+* 不实现 Markdown artifact 内容生成。
 
 ---
 
-### 任务 3：实现 PhaseGate 与 WorkspaceRouter
+## T5：Phase 枚举与 PhaseGate
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 2 |
-| 可并行 | 完成后 T4、T5 可并行 |
-| Worktree / PR | `codex/phase-router` -> PR 创建后填写 |
-| 主贡献相关 | 否，控制流基础 |
-| Commit | 完成后填写实际 hash |
+| 元信息           | 值                  |
+| ------------- | ------------------ |
+| 状态            | [ ] 未开始            |
+| 依赖            | T1, T4             |
+| 可并行           | 可与 T6 前置设计并行       |
+| Worktree / PR | `codex/phase-gate` |
+| 主贡献相关         | 否，控制流基础            |
+| Commit        | TODO               |
 
-**目标**  
-实现无副作用的 phase 路由和阶段门禁，使缺少前置产物时不能进入 code phase，非 code phase 不能修改业务代码。
+### 目标
 
-**涉及文件**
+实现六阶段定义和阶段写入权限判断，使非 code phase 不能修改业务代码，各 phase 只能写对应阶段产物。
 
-- `src/hancode/phases.py`：新建，承载 `Phase`、`RoutingDecision`、`WorkspaceRouter`、phase artifact 规则。
-- `tests/test_phase_gate.py`：新建，覆盖阶段路由与门禁。
+### 涉及文件
 
-**SPEC 依据**
+* `src/hancode/phases.py`
+* `tests/test_phase_gate.py`
 
-- SPEC FR-11：课程项目 Phase Gate。
-- SPEC §6.2 phase 数据流。
-- SPEC §10.5 Phase Gate 验收。
-- 系统架构 §6.5 WorkspaceRouter。
+### SPEC 依据
 
-**接口契约**
+* 课程项目 Phase Gate。
+* `spec -> plan -> code -> test -> review -> deliver` 六阶段流程。
+* 只有 code phase 可以主动修改业务代码。
+
+### 接口契约
 
 ```python
-from dataclasses import dataclass
-from enum import Enum
-
-class Phase(str, Enum): ...
-
-@dataclass(frozen=True)
-class RoutingDecision:
-    phase: Phase
-    reason: str
-    rollback_required: bool = False
-
-def select_next_phase(state: TaskState) -> RoutingDecision: ...
 def can_write_artifact(phase: Phase, artifact_name: str) -> bool: ...
 def can_write_source(phase: Phase, state: TaskState) -> bool: ...
 ```
 
-输入：`TaskState` 与目标 action 所在 phase。  
-输出：`RoutingDecision` 或写入判定。  
-不变量：router 是纯函数，不直接写 `state.json`。  
-错误处理：状态为 `inconsistent` 时拒绝高风险动作；未知 phase 返回 blocked 决策。
+输入：phase、artifact name、TaskState。
+输出：布尔判定或结构化拒绝结果。
+不变量：artifact 写入白名单固定；source write 只允许 code phase。
+错误处理：未知 phase 返回拒绝。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_spec_phase_rejects_edit_file`
-  - 构造：当前 phase 为 `spec`，action 试图写 source。
-  - 断言：`can_write_source` 为 false。
-- `test_plan_required_before_code_phase`
-  - 构造：SPEC 完成但 PLAN 未完成。
-  - 断言：router 返回 `plan`，不是 `code`。
-- `test_code_phase_allows_edit_file`
-  - 构造：SPEC 与 PLAN 均完成，当前 task 可进入 code。
-  - 断言：`can_write_source(Phase.CODE, state)` 为 true。
-- `test_deliver_phase_rejects_source_write`
-  - 构造：phase 为 `deliver`。
-  - 断言：业务代码写入被拒。
+* `test_spec_phase_rejects_source_write`
+* `test_plan_phase_rejects_source_write`
+* `test_code_phase_allows_source_write_when_prerequisites_ready`
+* `test_test_phase_only_writes_test_report`
+* `test_review_phase_only_writes_review`
+* `test_deliver_phase_rejects_source_write`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- 把 artifact 写入白名单按 phase 固定：spec 写 `SPEC.md`，plan 写 `PLAN.md`，test 写 `TEST_REPORT.md`，review 写 `REVIEW.md`，deliver 写 `KNOWLEDGE.md` 和 `DELIVERABLES.md`。
-- 测试失败后路由到 review；retry budget 耗尽时设置 `rollback_required=True`。
-- router 不读取 Markdown 内容，只读 `TaskState.artifacts` 和测试状态字段。
+* artifact 写入白名单：
 
-**验证步骤（可复制粘贴执行）**
+  * spec -> `SPEC.md`
+  * plan -> `PLAN.md`
+  * test -> `TEST_REPORT.md`
+  * review -> `REVIEW.md`
+  * deliver -> `KNOWLEDGE.md`, `DELIVERABLES.md`
+* 业务源代码写入必须处于 code phase。
+* 若 state 为 inconsistent，拒绝 source write。
+
+### 验证步骤
 
 ```powershell
 python -m pytest tests/test_phase_gate.py -v
@@ -407,48 +634,291 @@ python -m ruff check src/hancode/phases.py tests/test_phase_gate.py
 python -m mypy src/hancode/phases.py
 ```
 
-完成判定：阶段门禁测试全绿，且 router 无文件写入副作用。
+### 完成判定
 
-**非目标 / 边界**
+* 每个 phase 能写哪些 artifact 有明确规则。
+* 只有 code phase 允许业务代码修改。
 
-- 不实现 ToolPolicy 路径分类。
-- 不实现 AgentLoop。
-- 不解析 Markdown 产物作为状态源。
+### 非目标 / 边界
+
+* 不实现自动路由。
+* 不实现 ToolPolicy 路径保护。
+* 不执行文件写入。
 
 ---
 
-### 任务 4：实现 ActionParser、MockLLM 与 AgentLoop 骨架
+## T6：WorkspaceRouter
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 3 |
-| 可并行 | 与任务 5 可并行 |
-| Worktree / PR | `codex/agent-loop` -> PR 创建后填写 |
-| 主贡献相关 | 是，主循环基础 |
-| Commit | 完成后填写实际 hash |
+| 元信息           | 值                        |
+| ------------- | ------------------------ |
+| 状态            | [ ] 未开始                  |
+| 依赖            | T4, T5                   |
+| 可并行           | 完成后释放 T7-T10 与 T13-T15   |
+| Worktree / PR | `codex/workspace-router` |
+| 主贡献相关         | 否，控制流基础                  |
+| Commit        | TODO                     |
 
-**目标**  
-实现自有 agent loop 骨架，使 MockLLM action 序列能通过 parse -> policy -> tool -> feedback 的受控链路运行，并受 `max_steps` 限制。
+### 目标
 
-**涉及文件**
+实现无副作用的阶段路由决策，使缺少前置产物时不能进入 code phase，测试失败后进入 review，retry budget 耗尽时要求 rollback。
 
-- `src/hancode/actions.py`：新建，承载 action schema、parser 和 parse error。
-- `src/hancode/llm.py`：新建，承载 `LLMClient` 协议、`MockLLM`。
-- `src/hancode/agent_loop.py`：新建，承载 `AgentLoop`。
-- `tests/test_actions.py`：新建，覆盖 action 解析。
-- `tests/test_llm.py`：新建，覆盖 MockLLM。
-- `tests/test_agent_loop.py`：新建，覆盖 max steps 与 policy 调用。
+### 涉及文件
 
-**SPEC 依据**
+* `src/hancode/router.py`
+* `tests/test_router.py`
 
-- SPEC FR-1：AgentLoop 主循环。
-- SPEC FR-2：LLM 抽象与 MockLLM。
-- SPEC FR-3：Action 解析与校验。
-- SPEC §10.1 AgentLoop 验收。
-- 系统架构 §6.2 AgentLoop、§6.9 ActionParser、§6.14 LLMClient / MockLLM。
+### SPEC 依据
 
-**接口契约**
+* WorkspaceRouter。
+* Phase Gate。
+* 失败恢复数据流。
+* retry budget 超限强制 rollback。
+
+### 接口契约
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class RoutingDecision:
+    phase: Phase
+    reason: str
+    rollback_required: bool = False
+    blocked: bool = False
+
+def select_next_phase(state: TaskState) -> RoutingDecision: ...
+```
+
+输入：`TaskState`。
+输出：`RoutingDecision`。
+不变量：router 是纯函数，不直接写 `state.json`、不创建文件、不执行 rollback。
+错误处理：状态为 `inconsistent` 时返回 blocked 或 review 决策，并拒绝高风险动作。
+
+### 预期失败测试
+
+* `test_missing_spec_routes_to_spec`
+* `test_missing_plan_routes_to_plan`
+* `test_spec_and_plan_complete_routes_to_code`
+* `test_failed_test_routes_to_review`
+* `test_retry_budget_exhausted_requires_rollback`
+* `test_router_is_pure_and_does_not_write_state`
+
+### 实现要点
+
+* router 只读 `TaskState.artifacts`、`latest_test_status`、`retry_budget_remaining`、`status`。
+* 测试失败后路由到 review。
+* retry budget 耗尽时 `rollback_required=True`。
+* 不解析 Markdown 内容。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_router.py -v
+python -m ruff check src/hancode/router.py tests/test_router.py
+python -m mypy src/hancode/router.py
+```
+
+### 完成判定
+
+* Router 只返回决策，不写文件、不改 state。
+* 所有阶段推进依据 `TaskState`，不解析 Markdown 内容。
+
+### 非目标 / 边界
+
+* 不执行 rollback。
+* 不调用 LLM。
+* 不执行工具。
+
+---
+
+# M2：Action 与 Loop 基础
+
+---
+
+## T7：Action Schema
+
+| 元信息           | 值                     |
+| ------------- | --------------------- |
+| 状态            | [ ] 未开始               |
+| 依赖            | T1                    |
+| 可并行           | 可与 T11 并行             |
+| Worktree / PR | `codex/action-schema` |
+| 主贡献相关         | 是，主循环输入协议             |
+| Commit        | TODO                  |
+
+### 目标
+
+定义模型输出 action 的结构化数据协议，使 LLM / MockLLM 只能通过可解析、可校验的 action 与 Harness 交互。
+
+### 涉及文件
+
+* `src/hancode/actions.py`
+* `tests/test_action_schema.py`
+
+### SPEC 依据
+
+* Action 解析与校验。
+* 模型产生的 action 必须使用确定性 schema。
+* malformed action、unknown tool、missing required fields 不得执行。
+
+### 接口契约
+
+```python
+class Action: ...
+class ActionType(str, Enum): ...
+class ParseError: ...
+```
+
+Action 字段至少包含：
+
+```text
+tool_name
+args
+reason
+phase
+```
+
+输入：模型产生的候选 action 数据。
+输出：Action 或 ParseError。
+不变量：action 不携带 `target_kind`；目标路径类型由 PathClassifier 推导。
+错误处理：缺少 required field、unknown action type、unknown tool 返回结构化错误。
+
+### 预期失败测试
+
+* `test_action_requires_tool_name`
+* `test_action_requires_phase`
+* `test_write_action_requires_reason_field`
+* `test_finish_action_has_no_tool_side_effect`
+* `test_unknown_action_type_is_invalid`
+
+### 实现要点
+
+* `finish` action 表示模型请求结束，但是否 completed 由 ResultBuilder / AgentLoop 状态判定。
+* write action 包括 `write_file`、`edit_file`。
+* `run_tests` 不允许携带任意 shell command，实际命令来自 config。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_action_schema.py -v
+python -m ruff check src/hancode/actions.py tests/test_action_schema.py
+python -m mypy src/hancode/actions.py
+```
+
+### 完成判定
+
+* action schema 能表达所有 MVP 工具调用。
+* 非法 action 无法进入 policy 和 tool。
+
+### 非目标 / 边界
+
+* 不实现 parser。
+* 不实现 tool dispatch。
+* 不判断 action 是否安全。
+
+---
+
+## T8：ActionParser
+
+| 元信息           | 值                     |
+| ------------- | --------------------- |
+| 状态            | [ ] 未开始               |
+| 依赖            | T7                    |
+| 可并行           | 可与 T9 并行              |
+| Worktree / PR | `codex/action-parser` |
+| 主贡献相关         | 是，主循环输入校验             |
+| Commit        | TODO                  |
+
+### 目标
+
+把 LLM / MockLLM 原始输出解析为合法 Action 或 ParseError，保证未通过 parser 的 action 不会进入 policy 和 tool。
+
+### 涉及文件
+
+* `src/hancode/actions.py`
+* `tests/test_action_parser.py`
+
+### SPEC 依据
+
+* Action 解析与校验。
+* malformed actions、unknown action types、missing required fields 必须被拒绝。
+* 解析失败必须变成 observation 并写入 trace。
+
+### 接口契约
+
+```python
+def parse_action(raw: dict[str, object]) -> Action | ParseError: ...
+```
+
+输入：LLM / MockLLM 原始输出。
+输出：Action 或 ParseError。
+不变量：parser 只做格式和 schema 校验，不做安全策略判断。
+错误处理：解析失败返回 ParseError，包含 code、message、hint。
+
+### 预期失败测试
+
+* `test_parse_valid_read_file_action`
+* `test_parse_valid_edit_file_action`
+* `test_parse_valid_run_tests_action`
+* `test_parse_rejects_malformed_payload`
+* `test_parse_rejects_unknown_tool`
+* `test_parse_error_becomes_structured_error`
+
+### 实现要点
+
+* parser 支持 dict 输入，不依赖真实 LLM 字符串格式。
+* 后续真实 LLM provider 可在 adapter 中把文本转成 dict。
+* ParseError 应可被 FeedbackBuilder 转成 observation。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_action_parser.py -v
+python -m ruff check src/hancode/actions.py tests/test_action_parser.py
+python -m mypy src/hancode/actions.py
+```
+
+### 完成判定
+
+* 合法 action 可解析。
+* 非法 action 不会进入 tool。
+* 错误信息可诊断。
+
+### 非目标 / 边界
+
+* 不执行 action。
+* 不判断 policy。
+* 不调用 LLM。
+
+---
+
+## T9：MockLLM
+
+| 元信息           | 值                |
+| ------------- | ---------------- |
+| 状态            | [ ] 未开始          |
+| 依赖            | T7               |
+| 可并行           | 可与 T8 并行         |
+| Worktree / PR | `codex/mock-llm` |
+| 主贡献相关         | 是，确定性测试基础        |
+| Commit        | TODO             |
+
+### 目标
+
+实现确定性的 MockLLM，用于离线测试和机制演示，使核心机制不依赖真实 LLM、网络或 API key。
+
+### 涉及文件
+
+* `src/hancode/llm.py`
+* `tests/test_llm.py`
+
+### SPEC 依据
+
+* LLM 抽象与 MockLLM。
+* 核心机制测试必须能替换真实 LLM。
+* MockLLM 必须稳定复现指定 action 序列。
+
+### 接口契约
 
 ```python
 from typing import Protocol, Any
@@ -459,100 +929,313 @@ class LLMClient(Protocol):
 class MockLLM:
     def __init__(self, actions: list[dict[str, Any]]) -> None: ...
     def next_action(self, context: dict[str, Any]) -> dict[str, Any]: ...
+```
 
-def parse_action(raw: dict[str, Any]) -> Action | ParseError: ...
+输入：结构化 context。
+输出：预设 action。
+不变量：MockLLM 不调用网络，不读取真实凭据。
+错误处理：action 序列耗尽时返回 blocked signal 或抛出可诊断 MockLLMExhausted。
 
+### 预期失败测试
+
+* `test_mock_llm_returns_actions_in_order`
+* `test_mock_llm_records_contexts`
+* `test_mock_llm_exhaustion_returns_blocked_signal`
+* `test_mock_llm_is_deterministic`
+
+### 实现要点
+
+* 每次调用记录 context，便于测试 ContextBuilder 是否生效。
+* 不使用随机数。
+* MockLLM 返回的数据应能被 ActionParser 解析。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_llm.py -v
+python -m ruff check src/hancode/llm.py tests/test_llm.py
+python -m mypy src/hancode/llm.py
+```
+
+### 完成判定
+
+* MockLLM 能稳定驱动 AgentLoop。
+* 核心测试不依赖真实 LLM 和网络。
+
+### 非目标 / 边界
+
+* 不实现真实 ProviderAdapter。
+* 不实现 prompt 模板优化。
+* 不读取 credential。
+
+---
+
+## T10：AgentLoop 最小循环骨架
+
+| 元信息           | 值                                                |
+| ------------- | ------------------------------------------------ |
+| 状态            | [ ] 未开始                                          |
+| 依赖            | T6, T8, T9                                       |
+| 可并行           | 依赖注入 stub policy / stub tool，可先于真实 ToolPolicy 集成 |
+| Worktree / PR | `codex/agent-loop-minimal`                       |
+| 主贡献相关         | 是，主循环基础                                          |
+| Commit        | TODO                                             |
+
+### 目标
+
+实现最小 agent loop：build context -> call LLM -> parse action -> policy -> tool -> observation -> stop，并受 `max_steps` 限制。
+
+### 涉及文件
+
+* `src/hancode/agent_loop.py`
+* `tests/test_agent_loop.py`
+
+### SPEC 依据
+
+* AgentLoop 主循环。
+* LLM 不直接访问文件系统。
+* action 必须经过 parser、policy、tool dispatch。
+* max_steps 防止无限循环。
+
+### 接口契约
+
+```python
 class AgentLoop:
     def run(self, task_id: str) -> AgentRunResult: ...
 ```
 
-输入：结构化 context、MockLLM action 序列、工具注册表、policy、state。  
-输出：`AgentRunResult`，包含 status、steps、tool calls、risks、final observation。  
-不变量：LLM 不直接访问文件系统，不直接执行工具；所有 action 执行前必须经过 parser 与 policy。  
-错误处理：action 格式错误转为 observation；MockLLM 序列耗尽返回 blocked；超过 max_steps 返回 blocked。
+输入：task_id、LLM、ContextBuilder stub、Policy stub、ToolRegistry stub、FeedbackBuilder stub、StateStore。
+输出：AgentRunResult，包含 status、steps、tool calls、risks、final observation。
+不变量：所有工具执行前必须经过 parser 与 policy。
+错误处理：parse error、policy denial、MockLLM 耗尽、超过 max_steps 均返回 blocked 或 failed，不执行高风险工具。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_mock_llm_returns_actions_in_order`
-  - 构造：两个 action。
-  - 断言：两次 `next_action` 依次返回。
-- `test_mock_llm_exhaustion_blocks_loop`
-  - 构造：空 action 序列。
-  - 断言：AgentLoop 结果 status 为 `blocked`。
-- `test_action_parser_rejects_unknown_tool`
-  - 构造：`tool_name="unknown_tool"`。
-  - 断言：返回 parse error 或 validation error。
-- `test_action_parser_requires_reason_for_write_actions`
-  - 构造：`edit_file` 缺少 reason。
-  - 断言：解析失败或 action 标记 invalid。
-- `test_max_steps_prevents_infinite_loop`
-  - 构造：MockLLM 连续返回 wait / no-op，`max_steps=2`。
-  - 断言：第 3 步前停止，status 为 `blocked`。
-- `test_agent_loop_calls_policy_before_tool`
-  - 构造：spy policy 与 spy tool。
-  - 断言：policy 调用发生在 tool 调用前。
+* `test_agent_loop_calls_llm_with_context`
+* `test_agent_loop_parses_action_before_policy`
+* `test_agent_loop_calls_policy_before_tool`
+* `test_policy_denial_does_not_execute_tool`
+* `test_max_steps_prevents_infinite_loop`
+* `test_finish_action_stops_loop`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- action 字段至少包含 `tool_name`、`args`、`reason`、`phase`。
-- `finish` action 表示 LLM 请求结束，但是否 completed 由 ResultBuilder 或 loop 状态判定，不由 LLM 单方决定。
-- AgentLoop 第一版只接收依赖注入的 stub policy、stub tool registry、stub feedback builder，T5/T8 再替换为真实实现。
+* 第一版 AgentLoop 使用依赖注入的 stub policy、stub tool registry、stub feedback builder。
+* `finish` action 只停止循环，不直接判定 completed。
+* 工具调用顺序应可通过 spy 对象测试。
 
-**验证步骤（可复制粘贴执行）**
+### 验证步骤
 
 ```powershell
-python -m pytest tests/test_actions.py tests/test_llm.py tests/test_agent_loop.py -v
-python -m ruff check src/hancode/actions.py src/hancode/llm.py src/hancode/agent_loop.py
-python -m mypy src/hancode/actions.py src/hancode/llm.py src/hancode/agent_loop.py
+python -m pytest tests/test_agent_loop.py -v
+python -m ruff check src/hancode/agent_loop.py tests/test_agent_loop.py
+python -m mypy src/hancode/agent_loop.py
 ```
 
-完成判定：MockLLM 可驱动 loop，parse error、policy denial、max_steps 均不会执行工具。
+### 完成判定
 
-**非目标 / 边界**
+* MockLLM 可驱动最小 loop。
+* parse error、policy denial、max_steps 均不会执行工具。
+* 控制流顺序可被测试证明。
 
-- 不实现真实 LLM provider。
-- 不实现复杂 prompt 模板。
-- 不实现真实文件工具。
+### 非目标 / 边界
+
+* 不实现真实 FileTools。
+* 不实现 retry budget。
+* 不实现 rollback 集成。
+* 不生成最终 Markdown 报告。
 
 ---
 
-### 任务 5：实现 ToolRegistry、PathClassifier 与 ToolPolicy
+# M3：Tool 与 Governance
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 3 |
-| 可并行 | 与任务 4 可并行 |
-| Worktree / PR | `codex/tool-policy` -> PR 创建后填写 |
-| 主贡献相关 | 是，治理护栏基础 |
-| Commit | 完成后填写实际 hash |
+---
 
-**目标**  
-实现工具注册、路径三区分类和课程文件保护策略，使越权工具、受保护文件、无 reason 写入、缺 SPEC/PLAN 写入都被确定性拒绝。
+## T11：ToolResult 与 ToolRegistry
 
-**涉及文件**
+| 元信息           | 值                     |
+| ------------- | --------------------- |
+| 状态            | [ ] 未开始               |
+| 依赖            | T1, T7                |
+| 可并行           | 可与 T8/T9 并行           |
+| Worktree / PR | `codex/tool-registry` |
+| 主贡献相关         | 是，工具调度基础              |
+| Commit        | TODO                  |
 
-- `src/hancode/tools.py`：新建，承载 `ToolRegistry`、`ToolExecutor`、结构化 `ToolResult`。
-- `src/hancode/path_policy.py`：新建，承载 `PathClassifier` 与 path zone。
-- `src/hancode/tool_policy.py`：新建，承载 `ToolPolicy` 与 `PolicyDecision`。
-- `tests/test_tools.py`：新建，覆盖工具注册和不存在工具。
-- `tests/test_path_policy.py`：新建，覆盖路径分类和逃逸。
-- `tests/test_tool_policy.py`：新建，覆盖治理规则。
+### 目标
 
-**SPEC 依据**
+实现工具注册、工具查找和结构化工具结果，保证工具异常不会静默失败。
 
-- SPEC FR-4：ToolRegistry 与工具分发。
-- SPEC FR-5：ToolPolicy 治理护栏。
-- SPEC FR-13：课程文件保护策略。
-- SPEC §10.9 ToolPolicy 验收。
-- SPEC §11.4 危险动作与治理护栏。
-- 系统架构 §6.15 PathClassifier。
+### 涉及文件
 
-**接口契约**
+* `src/hancode/tools.py`
+* `tests/test_tool_registry.py`
+
+### SPEC 依据
+
+* ToolRegistry 与工具分发。
+* 工具层必须返回结构化结果。
+* 未注册工具不得执行。
+
+### 接口契约
 
 ```python
-from enum import Enum
+class ToolResult: ...
+class ToolRegistry:
+    def register(self, name: str, tool: Callable[..., ToolResult]) -> None: ...
+    def dispatch(self, action: Action) -> ToolResult: ...
+```
 
+输入：Action、已注册工具。
+输出：ToolResult。
+不变量：unknown tool 返回 failed result；工具异常转成结构化错误。
+错误处理：不得让异常直接泄露 secret 或完整环境变量。
+
+### 预期失败测试
+
+* `test_register_and_dispatch_tool`
+* `test_unknown_tool_returns_structured_error`
+* `test_tool_exception_returns_failed_result`
+* `test_tool_result_contains_action_name_success_and_error_summary`
+
+### 实现要点
+
+* ToolResult 至少包含：
+
+  * `success`
+  * `action_name`
+  * `output`
+  * `error_summary`
+  * `exit_code`
+  * `stdout`
+  * `stderr`
+* dispatch 不直接做 policy 判断，policy 在 AgentLoop 中先执行。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_tool_registry.py -v
+python -m ruff check src/hancode/tools.py tests/test_tool_registry.py
+python -m mypy src/hancode/tools.py
+```
+
+### 完成判定
+
+* 所有工具结果格式统一。
+* 工具异常不会静默失败。
+
+### 非目标 / 边界
+
+* 不实现具体文件工具。
+* 不做路径安全策略。
+* 不运行 shell 命令。
+
+---
+
+## T12：FileTools 最小读写
+
+| 元信息           | 值                  |
+| ------------- | ------------------ |
+| 状态            | [ ] 未开始            |
+| 依赖            | T2, T11            |
+| 可并行           | 可与 T13 并行          |
+| Worktree / PR | `codex/file-tools` |
+| 主贡献相关         | 是，工具能力基础           |
+| Commit        | TODO               |
+
+### 目标
+
+实现 workspace 内文件读取、写入、搜索的最小工具能力。
+
+### 涉及文件
+
+* `src/hancode/file_tools.py`
+* `tests/test_file_tools.py`
+
+### SPEC 依据
+
+* File tools。
+* 工具只能访问当前 workspace 允许路径。
+* 所有工具返回 ToolResult。
+
+### 接口契约
+
+```python
+def read_file(project_root: Path, path: str) -> ToolResult: ...
+def write_file(project_root: Path, path: str, content: str) -> ToolResult: ...
+def list_files(project_root: Path, path: str = ".") -> ToolResult: ...
+def search_text(project_root: Path, query: str) -> ToolResult: ...
+```
+
+输入：project root、相对路径、内容或搜索词。
+输出：ToolResult。
+不变量：FileTools 做基础 root 检查；更完整的 protected policy 由 ToolPolicy 执行。
+错误处理：文件不存在、路径非法、编码错误返回 failed ToolResult。
+
+### 预期失败测试
+
+* `test_read_file_inside_workspace`
+* `test_write_file_inside_workspace`
+* `test_list_files_inside_workspace`
+* `test_search_text_inside_workspace`
+* `test_file_tool_rejects_missing_file_with_structured_error`
+
+### 实现要点
+
+* MVP 中 `edit_file` 可暂时退化为整文件替换。
+* 所有路径必须 resolve 到 project root 内。
+* 输出中不得包含 secret-like 内容的完整展开。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_file_tools.py -v
+python -m ruff check src/hancode/file_tools.py tests/test_file_tools.py
+python -m mypy src/hancode/file_tools.py
+```
+
+### 完成判定
+
+* FileTools 返回 ToolResult。
+* 文件读取、写入、列出、搜索在 tmp workspace 中可测试。
+
+### 非目标 / 边界
+
+* 不实现复杂 patch edit。
+* 不处理 protected patterns。
+* 不运行测试命令。
+
+---
+
+## T13：PathClassifier
+
+| 元信息           | 值                       |
+| ------------- | ----------------------- |
+| 状态            | [ ] 未开始                 |
+| 依赖            | T2, T3                  |
+| 可并行           | 可与 T12 并行               |
+| Worktree / PR | `codex/path-classifier` |
+| 主贡献相关         | 是，治理护栏基础                |
+| Commit        | TODO                    |
+
+### 目标
+
+实现路径三区 / 四区分类，为 ToolPolicy 提供确定性的写入边界判断。
+
+### 涉及文件
+
+* `src/hancode/path_policy.py`
+* `tests/test_path_classifier.py`
+
+### SPEC 依据
+
+* 可写 Action 的目标路径由 PathClassifier 推导。
+* 课程文件保护。
+* 路径逃逸必须被拒绝。
+
+### 接口契约
+
+```python
 class PathZone(str, Enum):
     ARTIFACT = "artifact"
     SOURCE = "source"
@@ -560,219 +1243,501 @@ class PathZone(str, Enum):
     OUTSIDE = "outside"
 
 def classify_path(project_root: Path, target: str, protected_patterns: list[str]) -> PathZone: ...
+```
+
+输入：project root、目标相对路径、protected patterns。
+输出：PathZone。
+不变量：不信任 LLM 自报路径类型。
+错误处理：无法 resolve、路径逃逸、symlink 逃逸返回 OUTSIDE 或 PROTECTED。
+
+### 预期失败测试
+
+* `test_classifies_task_artifact`
+* `test_classifies_source_file`
+* `test_classifies_assignment_file_as_protected`
+* `test_classifies_teacher_test_as_protected`
+* `test_classifies_grading_script_as_protected`
+* `test_rejects_dotdot_path_escape`
+* `test_rejects_symlink_escape`
+
+### 实现要点
+
+* allow-list 优先识别 artifact zone。
+* protected patterns 保护作业说明、教师测试、评分脚本、样例数据、`.env`、凭据文件。
+* Windows 路径使用 resolve 和大小写归一化比较。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_path_classifier.py -v
+python -m ruff check src/hancode/path_policy.py tests/test_path_classifier.py
+python -m mypy src/hancode/path_policy.py
+```
+
+### 完成判定
+
+* 目标路径分类稳定。
+* 路径逃逸和 protected 文件可被确定性识别。
+
+### 非目标 / 边界
+
+* 不判断当前 phase。
+* 不决定是否 checkpoint。
+* 不执行文件写入。
+
+---
+
+## T14：ToolPolicy 基础规则
+
+| 元信息           | 值                         |
+| ------------- | ------------------------- |
+| 状态            | [ ] 未开始                   |
+| 依赖            | T3, T5, T6, T7, T13       |
+| 可并行           | 可与 T15 紧密衔接               |
+| Worktree / PR | `codex/tool-policy-basic` |
+| 主贡献相关         | 是，治理护栏核心                  |
+| Commit        | TODO                      |
+
+### 目标
+
+实现工具执行前的确定性策略判定，拒绝越权工具、缺 reason 写入、非 code phase source write、缺 SPEC/PLAN source write。
+
+### 涉及文件
+
+* `src/hancode/tool_policy.py`
+* `tests/test_tool_policy.py`
+
+### SPEC 依据
+
+* ToolPolicy 治理护栏。
+* Phase Gate。
+* 缺 SPEC / PLAN 时不得进入 code phase。
+* `edit_file` / `write_file` 必须提供 reason。
+
+### 接口契约
+
+```python
+class PolicyDecision: ...
+
 def evaluate_policy(action: Action, phase: Phase, state: TaskState, config: HanCodeConfig) -> PolicyDecision: ...
 ```
 
-输入：action、phase、state、config、目标路径。  
-输出：`PolicyDecision`，包含 `allowed`、`reason`、`requires_checkpoint`、`rule_id`。  
-不变量：可写 action 的目标路径由 `PathClassifier` 推导，不要求 action 自带 `target_kind`。  
-错误处理：路径无法分类、路径逃逸、protected zone、未知工具、缺 reason 均拒绝且不得执行工具。
+输入：Action、phase、TaskState、HanCodeConfig。
+输出：PolicyDecision，包含 allowed、reason、requires_checkpoint、rule_id、hint。
+不变量：policy decision 必须由代码完成，不能依赖提示词。
+错误处理：拒绝时不得执行工具，并把拒绝原因交给 FeedbackBuilder。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_tool_not_allowed_in_workspace_is_denied`
-  - 构造：未注册工具或未授权工具。
-  - 断言：policy denied，tool 未执行。
-- `test_edit_file_requires_reason`
-  - 构造：`edit_file` 缺少 reason。
-  - 断言：denied，rule_id 指向 reason 缺失。
-- `test_policy_protects_assignment_files`
-  - 构造：写 `assignment.md` 或课程说明。
-  - 断言：classified as protected，denied。
-- `test_policy_protects_teacher_tests_or_grading_scripts`
-  - 构造：写 `tests/teacher_test.py` 或 `grading.py`。
-  - 断言：denied。
-- `test_policy_rejects_path_escape`
-  - 构造：目标路径 `../outside.py`。
-  - 断言：zone 为 `outside`，denied。
-- `test_policy_requires_spec_and_plan_before_source_write`
-  - 构造：state 中 SPEC 或 PLAN 未完成。
-  - 断言：source write denied。
-- `test_code_phase_source_write_requires_checkpoint`
-  - 构造：code phase 中合法 source write。
-  - 断言：allowed 且 `requires_checkpoint=True`。
+* `test_disabled_tool_is_denied`
+* `test_edit_file_requires_reason`
+* `test_non_code_phase_source_write_is_denied`
+* `test_spec_and_plan_required_before_source_write`
+* `test_code_phase_source_write_requires_checkpoint`
+* `test_policy_denial_contains_rule_id_and_hint`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- allow-list 优先识别 artifact zone，再叠加 protected patterns。
-- Windows 路径使用 `Path.resolve()` 与大小写归一化比较。
-- MVP 不提供通用 `run_shell`；只允许配置好的 `run_tests`。
-- policy denial 必须包含纠正建议，供 FeedbackBuilder 回灌。
+* policy 先检查工具是否允许，再检查 phase，再检查 path zone，再检查 checkpoint requirement。
+* 合法 source write 在 code phase 中返回 `requires_checkpoint=True`。
+* denial 必须包含 correction hint。
 
-**验证步骤（可复制粘贴执行）**
+### 验证步骤
 
 ```powershell
-python -m pytest tests/test_tools.py tests/test_path_policy.py tests/test_tool_policy.py -v
-python -m ruff check src/hancode/tools.py src/hancode/path_policy.py src/hancode/tool_policy.py
-python -m mypy src/hancode/tools.py src/hancode/path_policy.py src/hancode/tool_policy.py
+python -m pytest tests/test_tool_policy.py -v
+python -m ruff check src/hancode/tool_policy.py tests/test_tool_policy.py
+python -m mypy src/hancode/tool_policy.py
 ```
 
-完成判定：课程文件保护、路径逃逸、缺 reason、缺 SPEC/PLAN、未注册工具全部被确定性拒绝。
+### 完成判定
 
-**非目标 / 边界**
+* policy 可以被 AgentLoop 在 tool 前调用。
+* policy denial 可以转成 observation。
+* source write 前能明确要求 checkpoint。
 
-- 不做 HITL 审批流程。
-- 不实现通用 shell 执行器。
-- 不修改教师测试或评分脚本。
+### 非目标 / 边界
+
+* 不实现具体课程文件保护扩展。
+* 不执行 checkpoint。
+* 不执行工具。
 
 ---
 
-### 任务 6：实现 TraceLogger、CheckpointManager 与 Rollback
+## T15：Course File Protection
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 5 |
-| 可并行 | 与任务 7 可并行 |
-| Worktree / PR | `codex/trace-checkpoint` -> PR 创建后填写 |
-| 主贡献相关 | 是，可回退编码状态核心 |
-| Commit | 完成后填写实际 hash |
+| 元信息           | 值                              |
+| ------------- | ------------------------------ |
+| 状态            | [ ] 未开始                        |
+| 依赖            | T13, T14                       |
+| 可并行           | 不并行；属于治理护栏加固                   |
+| Worktree / PR | `codex/course-file-protection` |
+| 主贡献相关         | 是，学生课程项目特定化治理                  |
+| Commit        | TODO                           |
 
-**目标**  
-实现事件级 trace、业务代码修改前 checkpoint 和最近 checkpoint rollback，使失败恢复可测试、可审计、可复盘。
+### 目标
 
-**涉及文件**
+把课程项目保护规则落到 ToolPolicy / PathClassifier 中，禁止 Agent 未经明确授权修改作业说明、教师测试、评分脚本、样例数据和凭据文件。
 
-- `src/hancode/trace.py`：新建，承载 `TraceLogger`、`TraceEvent`。
-- `src/hancode/checkpoints.py`：新建，承载 `CheckpointManager`、manifest、rollback。
-- `tests/test_trace.py`：新建，覆盖 JSONL 事件、脱敏、写失败处理。
-- `tests/test_checkpoints.py`：新建，覆盖创建、恢复、排除规则和 manifest 损坏。
+### 涉及文件
 
-**SPEC 依据**
+* `src/hancode/tool_policy.py`
+* `src/hancode/path_policy.py`
+* `tests/test_course_file_protection.py`
 
-- SPEC FR-8：TraceLogger。
-- SPEC FR-14：Checkpoint 与 Rollback。
-- SPEC §7.5 TraceEvent 事件模型。
-- SPEC §7.6 Checkpoint 数据模型。
-- SPEC §10.12 TraceLogger 验收。
-- SPEC §10.13 Checkpoint / Rollback 验收。
-- 系统架构 §6.12 TraceLogger、§6.13 CheckpointManager。
+### SPEC 依据
 
-**接口契约**
+* 课程文件保护策略。
+* 测试失败不得通过删除测试、绕过评分脚本、修改教师测试或忽略失败结果解决。
+* 危险动作必须被 block 或 require approval。
+
+### 接口契约
+
+```text
+输入：Action path、protected patterns、phase、state、config。
+输出：PolicyDecision denied，rule_id 指向 protected file rule。
+不变量：protected 文件默认不能被 Agent 修改或删除。
+错误处理：受保护文件写入请求被拒绝，记录可回灌的原因和建议。
+```
+
+### 预期失败测试
+
+* `test_policy_protects_assignment_files`
+* `test_policy_protects_teacher_tests_or_grading_scripts`
+* `test_policy_protects_sample_data`
+* `test_policy_protects_env_file`
+* `test_test_failure_cannot_be_fixed_by_deleting_teacher_test`
+
+### 实现要点
+
+* protected patterns 包含：
+
+  * assignment / requirements / rubric 类文件。
+  * teacher tests。
+  * grading scripts。
+  * sample data。
+  * `.env`、`.env.*`、secret、credential 文件。
+* MVP 不实现 HITL 审批覆盖；全部 protected write 默认 denied。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_course_file_protection.py -v
+python -m ruff check src/hancode/tool_policy.py src/hancode/path_policy.py tests/test_course_file_protection.py
+python -m mypy src/hancode/tool_policy.py src/hancode/path_policy.py
+```
+
+### 完成判定
+
+* 课程文件保护由代码策略完成。
+* 测试失败不能通过改教师测试、删评分脚本、删样例数据解决。
+
+### 非目标 / 边界
+
+* 不实现人工审批覆盖。
+* 不实现复杂权限系统。
+* 不修改教师测试或评分脚本。
+
+---
+
+# M4：Trace 与可恢复状态
+
+---
+
+## T16：TraceLogger
+
+| 元信息           | 值                    |
+| ------------- | -------------------- |
+| 状态            | [ ] 未开始              |
+| 依赖            | T1, T4               |
+| 可并行           | 可与 T13/T14 并行        |
+| Worktree / PR | `codex/trace-logger` |
+| 主贡献相关         | 是，可观测性核心             |
+| Commit        | TODO                 |
+
+### 目标
+
+实现 JSONL trace 追加、事件 ID、事件序号、脱敏和写失败处理。
+
+### 涉及文件
+
+* `src/hancode/trace.py`
+* `tests/test_trace.py`
+
+### SPEC 依据
+
+* TraceLogger。
+* trace 必须记录 phase 切换、LLM 决策、action 解析、policy 判定、工具调用、feedback、checkpoint、rollback 和最终状态。
+* trace 不得泄露真实凭据。
+
+### 接口契约
 
 ```python
+class TraceEvent: ...
+
 def append_trace(task_root: Path, event: TraceEvent) -> None: ...
+```
+
+输入：task root、TraceEvent。
+输出：追加写入 `trace.jsonl`。
+不变量：trace 只追加，不修改；event_id / seq 在 task 内可排序。
+错误处理：trace 写入失败时阻止继续执行高风险工具。
+
+### 预期失败测试
+
+* `test_trace_appends_jsonl_event_with_event_id`
+* `test_trace_event_has_monotonic_seq`
+* `test_trace_redacts_secret_like_values`
+* `test_trace_does_not_store_large_file_content`
+* `test_trace_write_failure_blocks_high_risk_action`
+
+### 实现要点
+
+* `event_id` 格式可采用 `evt-000001`。
+* 每行 JSONL 必须是合法 JSON。
+* 脱敏字段包括 Authorization、api_key、token、secret、password。
+* trace 不记录完整大文件内容。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_trace.py -v
+python -m ruff check src/hancode/trace.py tests/test_trace.py
+python -m mypy src/hancode/trace.py
+```
+
+### 完成判定
+
+* trace 可被测试读取和断言。
+* secret fixture 不出现在 trace 中。
+* trace 写失败有明确错误路径。
+
+### 非目标 / 边界
+
+* 不实现 history summary。
+* 不实现 demo 完整事件序列。
+* 不实现 checkpoint。
+
+---
+
+## T17：CheckpointManager
+
+| 元信息           | 值                          |
+| ------------- | -------------------------- |
+| 状态            | [ ] 未开始                    |
+| 依赖            | T13, T15, T16              |
+| 可并行           | 不并行；依赖路径和保护规则              |
+| Worktree / PR | `codex/checkpoint-manager` |
+| 主贡献相关         | 是，可回退编码状态核心                |
+| Commit        | TODO                       |
+
+### 目标
+
+实现业务代码修改前的 checkpoint 创建和 manifest，使每轮代码尝试都能恢复到修改前状态。
+
+### 涉及文件
+
+* `src/hancode/checkpoints.py`
+* `tests/test_checkpoints.py`
+
+### SPEC 依据
+
+* Checkpoint 与 Rollback。
+* code phase 修改业务代码前创建 checkpoint。
+* checkpoint 不保存凭据、受保护课程文件、教师测试、评分脚本或样例数据。
+
+### 接口契约
+
+```python
+class CheckpointManifest: ...
+
 def create_checkpoint(task_root: Path, files: list[Path], reason: str) -> CheckpointManifest: ...
+```
+
+输入：task root、即将修改的 source files、reason。
+输出：CheckpointManifest、文件快照。
+不变量：checkpoint 只保存业务代码修改前的必要快照。
+错误处理：空文件集、文件不存在、protected 文件进入快照请求时返回结构化错误。
+
+### 预期失败测试
+
+* `test_edit_file_creates_checkpoint`
+* `test_checkpoint_manifest_contains_before_hash`
+* `test_checkpoint_excludes_env_and_protected_files`
+* `test_checkpoint_rejects_empty_file_set`
+* `test_checkpoint_id_is_stable_format`
+
+### 实现要点
+
+* manifest 记录：
+
+  * `checkpoint_id`
+  * `task_id`
+  * `phase`
+  * `reason`
+  * `files`
+  * `before_sha256`
+  * `created_at`
+  * `status`
+* 快照文件保存在 `checkpoints/<checkpoint_id>/files/`。
+* 创建 checkpoint 后写 trace event。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_checkpoints.py -v
+python -m ruff check src/hancode/checkpoints.py tests/test_checkpoints.py
+python -m mypy src/hancode/checkpoints.py
+```
+
+### 完成判定
+
+* source write 前可创建 checkpoint。
+* checkpoint 不包含 `.env`、凭据、教师测试、评分脚本、样例数据。
+* manifest 可被 rollback 使用。
+
+### 非目标 / 边界
+
+* 不实现 rollback。
+* 不实现 checkpoint pruning。
+* 不使用 git 作为 checkpoint 机制。
+
+---
+
+## T18：RollbackManager
+
+| 元信息           | 值                        |
+| ------------- | ------------------------ |
+| 状态            | [ ] 未开始                  |
+| 依赖            | T17                      |
+| 可并行           | 不并行                      |
+| Worktree / PR | `codex/rollback-manager` |
+| 主贡献相关         | 是，可回退编码状态核心              |
+| Commit        | TODO                     |
+
+### 目标
+
+实现最近 checkpoint 的恢复流程，使测试失败、review 风险过高或 retry budget 耗尽时可以恢复业务文件。
+
+### 涉及文件
+
+* `src/hancode/checkpoints.py`
+* `tests/test_rollback.py`
+
+### SPEC 依据
+
+* Checkpoint 与 Rollback。
+* retry budget 超限必须强制 rollback。
+* rollback 不得覆盖 protected files、`.env` 或凭据文件。
+
+### 接口契约
+
+```python
+class RollbackResult: ...
+
 def rollback_last_checkpoint(task_root: Path) -> RollbackResult: ...
 ```
 
-输入：task root、事件、即将修改的 source files、rollback 请求。  
-输出：JSONL trace、checkpoint manifest、恢复文件列表。  
-不变量：checkpoint 不包含 `.env`、凭据文件、受保护课程文件、教师测试、评分脚本、样例数据。  
-错误处理：trace 写失败阻止高风险工具；manifest 损坏时 rollback failed / blocked，不盲目恢复。
+输入：task root。
+输出：RollbackResult，包含 restored files、failed files、error summary。
+不变量：只恢复 manifest 中允许恢复的业务文件。
+错误处理：manifest 损坏、快照缺失、恢复失败时返回 failed / blocked，不盲目恢复。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_trace_appends_jsonl_event_with_event_id`
-  - 构造：写入一个 `phase_started`。
-  - 断言：`trace.jsonl` 一行合法 JSON，含 `event_id`、`event_type`、`phase`。
-- `test_trace_redacts_secret_like_values`
-  - 构造：事件包含 `Authorization: Bearer fake-secret-123`。
-  - 断言：trace 不包含原始 secret。
-- `test_edit_file_creates_checkpoint`
-  - 构造：合法 source write 前调用 checkpoint。
-  - 断言：生成 manifest 和 before hash。
-- `test_rollback_last_checkpoint_restores_file`
-  - 构造：修改文件后 rollback。
-  - 断言：文件内容恢复，结果包含 restored files。
-- `test_checkpoint_excludes_env_and_protected_files`
-  - 构造：文件列表含 `.env` 与 teacher test。
-  - 断言：manifest 不包含这些路径。
-- `test_damaged_manifest_blocks_rollback`
-  - 构造：损坏 manifest JSON。
-  - 断言：rollback 返回 failed / blocked，写入错误摘要。
+* `test_rollback_last_checkpoint_restores_file`
+* `test_rollback_records_restored_files`
+* `test_damaged_manifest_blocks_rollback`
+* `test_rollback_does_not_restore_protected_files`
+* `test_rollback_writes_trace_event`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- `event_id` 使用 task 内递增格式，如 `evt-000001`。
-- manifest 记录 `checkpoint_id`、`task_id`、`phase`、`reason`、`files`、hash、created_at、status。
-- rollback 成功后写 trace，并更新 state 中 latest checkpoint / rollback 信息。
-- checkpoint 只快照 action args 推导出的目标文件集合。
+* rollback 成功后写 trace。
+* rollback 结果应可被 FeedbackBuilder 转成 observation。
+* 恢复后更新 state 中 latest checkpoint / rollback 信息。
 
-**验证步骤（可复制粘贴执行）**
+### 验证步骤
 
 ```powershell
-python -m pytest tests/test_trace.py tests/test_checkpoints.py -v
-python -m ruff check src/hancode/trace.py src/hancode/checkpoints.py
-python -m mypy src/hancode/trace.py src/hancode/checkpoints.py
+python -m pytest tests/test_rollback.py -v
+python -m ruff check src/hancode/checkpoints.py tests/test_rollback.py
+python -m mypy src/hancode/checkpoints.py
 ```
 
-完成判定：trace、checkpoint、rollback 测试全绿，且 secret fixture 不出现在 trace 或 manifest 中。
+### 完成判定
 
-**非目标 / 边界**
+* rollback 能恢复业务文件到 checkpoint 状态。
+* manifest 损坏时不盲目恢复。
+* rollback 结果结构化返回。
 
-- 不实现 checkpoint pruning。
-- 不实现 git-based rollback。
-- 不恢复 protected files。
+### 非目标 / 边界
+
+* 不实现 git rollback。
+* 不实现多 checkpoint pruning。
+* 不恢复 protected files。
 
 ---
 
-### 任务 7：实现 ContextBuilder 与 workspace-scoped memory
+# M5：Context 与 Feedback
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 2 |
-| 可并行 | 与任务 6 可并行 |
-| Worktree / PR | `codex/context-builder` -> PR 创建后填写 |
-| 主贡献相关 | 否，支撑维度 |
-| Commit | 完成后填写实际 hash |
+---
 
-**目标**  
+## T19：ContextBuilder
+
+| 元信息           | 值                       |
+| ------------- | ----------------------- |
+| 状态            | [ ] 未开始                 |
+| 依赖            | T2, T3, T4, T5, T16     |
+| 可并行           | 可与 T20 并行               |
+| Worktree / PR | `codex/context-builder` |
+| 主贡献相关         | 否，支撑维度                  |
+| Commit        | TODO                    |
+
+### 目标
+
 实现按 phase 选择最小必要上下文的 ContextBuilder，使课程规则、任务产物、测试结果、checkpoint 和 trace 摘要按需进入 LLM 上下文。
 
-**涉及文件**
+### 涉及文件
 
-- `src/hancode/context.py`：新建，承载 `ContextBuilder`、上下文预算和 trace 摘要选择。
-- `tests/test_context_builder.py`：新建，覆盖 phase include/exclude、task 隔离和截断。
+* `src/hancode/context.py`
+* `tests/test_context_builder.py`
 
-**SPEC 依据**
+### SPEC 依据
 
-- SPEC FR-6：ContextBuilder 与记忆选择。
-- SPEC FR-12：课程项目上下文构造。
-- SPEC §11.5 记忆与上下文机制。
-- SPEC §10.8 ContextBuilder 验收。
-- 系统架构 §6.8 ContextBuilder。
+* ContextBuilder 与记忆选择。
+* 课程项目上下文构造。
+* 不得无条件加载全部历史。
+* 不同 task 的 history、trace、checkpoint 不得混用。
 
-**接口契约**
+### 接口契约
 
 ```python
 def build_context(project_root: Path, task_id: str, phase: Phase, config: HanCodeConfig) -> dict[str, str]: ...
 ```
 
-输入：project root、task ID、phase、config。  
-输出：结构化 context 字典，包含 phase、course context、task artifacts、trace summary。  
-不变量：不得无条件加载全部历史；不得混入其他 task 的 trace、history、checkpoint。  
+输入：project root、task ID、phase、config。
+输出：结构化 context 字典。
+不变量：不得无条件加载全部历史；不得混入其他 task 的 trace、history、checkpoint。
 错误处理：code phase 缺 SPEC/PLAN 时返回 blocked context 或明确风险；context 超预算时按规则截断。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_context_builder_includes_course_context`
-  - 构造：project workspace 有 `course_context.md`。
-  - 断言：context 包含课程背景与评分标准摘要。
-- `test_code_phase_context_requires_spec_and_plan`
-  - 构造：code phase 缺 PLAN。
-  - 断言：context 标记 missing prerequisite，不能假装可编码。
-- `test_review_phase_includes_test_report_changed_files_and_checkpoint`
-  - 构造：存在 TEST_REPORT、changed files、checkpoint manifest。
-  - 断言：review context 包含三者摘要。
-- `test_deliver_phase_includes_required_artifacts`
-  - 构造：SPEC、PLAN、TEST_REPORT、REVIEW、trace。
-  - 断言：deliver context 包含这些输入。
-- `test_context_builder_does_not_mix_other_task_trace`
-  - 构造：两个 task 都有 trace。
-  - 断言：task-001 context 不含 task-002 trace。
-- `test_context_builder_respects_max_context_chars`
-  - 构造：超长 project_memory。
-  - 断言：context 总长度不超过配置预算，并保留课程规则优先。
+* `test_context_builder_includes_course_context`
+* `test_code_phase_context_requires_spec_and_plan`
+* `test_review_phase_includes_test_report_changed_files_and_checkpoint`
+* `test_deliver_phase_includes_required_artifacts`
+* `test_context_builder_does_not_mix_other_task_trace`
+* `test_context_builder_respects_max_context_chars`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- 先加载课程要求和当前 task 关键产物，再加载 project memory / experience。
-- trace 摘要最多取 `max_trace_events` 条。
-- 截断时保留课程规则、当前 phase 必需产物和最近失败信息。
+* 优先加载课程要求和当前 phase 必需产物。
+* 其次加载 project memory / experience。
+* trace 摘要最多取 `max_trace_events` 条。
+* 截断时保留课程规则、当前 phase 必需产物和最近失败信息。
 
-**验证步骤（可复制粘贴执行）**
+### 验证步骤
 
 ```powershell
 python -m pytest tests/test_context_builder.py -v
@@ -780,52 +1745,49 @@ python -m ruff check src/hancode/context.py tests/test_context_builder.py
 python -m mypy src/hancode/context.py
 ```
 
-完成判定：各 phase 上下文测试全绿，且不同 task 的 trace/history 不混用。
+### 完成判定
 
-**非目标 / 边界**
+* 不同 phase 上下文内容不同。
+* 不无条件加载全部历史。
+* 不混入其他 task trace。
 
-- 不实现向量检索。
-- 不实现嵌入模型或上下文压缩模型。
-- 不把 project experience 置于课程要求之上。
+### 非目标 / 边界
+
+* 不实现向量检索。
+* 不使用 embedding。
+* 不让 LLM 压缩上下文。
 
 ---
 
-### 任务 8：实现 FeedbackBuilder 失败分类与 retry 回灌
+## T20：FeedbackBuilder 失败分类
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 4, 任务 5, 任务 6 |
-| 可并行 | 不并行；主贡献闭环任务 |
-| Worktree / PR | `codex/feedback-loop` -> PR 创建后填写 |
-| 主贡献相关 | 是，主贡献回路核心 |
-| Commit | 完成后填写实际 hash |
+| 元信息           | 值                        |
+| ------------- | ------------------------ |
+| 状态            | [ ] 未开始                  |
+| 依赖            | T8, T11, T14, T18        |
+| 可并行           | 可与 T19 并行                |
+| Worktree / PR | `codex/feedback-builder` |
+| 主贡献相关         | 是，反馈闭环核心                 |
+| Commit        | TODO                     |
 
-**目标**  
-实现确定性测试失败分类、policy denial / parse error / rollback observation 回灌和 retry budget 消耗，使失败分类 -> 针对性修复 -> 强制 rollback 可复现。
+### 目标
 
-**涉及文件**
+实现确定性的测试失败分类和 observation 构造，将测试结果、policy denial、parse error、rollback result 转换为下一轮 AgentLoop 可用的反馈。
 
-- `src/hancode/feedback.py`：新建，承载 `FeedbackBuilder`、`FeedbackReport`、失败分类规则和 hint 表。
-- `src/hancode/agent_loop.py`：修改，接入 feedback、retry budget 和 review 路由。
-- `tests/test_feedback.py`：新建，覆盖失败分类和 observation。
-- `tests/test_feedback_loop.py`：新建，覆盖 MockLLM 下的 retry 与 rollback 闭环。
+### 涉及文件
 
-**SPEC 依据**
+* `src/hancode/feedback.py`
+* `tests/test_feedback.py`
 
-- SPEC FR-7：反馈回灌机制。
-- SPEC FR-15：测试报告与审查记录。
-- SPEC §11.3.1 测试失败分类。
-- SPEC §11.6 主贡献维度。
-- SPEC §11.8 MockLLM 机制演示。
-- SPEC §10.11 FeedbackBuilder 验收。
-- 系统架构 §6.11 FeedbackBuilder。
+### SPEC 依据
 
-**接口契约**
+* 反馈回灌机制。
+* 反馈必须来自确定性工具结果或系统判定，不能由 LLM 自行判断。
+* 测试失败分类和 hint 必须稳定可测试。
+
+### 接口契约
 
 ```python
-from enum import Enum
-
 class FailureCategory(str, Enum):
     SYNTAX_ERROR = "syntax_error"
     IMPORT_ERROR = "import_error"
@@ -838,245 +1800,528 @@ def classify_test_output(output: str, exit_code: int, timed_out: bool = False) -
 def build_observation(result: ToolResult | PolicyDecision | RollbackResult | ParseError) -> Observation: ...
 ```
 
-输入：测试输出、退出码、工具结果、策略拒绝、rollback 结果、parse error。  
-输出：`FeedbackReport` / `Observation`，包含 category、summary、hint、risk、next_step。  
-不变量：同一输入分类结果稳定；反馈来自确定性工具结果或系统判定，不来自 LLM 自我评价。  
-错误处理：无法分类但 exit code 非零时返回 `unknown`，保留摘要并提示人工检查。
+输入：测试输出、退出码、工具结果、策略拒绝、rollback 结果、parse error。
+输出：FeedbackReport / Observation。
+不变量：同一输入分类结果稳定；hint 由规则表生成。
+错误处理：无法分类但 exit code 非零时返回 UNKNOWN，保留摘要并提示人工检查。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_feedback_classifies_syntax_error`
-  - 构造：输出包含 `SyntaxError`。
-  - 断言：`failure_category == SYNTAX_ERROR`。
-- `test_feedback_classifies_import_error`
-  - 构造：输出包含 `ModuleNotFoundError`。
-  - 断言：`failure_category == IMPORT_ERROR`。
-- `test_feedback_classifies_assertion_failure`
-  - 构造：输出包含 `AssertionError` 或 pytest assertion diff。
-  - 断言：`failure_category == ASSERTION_FAILURE`。
-- `test_feedback_classifies_error_exception`
-  - 构造：输出包含 `KeyError` 或 `TypeError` 栈帧。
-  - 断言：`failure_category == ERROR_EXCEPTION`。
-- `test_feedback_classifies_timeout_or_crash`
-  - 构造：`timed_out=True` 或非正常退出。
-  - 断言：`failure_category == TIMEOUT_OR_CRASH`。
-- `test_feedback_classification_is_deterministic_on_fixture`
-  - 构造：同一 fixture 跑两次。
-  - 断言：两次 report 完全相等。
-- `test_feedback_hint_matches_category`
-  - 构造：assertion failure。
-  - 断言：hint 提醒回看 PLAN 验证依据。
-- `test_policy_denial_becomes_observation`
-  - 构造：ToolPolicy 拒绝 protected file。
-  - 断言：observation 包含拒绝原因和纠正建议。
-- `test_retry_budget_exhaustion_forces_rollback`
-  - 构造：MockLLM 连续两轮测试失败，`retry_budget=2`。
-  - 断言：预算归零后调用 rollback，trace 记录 rollback，loop 保持 review / blocked。
+* `test_feedback_classifies_syntax_error`
+* `test_feedback_classifies_import_error`
+* `test_feedback_classifies_assertion_failure`
+* `test_feedback_classifies_error_exception`
+* `test_feedback_classifies_timeout_or_crash`
+* `test_feedback_classification_is_deterministic_on_fixture`
+* `test_policy_denial_becomes_observation`
+* `test_parse_error_becomes_observation`
+* `test_rollback_result_becomes_observation`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- 分类优先级：syntax -> import -> assertion -> timeout/crash -> error exception -> unknown。
-- 分类在完整输出上执行，摘要截断在分类之后执行。
-- hint 由 category 查表，不调用 LLM。
-- AgentLoop 在测试失败后进入 review；retry budget 未耗尽时允许定向回 code；耗尽后强制 rollback。
+* 分类优先级：
 
-**验证步骤（可复制粘贴执行）**
+  * syntax
+  * import
+  * assertion
+  * timeout/crash
+  * error exception
+  * unknown
+* 分类在完整输出上执行，摘要截断在分类之后执行。
+* policy denial observation 包含 rule_id、reason、hint。
+* 不调用 LLM 判断失败原因。
+
+### 验证步骤
 
 ```powershell
-python -m pytest tests/test_feedback.py tests/test_feedback_loop.py -v
-python -m ruff check src/hancode/feedback.py src/hancode/agent_loop.py tests/test_feedback.py tests/test_feedback_loop.py
-python -m mypy src/hancode/feedback.py src/hancode/agent_loop.py
+python -m pytest tests/test_feedback.py -v
+python -m ruff check src/hancode/feedback.py tests/test_feedback.py
+python -m mypy src/hancode/feedback.py
 ```
 
-完成判定：失败分类、policy denial 回灌、retry budget、强制 rollback 全链路测试全绿。
+### 完成判定
 
-**非目标 / 边界**
+* 同一输入输出稳定。
+* failure hint 由规则表生成。
+* 反馈来自工具结果或系统判定。
 
-- 不让真实 LLM 判断失败类别。
-- 不自动安装缺失依赖。
-- 不绕过测试或修改教师测试来制造通过结果。
+### 非目标 / 边界
+
+* 不实现 retry budget。
+* 不执行 rollback。
+* 不生成 TEST_REPORT。
 
 ---
 
-### 任务 9：实现 Knowledge Delivery 与 MockLLM 机制 Demo
+## T21：AgentLoop 集成 feedback / retry / rollback
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 4, 任务 5, 任务 6, 任务 7, 任务 8 |
-| 可并行 | 不并行；集成任务 |
-| Worktree / PR | `codex/mock-demo-delivery` -> PR 创建后填写 |
-| 主贡献相关 | 是，主贡献演示 |
-| Commit | 完成后填写实际 hash |
+| 元信息           | 值                                 |
+| ------------- | --------------------------------- |
+| 状态            | [ ] 未开始                           |
+| 依赖            | T10, T14, T16, T18, T20           |
+| 可并行           | 不并行；主贡献闭环任务                       |
+| Worktree / PR | `codex/feedback-loop-integration` |
+| 主贡献相关         | 是，主贡献闭环核心                         |
+| Commit        | TODO                              |
 
-**目标**  
-实现 TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES 和 MockLLM demo，使课程项目全流程与主贡献机制可被 trace 证明。
+### 目标
 
-**涉及文件**
+把 AgentLoop 与 FeedbackBuilder、retry budget、review 路由、rollback 串起来，使“测试失败 -> feedback -> retry -> 强制 rollback”可在 MockLLM 下确定性复现。
 
-- `src/hancode/delivery.py`：新建，承载 report / review / knowledge / deliverable 生成。
-- `examples/broken_project/`：补充或整理 MockLLM demo fixture。
-- `scripts/demo_mock_loop.py`：新建，可重复运行的 MockLLM 机制演示脚本。
-- `tests/test_delivery.py`：新建，覆盖 Markdown 产物最低结构。
-- `tests/test_mock_demo.py`：新建，覆盖 demo trace 事件序列。
+### 涉及文件
 
-**SPEC 依据**
+* `src/hancode/agent_loop.py`
+* `tests/test_feedback_loop.py`
 
-- SPEC FR-15：测试报告与审查记录。
-- SPEC FR-16：Knowledge Delivery。
-- SPEC §10.14 Review / Deliver 验收。
-- SPEC §10.21 可测试性约定。
-- SPEC §11.8 MockLLM 机制演示。
-- 系统架构 §12.4 MockLLM 测试架构。
+### SPEC 依据
 
-**接口契约**
+* 反馈回灌机制。
+* 测试失败时必须进入 review。
+* retry budget 超限必须强制 rollback。
+* rollback 结果必须作为 observation 回灌。
+
+### 接口契约
+
+```text
+输入：MockLLM action 序列、TaskState、ToolResult、FeedbackBuilder、RollbackManager。
+输出：AgentRunResult，包含最终状态、retry budget、trace、observation。
+不变量：测试失败不得直接 completed；retry budget 耗尽必须 rollback。
+错误处理：rollback 失败时返回 blocked / failed，并保留 error_summary。
+```
+
+### 预期失败测试
+
+* `test_test_failure_generates_observation`
+* `test_failed_test_decrements_retry_budget`
+* `test_retry_budget_exhaustion_forces_rollback`
+* `test_rollback_result_becomes_observation`
+* `test_loop_does_not_return_completed_after_failed_test`
+* `test_feedback_loop_trace_records_failure_retry_rollback`
+
+### 实现要点
+
+* AgentLoop 在测试失败后进入 review。
+* retry budget 未耗尽时允许针对性回 code。
+* retry budget 耗尽时调用 rollback。
+* rollback 后保持 review / blocked，不直接 completed。
+* 每个关键事件写 trace。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_feedback_loop.py -v
+python -m ruff check src/hancode/agent_loop.py tests/test_feedback_loop.py
+python -m mypy src/hancode/agent_loop.py
+```
+
+### 完成判定
+
+* 主贡献闭环可在 MockLLM 下确定性复现。
+* 测试失败不会直接 completed。
+* retry 超限会强制 rollback。
+
+### 非目标 / 边界
+
+* 不生成最终 Markdown 报告。
+* 不接真实 LLM。
+* 不做 CLI demo。
+
+---
+
+# M6：Delivery 与 Demo
+
+---
+
+## T22：Delivery Artifacts 生成
+
+| 元信息           | 值                          |
+| ------------- | -------------------------- |
+| 状态            | [ ] 未开始                    |
+| 依赖            | T19, T20, T21              |
+| 可并行           | 不并行；交付产物依赖反馈与上下文           |
+| Worktree / PR | `codex/delivery-artifacts` |
+| 主贡献相关         | 是，知识沉淀交付                   |
+| Commit        | TODO                       |
+
+### 目标
+
+生成课程项目交付产物：`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`。
+
+### 涉及文件
+
+* `src/hancode/delivery.py`
+* `tests/test_delivery.py`
+
+### SPEC 依据
+
+* 测试报告与审查记录。
+* Knowledge Delivery。
+* deliver phase 不应修改业务代码。
+* 缺 KNOWLEDGE 或 DELIVERABLES 不得 completed。
+
+### 接口契约
 
 ```python
 def write_test_report(task_root: Path, report: FeedbackReport, command: str) -> Path: ...
 def write_review(task_root: Path, coverage: list[RequirementCoverage], risks: list[str]) -> Path: ...
 def write_knowledge(task_root: Path, items: list[KnowledgeItem]) -> Path: ...
 def write_deliverables(task_root: Path, result: AgentRunResult) -> Path: ...
-def run_mock_demo(project_root: Path) -> AgentRunResult: ...
 ```
 
-输入：task root、测试反馈、需求覆盖、风险、trace 摘要、最终结果。  
-输出：`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md` 和 demo trace。  
-不变量：deliver phase 不修改业务代码；缺 KNOWLEDGE 或 DELIVERABLES 不得 completed。  
+输入：task root、测试反馈、需求覆盖、风险、trace 摘要、最终结果。
+输出：四个 Markdown 产物。
+不变量：deliver phase 不修改业务代码。
 错误处理：缺少测试或 review 时在 `risks[]` 中说明；核心需求未覆盖或测试未通过时 blocked / failed。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_code_change_requires_test_or_risk_note`
-  - 构造：有 changed files 但无测试报告。
-  - 断言：最终结果包含 risk，不直接 completed。
-- `test_deliver_requires_knowledge_file`
-  - 构造：deliver phase 缺 `KNOWLEDGE.md`。
-  - 断言：status 不为 completed。
-- `test_deliver_requires_deliverables_file`
-  - 构造：deliver phase 缺 `DELIVERABLES.md`。
-  - 断言：status 不为 completed。
-- `test_review_contains_requirement_coverage_table`
-  - 构造：需求覆盖输入。
-  - 断言：`REVIEW.md` 包含需求、证据、状态、风险列。
-- `test_knowledge_contains_decisions_failures_and_reusable_lessons`
-  - 构造：trace 与反馈项。
-  - 断言：`KNOWLEDGE.md` 包含课程知识点、设计决策、测试失败、错误修复、可复用模式。
-- `test_mock_demo_trace_contains_policy_denial_feedback_checkpoint_rollback`
-  - 构造：运行 MockLLM demo。
-  - 断言：trace 包含 `policy_checked` denied、`feedback_generated`、`checkpoint_created`、`rollback_completed`。
+* `test_write_test_report_contains_command_status_summary`
+* `test_code_change_requires_test_or_risk_note`
+* `test_review_contains_requirement_coverage_table`
+* `test_knowledge_contains_decisions_failures_and_reusable_lessons`
+* `test_deliver_requires_knowledge_file`
+* `test_deliver_requires_deliverables_file`
+* `test_deliver_with_failed_tests_returns_blocked`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- Markdown 产物使用稳定标题，便于课程评估和测试断言。
-- demo 使用 MockLLM action 序列，不接真实 LLM。
-- demo 中至少包含三条路径：policy denial、一次测试失败反馈、两次失败后 rollback。
-- `examples/broken_project/` 只作为 fixture，不作为 HanCode 自身实现。
+* Markdown 标题和表格结构稳定，便于课程评估和测试断言。
+* REVIEW 至少包含需求、证据、状态、风险列。
+* KNOWLEDGE 至少包含课程知识点、设计决策、测试失败、错误修复、可复用模式。
+* DELIVERABLES 至少包含交付物清单、测试状态、风险、最终状态。
 
-**验证步骤（可复制粘贴执行）**
+### 验证步骤
 
 ```powershell
-python -m pytest tests/test_delivery.py tests/test_mock_demo.py -v
-python scripts/demo_mock_loop.py
-python -m ruff check src/hancode/delivery.py scripts/demo_mock_loop.py tests/test_delivery.py tests/test_mock_demo.py
+python -m pytest tests/test_delivery.py -v
+python -m ruff check src/hancode/delivery.py tests/test_delivery.py
 python -m mypy src/hancode/delivery.py
 ```
 
-完成判定：MockLLM demo 可重复运行，trace 能证明主贡献回路真实发生，交付产物结构满足 SPEC 最低标准。
+### 完成判定
 
-**非目标 / 边界**
+* Markdown 产物标题和结构稳定，可被测试断言。
+* deliver phase 不修改业务代码。
+* 缺测试 / 缺 review 时写入 risks。
 
-- 不做 WebUI。
-- 不用真实 LLM 生成知识总结。
-- 不把 `.hancode/` 整体提交为分发产物。
+### 非目标 / 边界
+
+* 不让真实 LLM 写总结。
+* 不做漂亮模板渲染。
+* 不运行完整 demo。
 
 ---
 
-### 任务 10：实现 CLI、凭据边界、package build 与 CI
+## T23：MockLLM 机制 Demo
 
-| 元信息 | 值 |
-| --- | --- |
-| 状态 | [ ] 未开始 |
-| 依赖 | 任务 9 |
-| 可并行 | 不并行；最终交付任务 |
-| Worktree / PR | `codex/cli-package-ci` -> PR 创建后填写 |
-| 主贡献相关 | 否，交付与安全边界 |
-| Commit | 完成后填写实际 hash |
+| 元信息           | 值                 |
+| ------------- | ----------------- |
+| 状态            | [ ] 未开始           |
+| 依赖            | T21, T22          |
+| 可并行           | 不并行；集成演示任务        |
+| Worktree / PR | `codex/mock-demo` |
+| 主贡献相关         | 是，主贡献演示           |
+| Commit        | TODO              |
 
-**目标**  
-实现可运行 CLI、凭据状态边界、Python package build 和 CI unit-test job，使 HanCode 能在无真实凭据的 MockLLM 模式下完成演示与课程交付验证。
+### 目标
 
-**涉及文件**
+实现可重复运行的 MockLLM demo，证明 policy denial、checkpoint、测试失败反馈、retry、rollback、delivery artifacts 真实发生。
 
-- `src/hancode/cli.py`：新建，承载 Typer CLI。
-- `src/hancode/credentials.py`：新建，承载 `CredentialProvider`、fake keyring 测试边界。
-- `pyproject.toml`：修改，确认 console script、dev 依赖和 build 元数据。
-- `.gitlab-ci.yml`：新建，课程要求的 `unit-test` job。
-- `.github/workflows/ci.yml`：视仓库现状同步保留或调整。
-- `README.md`：补充分发、安装、运行、key 安全配置、已知限制。
-- `tests/test_cli.py`：新建，覆盖 CLI help、demo、exit code。
-- `tests/test_credentials.py`：新建，覆盖不打印 secret。
-- `tests/test_package_metadata.py`：新建，覆盖包元数据。
+### 涉及文件
 
-**SPEC 依据**
+* `examples/broken_project/`
+* `scripts/demo_mock_loop.py`
+* `tests/test_mock_demo.py`
 
-- SPEC §8 凭据与分发设计。
-- SPEC §9 技术选型。
-- SPEC §10.18 凭据与分发验收。
-- SPEC §10.21.6 CLI / TUI 命令行为。
-- 通用要求 §3.1 凭据安全、§3.2 分发、§4.8 测试、最终交付清单。
-- 系统架构 §5.1 Headless CLI、§18.5 CredentialProvider。
+### SPEC 依据
 
-**接口契约**
+* MockLLM 机制演示。
+* 主贡献机制必须在无网络、无真实 LLM、无真实凭据下可复现。
+* trace 必须证明控制流真实发生。
+
+### 接口契约
 
 ```python
-def credentials_status(provider: str) -> CredentialStatus: ...
-def credentials_set(provider: str, secret: str) -> None: ...
-def credentials_clear(provider: str) -> None: ...
+def run_mock_demo(project_root: Path) -> AgentRunResult: ...
+```
 
-# CLI commands
+输入：demo project root。
+输出：AgentRunResult、trace、TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES。
+不变量：demo 不依赖真实 LLM、网络或 API key。
+错误处理：demo 任一步失败时返回 blocked / failed，并保留 trace。
+
+### 预期失败测试
+
+* `test_mock_demo_runs_without_real_credentials`
+* `test_mock_demo_trace_contains_policy_denial`
+* `test_mock_demo_trace_contains_feedback_generated`
+* `test_mock_demo_trace_contains_checkpoint_created`
+* `test_mock_demo_trace_contains_rollback_completed`
+* `test_mock_demo_generates_knowledge_and_deliverables`
+
+### 实现要点
+
+* demo 使用固定 MockLLM action 序列。
+* demo 至少包含：
+
+  * 一次 protected file write 被拒绝。
+  * 一次合法 code write 前 checkpoint。
+  * 一次测试失败。
+  * 一次反馈分类。
+  * retry budget 消耗。
+  * rollback。
+  * deliver artifacts 生成。
+* `examples/broken_project/` 只作为 fixture，不作为 HanCode 自身实现。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_mock_demo.py -v
+python scripts/demo_mock_loop.py
+python -m ruff check scripts/demo_mock_loop.py tests/test_mock_demo.py
+python -m mypy src
+```
+
+### 完成判定
+
+* `python scripts/demo_mock_loop.py` 可重复运行。
+* demo 不依赖真实 LLM、网络或 API key。
+* trace 能证明 policy、feedback、checkpoint、rollback、deliver 发生过。
+
+### 非目标 / 边界
+
+* 不做真实学生项目完整实现。
+* 不做 Docker demo image。
+* 不接真实 provider。
+
+---
+
+# M7：CLI / 凭据 / CI
+
+---
+
+## T24：CLI 最小入口
+
+| 元信息           | 值                                 |
+| ------------- | --------------------------------- |
+| 状态            | [ ] 未开始                           |
+| 依赖            | T2, T23                           |
+| 可并行           | 可先实现 help / init，demo 命令等 T23 后接入 |
+| Worktree / PR | `codex/cli-minimal`               |
+| 主贡献相关         | 否，交付入口                            |
+| Commit        | TODO                              |
+
+### 目标
+
+实现 Typer CLI 的最小命令结构，使用户可以初始化 workspace、运行 mock demo、查看帮助和导出产物。
+
+### 涉及文件
+
+* `src/hancode/cli.py`
+* `tests/test_cli.py`
+
+### SPEC 依据
+
+* CLI entry point。
+* Headless CLI 是 Demo、测试和课程评估入口。
+* CLI 不应绕过 Harness Core。
+
+### CLI 命令契约
+
+```text
+hancode --help
 hancode init
-hancode run "<goal>" --provider mock
 hancode demo --provider mock
+hancode run "<goal>" --provider mock
 hancode auth status --provider openai
-hancode auth login --provider openai
-hancode auth clear --provider openai
 hancode export --task task-001 --out deliverables/
 ```
 
-输入：CLI 参数、隐藏输入凭据、workspace 路径。  
-输出：稳定 exit code、脱敏凭据状态、MockLLM demo 结果、导出产物。  
-不变量：CLI 不通过命令行参数接收明文 key；`auth status` 只显示 configured/source/masked_id。  
+输入：CLI 参数、workspace 路径、provider 参数。
+输出：稳定 exit code、结构化文本输出、必要产物。
+不变量：CLI 只调用 core，不绕过 policy、workspace、demo runner。
 错误处理：provider 未知 exit code 1；配置错误 exit code 2；trace/checkpoint 不可恢复错误 exit code 3。
 
-**预期失败测试（TDD 红阶段，先写这些，先跑出红）**
+### 预期失败测试
 
-- `test_cli_help_displays_commands`
-  - 构造：`CliRunner().invoke(app, ["--help"])`。
-  - 断言：输出含 `demo`、`run`、`auth`、`export`。
-- `test_cli_demo_runs_with_mock_provider_without_credentials`
-  - 构造：运行 `demo --provider mock`。
-  - 断言：exit code 0，输出含 completed / blocked 明确状态，不要求真实 key。
-- `test_auth_status_does_not_print_secret`
-  - 构造：fake credential provider 返回 fake secret。
-  - 断言：输出不含 secret 原文。
-- `test_auth_login_does_not_accept_key_argument`
-  - 构造：尝试通过 CLI 参数传 key。
-  - 断言：命令拒绝或 help 中不存在 key 参数。
-- `test_python_package_metadata_has_console_script`
-  - 构造：读取 `pyproject.toml`。
-  - 断言：`hancode = "hancode.cli:app"`。
-- `test_ci_contains_unit_test_job`
-  - 构造：读取 `.gitlab-ci.yml`。
-  - 断言：存在 job 名 `unit-test`，命令含 `python -m pytest`。
+* `test_cli_help_displays_commands`
+* `test_cli_init_creates_workspace`
+* `test_cli_demo_runs_with_mock_provider_without_credentials`
+* `test_cli_unknown_provider_returns_clear_error`
+* `test_cli_exit_code_for_config_error_is_stable`
 
-**实现要点（绿阶段最小实现的方向，非逐行）**
+### 实现要点
 
-- Typer CLI 只调用 TaskController / demo runner，不绕过 core。
-- `CredentialProvider.get_secret()` 只允许 provider adapter 调用；CLI/TUI 使用 `status()`。
-- README 写清 wheel 安装、MockLLM demo、真实 provider 凭据配置、`.env` 明文风险和已知限制。
-- CI 默认只运行 MockLLM 核心测试，不依赖真实 LLM、网络或 secret。
+* 使用 Typer。
+* `demo --provider mock` 不要求真实凭据。
+* CLI 输出状态必须明确：completed / blocked / failed。
+* 不在命令行参数中接收明文 key。
 
-**验证步骤（可复制粘贴执行）**
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_cli.py -v
+python -m ruff check src/hancode/cli.py tests/test_cli.py
+python -m mypy src/hancode/cli.py
+hancode --help
+```
+
+### 完成判定
+
+* CLI help 可用。
+* init 能创建 workspace。
+* mock demo 可通过 CLI 运行。
+
+### 非目标 / 边界
+
+* 不实现复杂 TUI。
+* 不实现真实 provider smoke test。
+* 不实现 Docker。
+
+---
+
+## T25：CredentialProvider
+
+| 元信息           | 值                   |
+| ------------- | ------------------- |
+| 状态            | [ ] 未开始             |
+| 依赖            | T3, T24             |
+| 可并行           | 可与 T26 部分并行         |
+| Worktree / PR | `codex/credentials` |
+| 主贡献相关         | 否，安全边界              |
+| Commit        | TODO                |
+
+### 目标
+
+实现凭据状态、录入、清除的安全边界，保证 CLI、trace、日志、测试快照不打印真实 secret。
+
+### 涉及文件
+
+* `src/hancode/credentials.py`
+* `tests/test_credentials.py`
+
+### SPEC 依据
+
+* 凭据与分发设计。
+* 凭据状态检查只能显示是否存在，不得回显明文。
+* 优先使用 keyring，`.env` 仅作为本地开发 fallback。
+
+### 接口契约
+
+```python
+class CredentialStatus: ...
+
+def credentials_status(provider: str) -> CredentialStatus: ...
+def credentials_set(provider: str, secret: str) -> None: ...
+def credentials_clear(provider: str) -> None: ...
+```
+
+输入：provider、隐藏输入 secret。
+输出：CredentialStatus 或操作结果。
+不变量：CLI 不通过命令行参数接收明文 key；status 只显示 configured/source/masked_id。
+错误处理：unknown provider 返回结构化错误。
+
+### 预期失败测试
+
+* `test_auth_status_does_not_print_secret`
+* `test_credential_status_reports_configured_without_value`
+* `test_credentials_clear_removes_secret`
+* `test_auth_login_does_not_accept_key_argument`
+* `test_fake_credential_provider_for_tests`
+
+### 实现要点
+
+* 使用 fake credential provider 完成单元测试。
+* keyring 集成可做最小封装。
+* `.env` fallback 明确标注为本地开发后备。
+* 所有错误输出脱敏。
+
+### 验证步骤
+
+```powershell
+python -m pytest tests/test_credentials.py -v
+python -m ruff check src/hancode/credentials.py tests/test_credentials.py
+python -m mypy src/hancode/credentials.py
+```
+
+### 完成判定
+
+* CLI 不输出 secret 明文。
+* 测试只用 fake secret。
+* 凭据状态可以显示来源和是否配置。
+
+### 非目标 / 边界
+
+* 不在 CI 中调用真实 provider。
+* 不把 key 写入 config、trace、checkpoint。
+* 不实现企业级 secret manager。
+
+---
+
+## T26：Package Build 与 CI
+
+| 元信息           | 值                  |
+| ------------- | ------------------ |
+| 状态            | [ ] 未开始            |
+| 依赖            | T24, T25           |
+| 可并行           | 不并行；交付验证任务         |
+| Worktree / PR | `codex/package-ci` |
+| 主贡献相关         | 否，交付质量保障           |
+| Commit        | TODO               |
+
+### 目标
+
+完成 Python package build、测试命令和 CI job，使项目可在干净环境中安装、测试和运行 MockLLM demo。
+
+### 涉及文件
+
+* `pyproject.toml`
+* `Makefile`
+* `.github/workflows/ci.yml`
+* `.gitlab-ci.yml`
+* `tests/test_package_metadata.py`
+* `tests/test_ci_config.py`
+
+### SPEC 依据
+
+* 分发设计。
+* CI 应运行测试、lint、type check。
+* CI 不依赖真实 LLM、网络或 secret。
+
+### 接口契约
+
+```text
+python -m pytest
+python -m ruff check src tests scripts
+python -m mypy src
+python -m build
+hancode --help
+hancode demo --provider mock
+```
+
+输入：干净 checkout、Python 3.11 环境。
+输出：测试、lint、type check、package build 通过。
+不变量：CI 不要求真实 API key。
+错误处理：CI 失败必须记录原因，不得绕过。
+
+### 预期失败测试
+
+* `test_python_package_metadata_has_console_script`
+* `test_make_check_contains_lint_typecheck_test`
+* `test_github_ci_runs_pytest_ruff_mypy`
+* `test_gitlab_ci_contains_unit_test_job`
+* `test_ci_does_not_require_real_secret`
+
+### 实现要点
+
+* `pyproject.toml` 保留 console script：
+
+  * `hancode = "hancode.cli:app"`
+* GitHub Actions 可作为仓库 CI。
+* 若课程要求 GitLab CI，补 `.gitlab-ci.yml` 的 `unit-test` job。
+* `python -m build` 需要补充 build 依赖。
+
+### 验证步骤
 
 ```powershell
 python -m pytest
@@ -1087,56 +2332,330 @@ hancode --help
 hancode demo --provider mock
 ```
 
-完成判定：测试、lint、type check、package build、CLI help、MockLLM demo 全绿；CI 文件包含 `unit-test` job。
+### 完成判定
 
-**非目标 / 边界**
+* 测试、lint、type check、package build 全绿。
+* CI 文件包含 unit-test job。
+* CI 不依赖真实 secret。
 
-- Docker demo image 属 post-MVP。
-- 不实现真实 provider smoke test 作为 CI 必需项。
-- 不实现复杂 WebUI；若课程最终强制线上 WebUI，需要在 SPEC_PROCESS 中记录范围变更并单独补计划。
+### 非目标 / 边界
 
-## 需求→任务追溯
+* Docker image 属 post-MVP。
+* 不做真实 LLM smoke test。
+* 不部署线上服务。
 
-| SPEC 锚点 | 任务 | 状态 |
-| --- | --- | --- |
-| FR-1 AgentLoop 主循环 | T4, T8 | [ ] |
-| FR-2 LLM 抽象与 MockLLM | T4, T9 | [ ] |
-| FR-3 Action 解析与校验 | T4, T5 | [ ] |
-| FR-4 ToolRegistry 与工具分发 | T5 | [ ] |
-| FR-5 ToolPolicy 治理护栏 | T5 | [ ] |
-| FR-6 ContextBuilder 与记忆选择 | T7 | [ ] |
-| FR-7 反馈回灌机制 | T8 | [ ] |
-| FR-8 TraceLogger | T6 | [ ] |
-| FR-9 配置加载与运行约束 | T2, T10 | [ ] |
-| FR-10 Project Workspace 与 Task Workspace | T1 | [ ] |
-| FR-11 课程项目 Phase Gate | T3 | [ ] |
-| FR-12 课程项目上下文构造 | T7 | [ ] |
-| FR-13 课程文件保护策略 | T5 | [ ] |
-| FR-14 Checkpoint 与 Rollback | T6, T8 | [ ] |
-| FR-15 测试报告与审查记录 | T8, T9 | [ ] |
-| FR-16 Knowledge Delivery | T9 | [ ] |
-| §8 凭据与分发设计 | T10 | [ ] |
-| §10.21 可测试性约定 | T5, T6, T7, T8, T9, T10 | [ ] |
-| §11.3.1 测试失败分类 | T8 | [ ] |
-| §11.4 危险动作与治理护栏 | T5 | [ ] |
-| §11.5 记忆与上下文机制 | T1, T7 | [ ] |
-| §11.6 主贡献维度 | T6, T8, T9 | [ ] |
-| §11.8 MockLLM 机制演示 | T9 | [ ] |
+---
 
-## 冷启动验证安排
+## T27：README 运行与分发文档
 
-冷启动验证必须在实现前完成：
+| 元信息           | 值                            |
+| ------------- | ---------------------------- |
+| 状态            | [ ] 未开始                      |
+| 依赖            | T23, T24, T25, T26           |
+| 可并行           | 最终文档任务                       |
+| Worktree / PR | `codex/readme-delivery-docs` |
+| 主贡献相关         | 否，最终交付文档                     |
+| Commit        | TODO                         |
+
+### 目标
+
+更新 README，使新用户能在干净环境中安装、运行 mock demo、理解凭据安全和已知限制。
+
+### 涉及文件
+
+* `README.md`
+* `docs/AGENT_LOG.md`
+* `docs/SPEC_PROCESS.md`
+
+### SPEC 依据
+
+* 最终 README 必须包含安装、运行、凭据设置、分发方式、已知限制。
+* 最终交付需要过程证据和验证命令。
+* 不得承诺未实现能力。
+
+### 文档内容要求
+
+README 至少包含：
+
+* 项目定位。
+* Harness 核心机制。
+* 安装方式。
+* `hancode --help`。
+* `hancode demo --provider mock`。
+* 凭据设置方式。
+* `.env` 明文风险。
+* MockLLM 与真实 provider 区别。
+* 已知限制。
+* 验证命令。
+* 不包含真实 key。
+
+### 预期检查
+
+* `test_readme_contains_mock_demo_command`
+* `test_readme_mentions_no_real_credentials`
+* `test_readme_documents_known_limitations`
+* `test_readme_documents_verification_commands`
+
+### 实现要点
+
+* README 不写“未来会支持”式不确定承诺。
+* 所有命令必须与 CLI 实际命令一致。
+* AGENT_LOG 记录实现过程、验证命令和人工干预。
+* SPEC_PROCESS 记录冷启动验证结果和修订。
+
+### 验证步骤
+
+```powershell
+Get-Content -Raw -Encoding UTF8 README.md
+Select-String -Path README.md -Pattern 'hancode demo --provider mock','凭据','已知限制','python -m pytest'
+python -m pytest
+git status --short
+```
+
+### 完成判定
+
+* README 能让陌生用户运行 mock demo。
+* README 不包含真实 key。
+* 文档与当前 CLI 命令一致。
+* AGENT_LOG / SPEC_PROCESS 已补充最终过程证据。
+
+### 非目标 / 边界
+
+* 不写 REFLECTION 正文。
+* 不承诺未实现能力。
+* 不补 Docker。
+
+---
+
+# 8. 需求→任务追溯
+
+| SPEC 锚点                                  | 对应任务                         | 状态  |
+| ---------------------------------------- | ---------------------------- | --- |
+| FR-1 AgentLoop 主循环                       | T10, T21                     | [ ] |
+| FR-2 LLM 抽象与 MockLLM                     | T9, T23                      | [ ] |
+| FR-3 Action 解析与校验                        | T7, T8                       | [ ] |
+| FR-4 ToolRegistry 与工具分发                  | T11, T12                     | [ ] |
+| FR-5 ToolPolicy 治理护栏                     | T13, T14, T15                | [ ] |
+| FR-6 ContextBuilder 与记忆选择                | T19                          | [ ] |
+| FR-7 反馈回灌机制                              | T20, T21                     | [ ] |
+| FR-8 TraceLogger                         | T16                          | [ ] |
+| FR-9 配置加载与运行约束                           | T3, T26                      | [ ] |
+| FR-10 Project Workspace 与 Task Workspace | T2                           | [ ] |
+| FR-11 课程项目 Phase Gate                    | T5, T6                       | [ ] |
+| FR-12 课程项目上下文构造                          | T19                          | [ ] |
+| FR-13 课程文件保护策略                           | T13, T14, T15                | [ ] |
+| FR-14 Checkpoint 与 Rollback              | T17, T18, T21                | [ ] |
+| FR-15 测试报告与审查记录                          | T20, T22                     | [ ] |
+| FR-16 Knowledge Delivery                 | T22, T23                     | [ ] |
+| 凭据与分发设计                                  | T25, T26, T27                | [ ] |
+| 可测试性约定                                   | T1-T27                       | [ ] |
+| 测试失败分类                                   | T20                          | [ ] |
+| 危险动作与治理护栏                                | T13, T14, T15                | [ ] |
+| 记忆与上下文机制                                 | T2, T19                      | [ ] |
+| 主贡献维度                                    | T16, T17, T18, T20, T21, T23 | [ ] |
+| MockLLM 机制演示                             | T9, T21, T23                 | [ ] |
+
+---
+
+# 9. 冷启动验证安排
+
+冷启动验证必须在实现前完成。
+
+## 9.1 验证规则
 
 1. 使用不同于主开发智能体的第二个 agent。
 2. 新 session，不导入当前对话历史或 memory。
-3. 只提供 `docs/SPEC.md` 与 `docs/PLAN.md`。
-4. 要求第二个 agent 选择 T1 与 T5，或 T3 与 T8 中的 1-2 个任务尝试执行。
-5. 要求第二个 agent 遇到不确定处暂停询问，不凭猜测继续。
-6. 将暂停点、误解、SPEC / PLAN 缺口和修订前后差异记录到 `docs/SPEC_PROCESS.md`。
+3. 只提供：
 
-## 自检结果
+   * `docs/SPEC.md`
+   * `docs/PLAN.md`
+4. 不提供：
 
-- Spec coverage：FR-1 至 FR-16 均已映射到任务。
-- Placeholder scan：任务卡保留用于执行期填写的 PR / Commit 字段；这些字段是课程过程追踪字段，不是实现细节占位。
-- Type consistency：`TaskState`、`HanCodeConfig`、`Phase`、`Action`、`PolicyDecision`、`ToolResult`、`FeedbackReport`、`TraceEvent`、`CheckpointManifest` 在任务间命名保持一致。
-- Scope check：MVP 聚焦自实现 harness core、MockLLM deterministic tests、主贡献回路和 package/CI；Docker、复杂 TUI、WebUI、多语言扩展保持 post-MVP 或单独补计划。
+   * 之前聊天记录。
+   * 隐藏上下文。
+   * 口头解释。
+   * 主 agent 的记忆。
+5. 让第二个 agent 尝试 1-2 个小任务，优先选择：
+
+   * T1 共享模型与错误类型。
+   * T2 Workspace 初始化。
+   * T5 PhaseGate。
+6. 要求第二个 agent 在不确定时暂停提问，不要猜测。
+7. 将结果记录到 `docs/SPEC_PROCESS.md`。
+
+## 9.2 需要记录的内容
+
+* 第二个 agent 名称。
+* 尝试的任务。
+* 提供的上下文。
+* agent 暂停或提问的位置。
+* agent 误解之处。
+* 问题属于 SPEC 不清、PLAN 不清，还是 agent 执行错误。
+* 根据发现修订了哪些 SPEC / PLAN 内容。
+* 关键修订前后差异。
+
+## 9.3 冷启动通过标准
+
+冷启动验证通过必须满足：
+
+* 第二个 agent 能仅凭 SPEC + PLAN 理解任务边界。
+* 第二个 agent 能写出合理的红阶段测试计划。
+* 第二个 agent 没有误以为可以跳过 phase gate、MockLLM 或 TDD。
+* 第二个 agent 没有尝试使用真实 LLM、真实 key 或外部 agent framework 作为 harness kernel。
+* 暴露的问题已记录并修订。
+
+---
+
+# 10. 执行与提交规则
+
+每个实现任务完成时，必须更新本文件对应任务卡：
+
+```text
+状态：从 [ ] 改为 [x]
+Commit：填写实际 commit hash
+验证：填写实际运行过的命令和结果
+备注：记录未完成风险或后续任务
+```
+
+每个任务的提交说明建议格式：
+
+```text
+T<编号>: <任务名称>
+
+- Added failing tests for ...
+- Implemented ...
+- Verified with ...
+```
+
+每个任务完成后必须在 `docs/AGENT_LOG.md` 记录：
+
+* 时间戳。
+* 任务 ID。
+* 使用的 agent / subagent。
+* 使用的工作流或 skill。
+* 关键提示词 / 上下文。
+* 测试红阶段证据。
+* 绿阶段实现摘要。
+* 验证命令。
+* 提交 hash。
+* 人工干预。
+* 经验教训。
+
+---
+
+# 11. 总体验证命令
+
+MVP 完成后，至少运行：
+
+```powershell
+python -m pytest
+python -m ruff check src tests scripts
+python -m mypy src
+python -m build
+hancode --help
+hancode demo --provider mock
+```
+
+若存在 Makefile：
+
+```powershell
+make check
+```
+
+若 CI 已配置：
+
+```text
+推送后检查 GitHub Actions / GitLab CI unit-test job 是否通过。
+```
+
+---
+
+# 12. 当前风险与控制措施
+
+| 风险                               | 影响                    | 控制措施                                 |
+| -------------------------------- | --------------------- | ------------------------------------ |
+| 任务粒度再次膨胀                         | 子 agent 一次修改太多模块，难以审查 | 保持每个任务只做一个机制                         |
+| AgentLoop 过早变复杂                  | 主循环难以测试和定位问题          | 先做 T10 最小 loop，再由 T21 集成反馈和 rollback |
+| ToolPolicy 与 PathClassifier 边界混乱 | 安全策略重复或遗漏             | T13 只分类路径，T14/T15 才做策略判定             |
+| Checkpoint 与 Rollback 混在一起       | 恢复机制难测试               | T17 创建 checkpoint，T18 单独 rollback    |
+| Delivery 与 Demo 混在一起             | 交付产物结构不稳定             | T22 先做产物生成，T23 再集成 demo              |
+| CLI / 凭据 / CI 变成大杂烩              | 最终交付任务失控              | T24、T25、T26、T27 分开                   |
+| 使用真实 LLM 证明机制                    | 不满足 Harness 可测试性      | 全部核心测试使用 MockLLM / stub              |
+| 凭据泄露                             | 安全事故和评分风险             | T25 专门验证不打印 secret                   |
+| 文档承诺超过实现                         | 交付不一致                 | README 只写已实现能力和明确限制                  |
+
+---
+
+# 13. 实现顺序建议
+
+推荐按以下顺序执行：
+
+```text
+T0
+T1 -> T2 -> T3 -> T4 -> T5 -> T6
+T7 -> T8 -> T9 -> T10
+T11 -> T12 -> T13 -> T14 -> T15
+T16 -> T17 -> T18
+T19 -> T20 -> T21
+T22 -> T23
+T24 -> T25 -> T26 -> T27
+```
+
+最小可运行骨架优先顺序：
+
+```text
+T1 models/errors
+T2 workspace
+T3 config
+T4 state
+T5 phase gate
+T6 router
+```
+
+主贡献闭环优先顺序：
+
+```text
+T16 trace
+T17 checkpoint
+T18 rollback
+T20 feedback
+T21 feedback loop integration
+T23 mock demo
+```
+
+最终交付优先顺序：
+
+```text
+T22 delivery artifacts
+T24 CLI
+T25 credentials
+T26 package / CI
+T27 README
+```
+
+---
+
+# 14. 完成定义
+
+HanCode MVP 完成必须同时满足：
+
+* 所有 T1-T27 状态为 [x]。
+* 所有任务都有 commit hash 和验证记录。
+* `python -m pytest` 通过。
+* `python -m ruff check src tests scripts` 通过。
+* `python -m mypy src` 通过。
+* `python -m build` 通过。
+* `hancode --help` 可运行。
+* `hancode demo --provider mock` 可运行。
+* MockLLM demo trace 能证明：
+
+  * policy denial。
+  * feedback generated。
+  * checkpoint created。
+  * retry budget consumed。
+  * rollback completed。
+  * delivery artifacts generated。
+* README 说明安装、运行、凭据设置、MockLLM demo 和已知限制。
+* AGENT_LOG 记录主要 agentic development 过程。
+* SPEC_PROCESS 记录冷启动验证和修订。
+* 仓库中不包含真实凭据。

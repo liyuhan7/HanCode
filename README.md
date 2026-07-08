@@ -86,7 +86,7 @@ HanCode 采用课程项目导向的轻量本地目录：
           files/
 ```
 
-`.hancode/` 是 HanCode 的运行时数据示例和模板，用来展示 Project Workspace、Task
+`examples/.hancode-template/` 是 HanCode 的运行时数据示例和模板，用来展示 Project Workspace、Task
 Workspace、Trace、Checkpoint 和知识沉淀的边界。真实凭据不得写入该目录。
 
 ## Demo 任务
@@ -117,10 +117,10 @@ spec -> plan -> code -> test -> review -> deliver
 
 在以下条件满足之前，不得开始完整实现：
 
-1. `SPEC.md` 完成。
-2. `PLAN.md` 完成。
+1. `docs/SPEC.md` 完成。
+2. `docs/PLAN.md` 完成。
 3. 使用不同的编码智能体完成冷启动验证。
-4. 规范/计划的修订记录在 `SPEC_PROCESS.md` 中。
+4. 规范/计划的修订记录在 `docs/SPEC_PROCESS.md` 中。
 
 ## 技术栈
 
@@ -131,7 +131,7 @@ spec -> plan -> code -> test -> review -> deliver
 - pydantic
 - typer
 - keyring
-- Docker
+- Docker（可选 MockLLM demo 环境）
 
 ## 安全性
 
@@ -142,10 +142,11 @@ HanCode 使用 `keyring` 作为首选凭据存储方式，`.env` 只作为本地
 
 ## 分发方式
 
-分发格式为 Docker。最终 README 将包含：
+MVP 分发格式为 Python package（wheel / sdist）。Docker 仅作为可选 MockLLM demo 环境，不作为核心 Harness 机制或必需分发路径。最终 README 将包含：
 
-- 构建命令
-- 运行命令
+- 安装命令
+- `hancode --help`
+- `hancode demo --provider mock`
 - 凭据设置
 - 已知限制
 

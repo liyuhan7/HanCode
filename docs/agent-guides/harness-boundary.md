@@ -133,7 +133,7 @@ Adding an action requires:
 2. adding parser tests
 3. adding guardrail behavior if the action can affect the outside world
 4. adding tool-dispatch tests
-5. documenting the action in `SPEC.md`
+5. documenting the action in `docs/SPEC.md`
 
 ## Tool Dispatch
 

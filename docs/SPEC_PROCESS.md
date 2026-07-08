@@ -4,16 +4,15 @@
 
 ## 1. 头脑风暴概述
 
-头脑风暴于 2026-07-06 至 2026-07-07 期间进行，使用的主开发智能体为 OpenAI Codex，触发的主要 Superpowers 技能为 `using-superpowers` 和 `brainstorming`。
+头脑风暴于 2026-07-06 至 2026-07-08 期间进行，使用的主开发智能体为 OpenAI Codex，触发的主要 Superpowers 技能为 `using-superpowers`、`brainstorming` 和 `writing-plans`。整个过程先从模糊的 Coding Agent Harness 想法出发，再逐步收敛到课程项目场景、主贡献机制、SPEC 抽象边界、系统架构一致性和可冷启动执行的 PLAN 格式。
 
-初始项目想法是构建一个轻量级 Coding Agent Harness，覆盖 agent loop、工具分发、治理护栏、反馈、记忆、配置、凭据管理和 Docker 分发。早期方向曾考虑把“反馈闭环深度”作为主要贡献，包括确定性反馈传感器、失败分类和 MockLLM 多轮自我修正。
+初始项目想法是构建一个轻量级 Coding Agent Harness，覆盖 agent loop、工具分发、治理护栏、反馈、记忆、配置、凭据管理和分发。早期方向曾在“反馈闭环深度”和“workspace-scoped memory”之间摆动：前者更贴近 A 类 Harness 推荐的机制深挖方向，后者更贴近用户对 workspace / task 隔离、上下文利用和 checkpoint / rollback 的兴趣。经过多轮评审后，最终结论是：HanCode 的主体仍是 coding agent harness，课程学习是差异化场景，记忆是支撑维度而不是主贡献。
 
-随着讨论推进，项目方向发生了两次重要收敛：
+最终沉淀出的项目定位是：HanCode 是面向学生课程项目的轻量级 Coding Agent Harness，目标不是让 AI 更快替学生完成作业，而是让 AI 辅助编码过程中的需求理解、计划、代码修改、测试失败、错误修复、审查和交付复盘可控、可追踪、可回退、可复盘。其主贡献维度收敛为 `deterministic feedback loop + reversible coding state`：代码修改前创建 checkpoint，修改后运行测试获得客观信号，失败由 `FeedbackBuilder` 确定性分类并回灌，重试预算耗尽时强制 rollback。
 
-1. 用户提出更关注 workspace / workplace 隔离、上下文充分利用，以及每轮 loop 修改后的 checkpoint / rollback。
-2. 用户进一步明确课程项目场景中的真实痛点不是“让 AI 更快完成作业”，而是“学生用 AI 做完作业但知识不沉淀”。
+围绕这个定位，SPEC 最终承担需求契约角色：说明问题陈述、用户故事、功能规约、非功能需求、架构边界、数据模型、凭据与分发、验收标准、领域与机制设计、风险与未决问题。`docs/系统架构.md` 承接实现组织细节，例如模块接口、调用链、TraceEvent、PathClassifier、CredentialProvider、FeedbackReport 和测试命名。`docs/PLAN.md` 则被设计为冷启动可执行的实现合同，使用任务依赖图、里程碑、统一任务卡片和需求到任务追溯表，帮助陌生 agent 仅凭 SPEC + PLAN 开始执行 TDD 任务。
 
-因此，当前 SPEC 的问题陈述收敛为：HanCode 是面向学生课程项目的轻量级 Coding Agent Harness，用 Workspace 分离、Phase Gate、Tool Policy、Trace Logging 和 Checkpoint Rollback 约束 AI 辅助开发过程，使需求理解、计划、编码、测试、审查和 deliver 阶段的知识沉淀可复盘、可验证。
+当前仍未完成正式冷启动验证。下一步必须使用不同类型的第二个 agent，在不提供本轮对话历史或隐藏上下文的前提下，仅提供 `docs/SPEC.md` 和 `docs/PLAN.md`，尝试 1-2 个任务，并把暴露出的 SPEC / PLAN 缺口记录回本文件。
 
 ## 2. 关键迭代 1
 
@@ -110,11 +109,16 @@ SPEC 第 1 节被重新写入为：
 
 ### 尝试的任务
 
-尚未进行。计划在 `SPEC.md` 与 `PLAN.md` 定稿后，让第二个智能体从 `PLAN.md` 中选择 1-2 个小任务尝试实现。
+尚未进行。计划在 `docs/SPEC.md` 与 `docs/PLAN.md` 定稿后，让第二个智能体从 `docs/PLAN.md` 中选择 1-2 个小任务尝试实现。优先选择能暴露计划可读性和机制边界的任务组合，例如：
+
+- T1 共享模型与错误类型 + T2 Workspace 初始化。
+- T5 Phase 枚举与 PhaseGate + T13 PathClassifier。
+
+这些任务覆盖共享类型、workspace、phase gate 和路径治理边界，能较快暴露陌生 agent 是否能仅凭 SPEC / PLAN 理解实现边界。若第二个 agent 时间充足，再补充 T20 FeedbackBuilder 失败分类，检查主贡献回路的任务卡是否足够独立。
 
 ### 提供的上下文
 
-尚未进行。届时只能提供 `SPEC.md` 和 `PLAN.md`。
+尚未进行。届时只能提供 `docs/SPEC.md` 和 `docs/PLAN.md`，不得提供当前对话历史、隐藏 memory、口头解释或系统架构以外的临时说明。若第二个 agent 需要系统架构细节，应通过 PLAN 中的 `SPEC 依据` 字段定位到 `docs/系统架构.md` 的具体章节，而不是由主开发者现场解释。
 
 ### 暂停或提问的地方
 
@@ -126,7 +130,7 @@ SPEC 第 1 节被重新写入为：
 
 ### SPEC / PLAN 修订
 
-尚未进行。冷启动验证后，需要记录第二个智能体暴露的 SPEC / PLAN 缺陷，以及关键修订前后差异。
+尚未进行。冷启动验证后，需要记录第二个智能体暴露的 SPEC / PLAN 缺陷，以及关键修订前后差异。若问题来自 PLAN 表达不清，应优先修订任务卡的 `接口契约`、`预期失败测试`、`验证步骤` 或 `非目标 / 边界` 字段；若问题来自需求契约不清，再回到 `docs/SPEC.md` 修订。
 
 ## 8. 对头脑风暴技能的反思
 
@@ -291,3 +295,81 @@ SPEC 新增测试契约，覆盖可写 Action 判定、ContextBuilder include / 
 ### 参考项目说明
 
 参考的 workspace-first 记忆思路仅作为设计比对，未引入其检索引擎或任何包依赖；HanCode 的 workspace 分层为自实现的文件系统结构。
+
+## 16. 关键迭代 11
+
+### 智能体问题 / 建议
+
+在 SPEC、系统架构和主贡献维度逐步稳定后，用户进一步指出原 `PLAN.md` 仍然过粗：它列出了任务名称、目标和测试名，但对陌生 agent 来说缺少统一定位入口、任务依赖、并行关系、里程碑验收和需求追溯。这样的 PLAN 不利于冷启动验证，也不利于后续 subagent-driven 开发时把每个任务独立交给新鲜 agent。
+
+智能体据此建议按 `superpowers:writing-plans` 的精神增强 PLAN：任务必须能被一个没有对话历史的工程 agent 直接执行，包含清晰文件边界、接口契约、红阶段测试、绿阶段实现方向、可复制验证命令和非目标边界。
+
+### 我的决策
+
+用户给出并确认了 HanCode 的最终 PLAN 格式，不采用另建 `docs/superpowers/plans/...` 的默认路径，而是直接维护课程要求指定的 `docs/PLAN.md`。最终结构确定为：
+
+- 保留开头的状态 / 定位段、全局规则、MVP 与 post-MVP 边界。
+- 新增 `任务依赖图`，用纯文本树表达串行、并行和主贡献核心任务。
+- 新增 `里程碑`，用 M1 / M2 / M3 对齐骨架、主贡献闭环和最终交付。
+- 主体使用统一 `任务卡片` 模板。
+- 末尾新增 `需求→任务追溯表`，把 SPEC 的 FR、验收和主贡献章节映射到任务。
+
+任务卡片字段固定为：
+
+- 元信息：状态、依赖、可并行、Worktree / PR、主贡献相关、Commit。
+- 目标：一句话说明可验收结果。
+- 涉及文件：列出 source、test、docs 或 scripts 的职责。
+- SPEC 依据：指向 SPEC 章节、验收章节和系统架构参考。
+- 接口契约：写清公开函数 / 类型边界、输入、输出、不变量和错误处理。
+- 预期失败测试：列出 TDD 红阶段必须先写并先跑失败的测试。
+- 实现要点：说明最小绿阶段方向，但不展开成逐行实现。
+- 验证步骤：给出可复制命令。
+- 非目标 / 边界：防止陌生 agent 越界扩张。
+
+### 导致的变更
+
+后续 `docs/PLAN.md` 应从“任务清单”升级为“冷启动可执行的实现合同”。这个变更不改变 SPEC 的需求内容，而是改变 PLAN 的承载方式：
+
+- `docs/SPEC.md` 继续作为需求契约，回答要做什么、为什么做、完成标准是什么。
+- `docs/系统架构.md` 继续作为架构展开，承接数据结构、模块边界、调用链和测试命名细节。
+- `docs/PLAN.md` 负责把 SPEC / 架构转译成能被 subagent 独立执行的任务卡。
+
+PLAN 的任务依赖最终收敛为 T1-T27 的细粒度任务链：
+
+- M1 基础骨架：T1 共享模型与错误类型 → T2 Workspace 初始化 → T3 ConfigLoader / T4 StateStore → T5 PhaseGate → T6 WorkspaceRouter。
+- M2/M3 Action 与 Governance：T7-T10 完成 Action / MockLLM / AgentLoop 基础，T11-T15 完成 ToolRegistry、FileTools、PathClassifier、ToolPolicy 和课程文件保护。
+- M4/M5 主贡献回路：T16-T18 完成 Trace / Checkpoint / Rollback，T19-T21 完成 ContextBuilder、FeedbackBuilder 和 feedback / retry / rollback 集成。
+- M6/M7 集成交付：T22-T23 完成交付产物和 MockLLM 机制 demo，T24-T27 完成 CLI、凭据、package / CI 和 README。
+
+其中 FeedbackBuilder 失败分类、Trace / Checkpoint / Rollback 和 MockLLM demo 是主贡献回路的核心验证任务；Workspace memory 仍作为支撑维度实现最低可运行版本，不扩展成向量检索或复杂记忆系统。
+
+## 17. 关键迭代 12
+
+### 智能体问题 / 建议
+
+在准备执行 `docs/PLAN.md` 的前置任务时，智能体发现当前计划已经扩展到 T1-T27，但部分文档仍保留旧版任务编号、根目录路径或 Docker 作为 MVP 分发格式的说法。这会影响冷启动验证：第二个 agent 可能找不到真实文件路径，或按旧任务编号选择不合适的验证任务。
+
+### 我的决策
+
+执行 T0 只做规划与过程文档一致性修订，不进入 `src/hancode/` 实现。仓库级课程交付物统一写作 `docs/SPEC.md`、`docs/PLAN.md`、`docs/SPEC_PROCESS.md` 和 `docs/AGENT_LOG.md`；`.hancode/tasks/.../SPEC.md` 这类运行时任务产物仍保留无 `docs/` 前缀。
+
+### 导致的变更
+
+- `docs/PLAN.md` 中 T0 的状态、路径、验证命令和冷启动说明对齐当前仓库结构。
+- 冷启动候选任务改为当前任务编号下的 T1/T2/T5/T13，并把 T20 作为可选主贡献检查。
+- README 的分发说明对齐 `docs/SPEC.md`：MVP 使用 Python package，Docker 只是可选 MockLLM demo 环境。
+
+### 对冷启动验证的影响
+
+冷启动验证仍未实际执行。T0 只表示计划已经准备好被第二个不同 agent 检查；实现阶段仍必须等待正式冷启动验证结果写回本文件。
+
+### 对冷启动验证的影响
+
+冷启动验证时，第二个 agent 应优先检查任务卡是否足够独立：
+
+- 是否能从 `SPEC 依据` 找到机制契约。
+- 是否能从 `接口契约` 写出最小实现。
+- 是否能从 `预期失败测试` 先进入红阶段。
+- 是否能从 `非目标 / 边界` 避免引入真实 LLM、复杂 WebUI、Docker demo 或现成 agent framework。
+
+如果第二个 agent 仍需要口头解释某个任务如何开始，说明 PLAN 的任务卡还不够完整，应先修订 PLAN，而不是进入实现。

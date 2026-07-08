@@ -1,0 +1,7 @@
+{
+  "checkpoint_id": "ckpt-001",
+  "task_id": "task-001",
+  "phase": "code",
+  "reason": "Template checkpoint placeholder for loop-level rollback demo.",
+  "files": []
+}

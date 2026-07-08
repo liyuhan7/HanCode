@@ -1,0 +1,9 @@
+{
+  "task_id": "task-001",
+  "phase": "spec",
+  "spec_complete": true,
+  "plan_complete": true,
+  "test_status": "pending",
+  "latest_checkpoint": "ckpt-001",
+  "files_changed": []
+}

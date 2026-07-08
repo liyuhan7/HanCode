@@ -9,8 +9,8 @@ HanCode selects project A: Coding Agent Harness.
 
 The complete requirement set is:
 
-1. `AI4SE_Final_Project_0_通用要求.md`
-2. `AI4SE_Final_Project_A_Coding_Agent_Harness.md`
+1. `docs/AI4SE_Final_Project_通用要求.md`
+2. `docs/AI4SE_Final_Project_A_Coding_Agent_Harness (1).md`
 
 The project must demonstrate engineering depth around an LLM, especially the
 harness layer: decision loop, actions, tools, context, memory, governance,
@@ -36,7 +36,7 @@ It should show:
 - knowledge-oriented delivery
 - MockLLM unit tests
 - safe credential handling
-- Docker-based distribution
+- Python package distribution, with Docker only as an optional MockLLM demo image
 
 The main contribution is a deterministic feedback loop and reversible coding
 state: `run_tests` produces objective signals, FeedbackBuilder classifies
@@ -55,17 +55,17 @@ is better than a large wrapper around an existing framework.
 
 Final submission should include:
 
-- `SPEC.md`
-- `PLAN.md`
-- `SPEC_PROCESS.md`
+- `docs/SPEC.md`
+- `docs/PLAN.md`
+- `docs/SPEC_PROCESS.md`
 - full source code with clean commit / PR history
 - self-implemented harness kernel
 - MockLLM unit tests for core mechanisms
 - deterministic mechanism demo from assignment A.6
-- Docker distribution or another documented distribution artifact
+- Python package distribution artifact, with optional Docker demo image if time allows
 - `README.md`
-- `AGENT_LOG.md`
-- CI config under `.github/workflows/`
+- `docs/AGENT_LOG.md`
+- CI config with a `unit-test` job; use `.gitlab-ci.yml` for course submission and optionally mirror it under `.github/workflows/` if this repository keeps GitHub CI
 - `REFLECTION.md`
 
 Optional deliverables include:
@@ -77,7 +77,7 @@ The repository must not contain real credentials anywhere.
 
 ## SPEC Requirements
 
-`SPEC.md` must be generated from the brainstorming process and contain:
+`docs/SPEC.md` must be generated from the brainstorming process and contain:
 
 - problem statement: what problem HanCode solves, target users, and why it is worth building
 - at least 5 INVEST-style user stories
@@ -91,7 +91,7 @@ The repository must not contain real credentials anywhere.
 - acceptance criteria: objective "done" criteria per feature
 - risks and open questions
 
-For the Coding Agent Harness project, `SPEC.md` must also include a dedicated
+For the Coding Agent Harness project, `docs/SPEC.md` must also include a dedicated
 domain and mechanism design section. It must clearly answer:
 
 - what the coding domain's actions and tools are
@@ -106,7 +106,7 @@ domain and mechanism design section. It must clearly answer:
 
 ## PLAN Requirements
 
-`PLAN.md` must be produced from the writing-plans workflow.
+`docs/PLAN.md` must be produced from the writing-plans workflow.
 
 It must split the project into tasks small enough for one focused subagent
 session. Each task should include:
@@ -140,7 +140,8 @@ Prefer concrete mechanism-level tasks such as:
 
 ## Distribution Requirements
 
-The planned distribution format is Docker unless `SPEC.md` is revised.
+The planned MVP distribution format is Python package: wheel / sdist. Docker is
+only an optional MockLLM demo image unless `docs/SPEC.md` is revised.
 
 Distribution documentation must explain:
 
@@ -150,8 +151,9 @@ Distribution documentation must explain:
 - how to configure credentials safely on the target machine
 - target platforms and known limitations
 
-If Docker distribution is implemented, CI should build the image or at least
-verify the Docker build.
+If Docker demo distribution is implemented, CI may build the image or at least
+verify the Docker build, but this must not replace Python package build
+verification.
 
 The final README must be usable by a new user on a clean machine.
 
@@ -166,8 +168,9 @@ CI should include:
 - type check
 - test suite
 
-When Docker distribution is implemented, CI should also include Docker build
-verification.
+CI must include a `unit-test` job that runs the MockLLM core tests without real
+LLM credentials or network. When Docker demo distribution is implemented, CI
+may also include Docker build verification.
 
 Do not bypass CI failures without recording the reason.
 

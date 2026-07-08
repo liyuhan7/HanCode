@@ -8,24 +8,28 @@ agent guide that matches the current task.
 HanCode is an AI4SE final project, category A: Coding Agent Harness.
 
 Goal: build a lightweight coding-agent harness for student course projects with
-workspace-scoped execution, phase-gated coding, trace logging,
+phase-gated coding, deterministic test-feedback, trace logging,
 checkpoint-based rollback, and knowledge-oriented delivery.
 
-Main contribution: workspace-scoped course-project context and reversible coding
-state. Project Workspace manages course-project context and long-term
-experience; Task Workspace manages task SPEC, PLAN, Trace, Checkpoint, and
-learning artifacts; Phase Mode governs each course-project stage.
+Main contribution: deterministic feedback loop and reversible coding state.
+Code changes must create checkpoints, tests provide objective feedback,
+FeedbackBuilder classifies failures and feeds observations back into the loop,
+and exhausted retry budget forces rollback. Workspace-scoped memory is a
+supporting dimension: Project Workspace manages course-project context and
+long-term experience; Task Workspace manages task SPEC, PLAN, Trace,
+Checkpoint, and learning artifacts; Phase Mode governs each course-project
+stage.
 
 ## Source Priority
 
 When instructions conflict, follow this order:
 
-1. `AI4SE_Final_Project_0_通用要求.md`
-2. `AI4SE_Final_Project_A_Coding_Agent_Harness.md`
-3. `SPEC.md`
-4. `PLAN.md`
+1. `docs/AI4SE_Final_Project_通用要求.md`
+2. `docs/AI4SE_Final_Project_A_Coding_Agent_Harness (1).md`
+3. `docs/SPEC.md`
+4. `docs/PLAN.md`
 5. `README.md`
-6. `AGENT_LOG.md`
+6. `docs/AGENT_LOG.md`
 7. this map
 
 ## Read On Demand
@@ -45,10 +49,10 @@ This repository is still in specification and planning.
 
 Do not write implementation code until all are complete:
 
-1. `SPEC.md`
-2. `PLAN.md`
+1. `docs/SPEC.md`
+2. `docs/PLAN.md`
 3. cold-start validation by a different coding agent
-4. revision evidence recorded in `SPEC_PROCESS.md`
+4. revision evidence recorded in `docs/SPEC_PROCESS.md`
 
 Before that gate passes, only update planning/configuration documentation such
 as rules, specs, plans, process notes, logs, README planning text, and
@@ -70,7 +74,7 @@ as a small documentation/configuration edit:
 6. `requesting-code-review`
 7. `finishing-a-development-branch`
 
-Record necessary workflow deviations in `AGENT_LOG.md`.
+Record necessary workflow deviations in `docs/AGENT_LOG.md`.
 
 ## Non-Negotiables
 
@@ -85,11 +89,11 @@ Record necessary workflow deviations in `AGENT_LOG.md`.
 
 ## Task Routing
 
-- Editing `SPEC.md`: read assignment files and `workflow.md`.
-- Editing `PLAN.md`: read `SPEC.md`, assignment files, and `workflow.md`.
-- Designing implementation mechanisms: read `harness-boundary.md`.
-- Touching credentials, tools, shell commands, paths, logs, or verification: read `safety-and-verification.md`.
-- Completing a task: update `PLAN.md` and `AGENT_LOG.md` when the task type requires it.
+- Editing `docs/SPEC.md`: read assignment files and `docs/agent-guides/workflow.md`.
+- Editing `docs/PLAN.md`: read `docs/SPEC.md`, assignment files, and `docs/agent-guides/workflow.md`.
+- Designing implementation mechanisms: read `docs/系统架构.md` and `docs/agent-guides/harness-boundary.md`.
+- Touching credentials, tools, shell commands, paths, logs, or verification: read `docs/agent-guides/safety-and-verification.md`.
+- Completing a task: update `docs/PLAN.md` and `docs/AGENT_LOG.md` when the task type requires it.
 
 ## Verification Shortcuts
 

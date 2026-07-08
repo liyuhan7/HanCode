@@ -20,6 +20,34 @@
 
 ## 记录条目
 
+### 2026-07-08 16:40 +08:00 — T0 — 规划文档一致性与冷启动验证准备
+
+- 使用的技能：using-superpowers；executing-plans
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求“现在进行 PLAN.md 的 P0”；本轮按当前 `docs/PLAN.md` 的前置任务 `T0` 执行。
+  - 已读取 `docs/SPEC.md`、课程通用要求、A 类 Harness 要求、`docs/agent-guides/workflow.md` 和 `docs/agent-guides/safety-and-verification.md`。
+  - 当前阶段门仍未通过冷启动验证，因此只修订规划、过程和 README 文档，不修改 `src/hancode/`。
+- 摘要：
+  - `docs/PLAN.md` 统一仓库级文档路径为 `docs/SPEC.md`、`docs/PLAN.md`、`docs/SPEC_PROCESS.md` 和 `docs/AGENT_LOG.md`。
+  - `docs/PLAN.md` 的 T0 状态、验证命令和备注对齐“冷启动准备已完成，但正式冷启动仍未执行”的事实。
+  - `docs/SPEC_PROCESS.md` 修正冷启动候选任务编号，避免继续引用旧版 T1/T3/T5/T8 任务拆分。
+  - `README.md` 的项目阶段和分发说明对齐当前 SPEC：MVP 为 Python package，Docker 仅作可选 MockLLM demo 环境。
+- 人工干预：
+  - 用户直接要求执行 PLAN 前置任务；未要求创建分支、提交或启动第二个 agent。
+- 工作流偏离：
+  - 未使用 worktree、TDD、subagent 和 finishing-a-development-branch；原因是本轮是阶段门前的文档一致性修订，不是实现任务。
+- 提交：
+  - 未提交
+- 验证：
+  - `Get-Content -Raw -Encoding UTF8` 读取 `docs/PLAN.md`、`docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`README.md` 成功。
+  - `Select-String` 确认 `docs/PLAN.md` 包含 T1、T27、需求追溯、冷启动验证和 `docs/` 路径锚点。
+  - `Select-String` 确认 `docs/SPEC_PROCESS.md` 包含 T1/T2/T5/T13/T20 冷启动候选任务和关键迭代 12。
+  - `rg -F` 未发现旧任务编号组合、`分发格式为 Docker`、根目录 `SPEC_PROCESS.md` / `AGENT_LOG.md` 引用残留。
+  - `git status --short` 显示本轮相关文件已修改；工作区还存在本轮开始前已有的其他未提交修改。
+- 经验教训：
+  - 冷启动验证前，PLAN 的任务编号和文档路径必须比实现细节更先稳定，否则第二个 agent 会在错误入口受阻。
+
 ### 2026-07-08 __:__ — 任务 0 — 架构一致性修订 v1.3
 
 - 使用的技能：Superpowers executing-plans

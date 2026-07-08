@@ -17,10 +17,10 @@ The repository is currently in specification and planning.
 
 Before implementation code begins, all must be complete:
 
-1. `SPEC.md`
-2. `PLAN.md`
+1. `docs/SPEC.md`
+2. `docs/PLAN.md`
 3. cold-start validation by a different coding agent
-4. revisions recorded in `SPEC_PROCESS.md`
+4. revisions recorded in `docs/SPEC_PROCESS.md`
 
 Before this gate, work may update only:
 
@@ -47,14 +47,14 @@ The assignment expects this sequence:
 6. `requesting-code-review`
 7. `finishing-a-development-branch`
 
-If you deviate, record the deviation and reason in `AGENT_LOG.md`.
+If you deviate, record the deviation and reason in `docs/AGENT_LOG.md`.
 
 Do not skip directly from idea to implementation. Do not implement code before
-`SPEC.md`, `PLAN.md`, and cold-start validation are complete.
+`docs/SPEC.md`, `docs/PLAN.md`, and cold-start validation are complete.
 
 ## Brainstorming And SPEC Evidence
 
-`SPEC_PROCESS.md` must record how the spec and plan were generated with agent
+`docs/SPEC_PROCESS.md` must record how the spec and plan were generated with agent
 collaboration.
 
 It should include:
@@ -74,8 +74,8 @@ agent in a fresh session.
 
 Provide only:
 
-- `SPEC.md`
-- `PLAN.md`
+- `docs/SPEC.md`
+- `docs/PLAN.md`
 
 Do not provide:
 
@@ -87,7 +87,7 @@ Do not provide:
 Ask the second agent to attempt 1-2 tasks and pause when uncertain rather than
 guessing.
 
-Record in `SPEC_PROCESS.md`:
+Record in `docs/SPEC_PROCESS.md`:
 
 - second agent used
 - tasks attempted
@@ -95,7 +95,7 @@ Record in `SPEC_PROCESS.md`:
 - where the agent paused
 - what it misunderstood
 - whether the issue was caused by unclear spec or agent error
-- how `SPEC.md` or `PLAN.md` was revised
+- how `docs/SPEC.md` or `docs/PLAN.md` was revised
 - before/after differences for important revisions
 
 ## Git, Worktree, And PR Discipline
@@ -105,7 +105,7 @@ each independent feature or major task.
 
 Each implementation task should map to:
 
-- one `PLAN.md` task
+- one `docs/PLAN.md` task
 - one focused subagent session
 - one feature branch or worktree
 - one pull request or clearly recorded merge decision
@@ -114,13 +114,13 @@ Do not batch unrelated features into one commit or pull request.
 
 Each commit or pull request description should record:
 
-- the `PLAN.md` task ID
+- the `docs/PLAN.md` task ID
 - the subagent or tool used
 - the tests run
 - human modifications made after agent output
 - known limitations or follow-up items
 
-After a task is completed, update `PLAN.md` with final status, commit hash,
+After a task is completed, update `docs/PLAN.md` with final status, commit hash,
 verification result, and remaining notes if any.
 
 Avoid working directly on `main` except for repository bootstrap or
@@ -142,7 +142,7 @@ Do not backfill tests after implementation.
 A task is not TDD-compliant unless the expected failing test was observed before
 implementation.
 
-Record meaningful TDD evidence in `AGENT_LOG.md`, especially for core harness
+Record meaningful TDD evidence in `docs/AGENT_LOG.md`, especially for core harness
 mechanisms.
 
 ## Review Gate
@@ -151,8 +151,8 @@ Each implementation task needs two checks.
 
 Spec compliance review checks whether the change:
 
-- satisfies the relevant `SPEC.md` requirement
-- matches the `PLAN.md` task scope
+- satisfies the relevant `docs/SPEC.md` requirement
+- matches the `docs/PLAN.md` task scope
 - avoids implementing unstated features
 - preserves the harness boundary
 - includes deterministic tests for the mechanism
@@ -175,11 +175,11 @@ Critical findings must be fixed before moving to the next task.
 
 After task completion, update:
 
-- `PLAN.md` with status, commit hash, and verification result
-- `AGENT_LOG.md` with agent activity, prompts/context, human intervention, and lessons
-- `SPEC_PROCESS.md` for spec or plan iteration evidence
+- `docs/PLAN.md` with status, commit hash, and verification result
+- `docs/AGENT_LOG.md` with agent activity, prompts/context, human intervention, and lessons
+- `docs/SPEC_PROCESS.md` for spec or plan iteration evidence
 
-`AGENT_LOG.md` entries should include timestamp, task ID, Superpowers skill
+`docs/AGENT_LOG.md` entries should include timestamp, task ID, Superpowers skill
 used, agent used, key prompt or context choices, subagent output summary, commit
 hash or PR link, human intervention, and lesson learned.
 
@@ -190,7 +190,7 @@ verified.
 
 When working in this repository, agents must:
 
-- read the relevant `SPEC.md` and `PLAN.md` sections before making changes
+- read the relevant `docs/SPEC.md` and `docs/PLAN.md` sections before making changes
 - stay within the current task scope
 - avoid unrelated refactoring
 - avoid unnecessary dependencies

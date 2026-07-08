@@ -12,7 +12,7 @@ Credential-related behavior must obey these rules:
 - Prefer operating-system credential storage through `keyring`.
 - Use `.env` only as a local development fallback.
 - Do not commit `.env`.
-- Do not print secret values in logs, terminal output, errors, tests, README examples, screenshots, or `AGENT_LOG.md`.
+- Do not print secret values in logs, terminal output, errors, tests, README examples, screenshots, or `docs/AGENT_LOG.md`.
 - Credential status checks may report presence or absence, not the secret value.
 - Credential update commands must not echo secret values.
 - Credential clear commands should remove stored credentials.
@@ -28,7 +28,7 @@ Before committing, check that no real credential appears in:
 - terminal transcripts
 - screenshots
 - README examples
-- `AGENT_LOG.md`
+- `docs/AGENT_LOG.md`
 
 ## Workspace Safety
 
@@ -104,7 +104,13 @@ If `make` is available and configured, use:
 make check
 ```
 
-When Docker distribution exists, verify:
+When Python package distribution is relevant, verify:
+
+```powershell
+python -m build
+```
+
+When optional Docker demo distribution exists, verify:
 
 ```powershell
 docker build -t hancode .
@@ -130,8 +136,8 @@ Do not mark a task as complete unless all relevant conditions are met:
 - implementation makes the tests pass
 - relevant verification commands were run
 - results were checked
-- `PLAN.md` was updated when required
-- `AGENT_LOG.md` was updated when required
+- `docs/PLAN.md` was updated when required
+- `docs/AGENT_LOG.md` was updated when required
 - no real credentials were introduced
 - no unrelated files were modified
 - any workflow deviation was recorded
