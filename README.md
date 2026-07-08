@@ -113,14 +113,17 @@ spec -> plan -> code -> test -> review -> deliver
 
 ## 项目阶段
 
-本仓库处于规范和规划阶段。源码目录只有占位文件，尚未实现 Harness 内核。
+本仓库已完成 SPEC、PLAN 和冷启动验证记录，进入正式实现阶段。
 
-在以下条件满足之前，不得开始完整实现：
+正式开发从 `docs/PLAN.md` 的 T1 开始逐项推进。每个实现任务必须：
 
-1. `docs/SPEC.md` 完成。
-2. `docs/PLAN.md` 完成。
-3. 使用不同的编码智能体完成冷启动验证。
-4. 规范/计划的修订记录在 `docs/SPEC_PROCESS.md` 中。
+1. 先写失败测试并记录红阶段结果。
+2. 再写最小实现。
+3. 运行任务卡中的 pytest / ruff / mypy 验证。
+4. 更新 `docs/PLAN.md` 和 `docs/AGENT_LOG.md`。
+5. 进入下一任务前完成代码审查。
+
+冷启动验证使用 OpenCode + GLM-5.2，在扩展上下文下尝试 T1 / T2，并把暴露的问题记录到 `docs/SPEC_PROCESS.md`。T1 / T2 的正式实现应以当前 `docs/PLAN.md` 任务卡为准，不直接照搬冷启动 demo 代码。
 
 ## 技术栈
 

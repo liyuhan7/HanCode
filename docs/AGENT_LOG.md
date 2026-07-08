@@ -20,6 +20,65 @@
 
 ## 记录条目
 
+### 2026-07-08 17:21 +08:00 — T0 — 冷启动后阶段门收拢与正式开发入口确认
+
+- 使用的技能：using-superpowers；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户确认冷启动已经完成，并要求“把文档收拢一下，对于冷启动后开始的工作，做最后的文档完善，然后进入正式开发”。
+  - 当前阶段仍只做文档收拢，不修改 `src/hancode/`。
+  - 冷启动样本来自 OpenCode + GLM-5.2，对象为 `D:\agent-leanring\demo` 的 T1 / T2 实现。
+- 摘要：
+  - `AGENTS.md` 的阶段门改为：SPEC / PLAN / 冷启动验证已记录，正式实现可从 `docs/PLAN.md` T1 开始。
+  - `docs/agent-guides/workflow.md` 改为冷启动门已完成，并把冷启动发现作为正式实现约束。
+  - `README.md` 的项目阶段改为正式实现阶段，列明每个任务必须 TDD、验证、更新 PLAN / AGENT_LOG 并接受审查。
+  - `docs/PLAN.md` 的状态改为冷启动后实现准备完成；T1 增加 `OperationResult.status` 边界；T2 增加幂等初始化和 Project Workspace 前置约束；冷启动章节改为结果与正式开发入口。
+  - `docs/SPEC_PROCESS.md` 的冷启动结论收口为扩展上下文冷启动验证完成，阶段门不再阻塞实现。
+- 人工干预：
+  - 用户确认冷启动完成，并要求进入正式开发前做文档收拢。
+- 工作流偏离：
+  - 未使用 worktree、TDD、subagent 和 finishing-a-development-branch；原因是本轮仍是阶段门后的文档收拢，不是 harness kernel 实现任务。
+- 提交：
+  - 未提交
+- 验证：
+  - `Get-Content -Raw -Encoding UTF8` 读取 `AGENTS.md`、`README.md`、`docs/PLAN.md`、`docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`docs/agent-guides/workflow.md` 成功。
+  - `Select-String` 确认正式开发、T1、TDD、扩展上下文冷启动验证、回写约束等关键词已写入。
+  - `rg` 未发现 `仍未实际执行`、`正式冷启动验证仍需`、`不得开始完整实现`、`本仓库处于规范和规划阶段` 等旧阻塞表述。
+  - `Select-String` 确认 T1 / T2 / T26 的新增约束已写入 `docs/PLAN.md`。
+  - `git status --short` 已检查本轮文档修改范围。
+- 经验教训：
+  - 冷启动验证完成后，必须把发现回写到后续任务卡，否则正式开发会重复 demo 中暴露的设计缺口。
+
+### 2026-07-08 17:13 +08:00 — T0 — OpenCode / GLM-5.2 冷启动验证记录补全
+
+- 使用的技能：using-superpowers；verification-before-completion
+- 使用的智能体：
+  - 冷启动执行：OpenCode + GLM-5.2
+  - 复核与记录：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户说明已使用 OpenCode 搭载 GLM-5.2 进行冷启动验证。
+  - 用户说明提供给第二个 agent 的材料为 `系统架构.md`、`SPEC.md`、`PLAN.md`，未提供主开发对话历史或隐藏 memory。
+  - 复核对象为 `D:\agent-leanring\demo` 中的冷启动产物。
+- 摘要：
+  - 第二个 agent 尝试了 T1 共享模型与错误类型、T2 Workspace 初始化。
+  - 冷启动产物包含 `src/hancode/models.py`、`src/hancode/errors.py`、`src/hancode/workspace.py` 以及对应测试。
+  - 复核验证命令结果：`python -m pytest -p no:cacheprovider` 为 19 passed；`python -m ruff check src tests` 通过；`python -m mypy src` 通过；secret 模式扫描无命中。
+  - `docs/SPEC_PROCESS.md` 已补充冷启动记录，明确本次属于“扩展上下文冷启动验证”：额外提供了 `系统架构.md`，因此不能完全等同于课程要求的严格“仅 SPEC + PLAN”版本。
+  - 复核发现的主要代码质量问题：workspace 初始化会覆盖已有证据；task workspace 可绕过 project workspace 初始化；`OperationResult.status` 边界过宽；Python 版本目标与 PLAN 不一致。
+- 人工干预：
+  - 用户指定第二个 agent 与模型，并要求依据课程要求撰写冷启动相关记录说明。
+- 工作流偏离：
+  - 未创建分支或提交；本轮只补充过程文档。
+  - 未把冷启动产物合并到主仓；原因是该产物仍有代码质量问题，且冷启动过程证据不完整。
+- 提交：
+  - 未提交
+- 验证：
+  - 已读取 `docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`D:\agent-leanring\demo` 的源文件和测试文件。
+  - 已运行冷启动产物的 pytest、ruff、mypy 和 secret 模式扫描。
+- 经验教训：
+  - 冷启动验证不仅要看代码能否跑通，还要保存第二个 agent 的上下文、暂停点、误解、红阶段证据和后续修订点。
+  - 对 HanCode 这类可复盘 harness，workspace 初始化语义必须优先保护已有 trace、history、state 和学习产物。
+
 ### 2026-07-08 16:40 +08:00 — T0 — 规划文档一致性与冷启动验证准备
 
 - 使用的技能：using-superpowers；executing-plans

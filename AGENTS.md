@@ -45,21 +45,23 @@ If a guide conflicts with the assignment files, the assignment files win.
 
 ## Current Phase Gate
 
-This repository is still in specification and planning.
+The specification, plan, and cold-start validation evidence are now recorded.
+Formal implementation may begin, starting from `docs/PLAN.md` task T1.
 
-Do not write implementation code until all are complete:
+Implementation code is allowed only when it is scoped to a `docs/PLAN.md` task
+and follows the required task workflow:
 
-1. `docs/SPEC.md`
-2. `docs/PLAN.md`
-3. cold-start validation by a different coding agent
-4. revision evidence recorded in `docs/SPEC_PROCESS.md`
+1. read the task card and referenced SPEC / architecture sections
+2. create or use an isolated worktree / branch / execution session
+3. write the failing test first and record the red result
+4. implement the minimum code
+5. rerun verification
+6. update `docs/PLAN.md` and `docs/AGENT_LOG.md`
+7. request review before moving to the next task
 
-Before that gate passes, only update planning/configuration documentation such
-as rules, specs, plans, process notes, logs, README planning text, and
-documentation placeholders.
-
-Do not create or modify implementation modules under `src/hancode/` for the
-harness kernel before the gate passes.
+Do not batch unrelated tasks into one implementation pass. The cold-start review
+found extra constraints for T1 / T2; follow the current task cards rather than
+copying the demo implementation directly.
 
 ## Default Workflow
 

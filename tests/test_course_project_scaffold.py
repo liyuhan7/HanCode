@@ -76,16 +76,16 @@ def test_plan_required_before_code_phase() -> None:
     plan = read_text("docs/PLAN.md")
 
     assert "缺少 `PLAN.md` 标志时不能进入 code phase" in spec
-    assert "test_plan_required_before_code_phase" in plan
-
+    assert "test_missing_plan_routes_to_plan" in plan
+    assert "不能进入 code phase" in plan or "路由到 plan" in plan
 
 def test_code_phase_allows_edit_file() -> None:
     readme = read_text("README.md")
     plan = read_text("docs/PLAN.md")
 
     assert "`code`：按 `PLAN.md` 修改代码" in readme
-    assert "test_code_phase_allows_edit_file" in plan
-
+    assert "test_code_phase_allows_source_write_when_prerequisites_ready" in plan
+    assert "edit_file" in plan or "source write" in plan
 
 def test_edit_file_requires_reason() -> None:
     spec = read_text("docs/SPEC.md")
@@ -127,8 +127,8 @@ def test_tool_not_allowed_in_workspace_is_denied() -> None:
 
     assert "ToolPolicy" in spec
     assert "策略拒绝时不得执行工具" in spec
-    assert "test_tool_not_allowed_in_workspace_is_denied" in plan
-
+    assert "test_disabled_tool_is_denied" in plan
+    assert "未注册工具" in plan or "disabled tool" in plan or "工具是否允许" in plan
 
 def test_code_change_requires_test_or_risk_note() -> None:
     spec = read_text("docs/SPEC.md")

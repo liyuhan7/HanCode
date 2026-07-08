@@ -12,7 +12,7 @@
 
 围绕这个定位，SPEC 最终承担需求契约角色：说明问题陈述、用户故事、功能规约、非功能需求、架构边界、数据模型、凭据与分发、验收标准、领域与机制设计、风险与未决问题。`docs/系统架构.md` 承接实现组织细节，例如模块接口、调用链、TraceEvent、PathClassifier、CredentialProvider、FeedbackReport 和测试命名。`docs/PLAN.md` 则被设计为冷启动可执行的实现合同，使用任务依赖图、里程碑、统一任务卡片和需求到任务追溯表，帮助陌生 agent 仅凭 SPEC + PLAN 开始执行 TDD 任务。
 
-当前仍未完成正式冷启动验证。下一步必须使用不同类型的第二个 agent，在不提供本轮对话历史或隐藏上下文的前提下，仅提供 `docs/SPEC.md` 和 `docs/PLAN.md`，尝试 1-2 个任务，并把暴露出的 SPEC / PLAN 缺口记录回本文件。
+当前已完成一次扩展上下文冷启动验证：使用 OpenCode 搭载 GLM-5.2，在不提供主开发对话历史或隐藏 memory 的前提下，让第二个 agent 依据 `系统架构.md`、`SPEC.md` 和 `PLAN.md` 尝试 T1 / T2。该验证证明 PLAN 的前两个实现任务可以被陌生 agent 启动并产出可运行代码；由于额外提供了系统架构文档，本文件将其记录为“扩展上下文冷启动验证”，并把暴露的问题回写为正式开发约束。至此，SPEC / PLAN / 冷启动记录阶段门收口，后续可以从 T1 开始正式实现。
 
 ## 2. 关键迭代 1
 
@@ -103,34 +103,99 @@ SPEC 第 1 节被重新写入为：
 
 ### 使用的第二个智能体
 
-尚未进行。
+已进行一次冷启动验证。
 
-要求：第二个智能体必须与主开发智能体不同，并且不能获得当前对话历史或隐藏上下文。
+- 第二个智能体：OpenCode。
+- 模型：GLM-5.2。
+- 主开发智能体：OpenAI Codex。
+- 验证目录：`D:\agent-leanring\demo`。
+- 验证性质：扩展上下文冷启动验证。第二个智能体没有获得主开发对话历史、隐藏 memory 或口头解释，但提供的文件包含 `系统架构.md`，因此不是严格的“仅 SPEC + PLAN”验证。
 
 ### 尝试的任务
 
-尚未进行。计划在 `docs/SPEC.md` 与 `docs/PLAN.md` 定稿后，让第二个智能体从 `docs/PLAN.md` 中选择 1-2 个小任务尝试实现。优先选择能暴露计划可读性和机制边界的任务组合，例如：
+尝试并完成了前两个基础任务：
 
-- T1 共享模型与错误类型 + T2 Workspace 初始化。
-- T5 Phase 枚举与 PhaseGate + T13 PathClassifier。
+- T1：共享模型与错误类型。
+- T2：Workspace 初始化。
 
-这些任务覆盖共享类型、workspace、phase gate 和路径治理边界，能较快暴露陌生 agent 是否能仅凭 SPEC / PLAN 理解实现边界。若第二个 agent 时间充足，再补充 T20 FeedbackBuilder 失败分类，检查主贡献回路的任务卡是否足够独立。
+第二个智能体产出的主要文件包括：
+
+- `src/hancode/models.py`
+- `src/hancode/errors.py`
+- `src/hancode/workspace.py`
+- `tests/test_models.py`
+- `tests/test_errors.py`
+- `tests/test_workspace.py`
+- `pyproject.toml`
+
+独立复核时运行了以下命令：
+
+```powershell
+python -m pytest -p no:cacheprovider
+python -m ruff check src tests
+python -m mypy src
+```
+
+验证结果：
+
+- pytest：19 passed。
+- ruff：All checks passed。
+- mypy：Success: no issues found。
+- secret 模式扫描：未发现真实凭据形态。
 
 ### 提供的上下文
 
-尚未进行。届时只能提供 `docs/SPEC.md` 和 `docs/PLAN.md`，不得提供当前对话历史、隐藏 memory、口头解释或系统架构以外的临时说明。若第二个 agent 需要系统架构细节，应通过 PLAN 中的 `SPEC 依据` 字段定位到 `docs/系统架构.md` 的具体章节，而不是由主开发者现场解释。
+实际提供的上下文为：
+
+- `系统架构.md`
+- `SPEC.md`
+- `PLAN.md`
+
+未提供：
+
+- 主开发阶段的对话历史。
+- 主开发智能体 memory。
+- 口头解释。
+- 主仓中除上述三份文档之外的辅助说明。
+
+与课程要求的差异：
+
+- 课程要求的严格冷启动是仅提供 `SPEC.md` + `PLAN.md`。
+- 本次额外提供了 `系统架构.md`。这有利于检查 PLAN 是否能落到代码接口，但会降低“SPEC + PLAN 本身是否足够自解释”的证据强度。
+- 因此，本次结论记录为“扩展上下文冷启动验证完成”。正式开发可以开始，但后续实现必须按照当前 `docs/PLAN.md` 中回写后的任务卡执行，而不是照搬冷启动 demo。
 
 ### 暂停或提问的地方
 
-尚未进行。
+未发现第二个智能体留下明确的暂停提问记录。它直接实现了 T1 / T2，并在 `PLAN.md` 中把 T1 / T2 标记为完成。
+
+这暴露出一个过程记录缺口：冷启动目录没有 `SPEC_PROCESS.md` 或 `AGENT_LOG.md`，因此无法审计第二个智能体是否先观察到红阶段失败、是否遇到不确定点、是否曾做出被人工纠正的判断。
 
 ### 误解之处
 
-尚未进行。
+本次冷启动暴露了以下误解或不一致：
+
+1. 严格路径语义不一致。主仓课程交付物位于 `docs/SPEC.md`、`docs/PLAN.md` 和 `docs/系统架构.md`，但冷启动目录把 `SPEC.md`、`PLAN.md`、`系统架构.md` 放在根目录；同时 `PLAN.md` 内仍保留 `docs/` 路径表述。第二个智能体仍能继续实现，但这说明冷启动材料的目录形态需要被固定。
+2. 过程证据缺失。`PLAN.md` 要求每个任务更新 `docs/AGENT_LOG.md`，但冷启动目录没有该文件，也没有等价记录，因此不能证明 TDD 红阶段真实发生。
+3. T1 / T2 状态记录不够精确。`PLAN.md` 中 T1 的 Commit 字段写为“19 tests pass”，但 19 是 T1 + T2 的总测试数，不是 T1 单独的测试数。
+4. 代码质量暴露了早期契约缺口：`init_project_workspace()` / `init_task_workspace()` 会覆盖已有 project / task 证据文件，和 HanCode 的 trace、history、state 可复盘目标冲突。
+5. `init_task_workspace()` 可以在缺少 project workspace 元数据时创建 task，削弱 Project Workspace 先于 Task Workspace 的层级约束。
+6. `pyproject.toml` 目标为 Python 3.10，而 PLAN / SPEC 当前写的是 Python 3.11+。
 
 ### SPEC / PLAN 修订
 
-尚未进行。冷启动验证后，需要记录第二个智能体暴露的 SPEC / PLAN 缺陷，以及关键修订前后差异。若问题来自 PLAN 表达不清，应优先修订任务卡的 `接口契约`、`预期失败测试`、`验证步骤` 或 `非目标 / 边界` 字段；若问题来自需求契约不清，再回到 `docs/SPEC.md` 修订。
+本轮已将关键发现回写到 `docs/PLAN.md` 的 T1 / T2 任务卡。正式实现时应特别遵守以下点：
+
+- 冷启动材料目录应保持与主仓一致，优先提供 `docs/SPEC.md`、`docs/PLAN.md` 和按需可读的 `docs/系统架构.md`；若复制到临时目录，应保留 `docs/` 层级。
+- T2 Workspace 初始化任务卡应明确：初始化必须幂等，不能覆盖已有 `state.json`、`trace.jsonl`、`history.jsonl`、checkpoint 或 Markdown 产物；需要 reset 时必须是单独显式动作。
+- T2 应明确：Task Workspace 初始化必须依赖已存在且有效的 Project Workspace，不能静默创建半完整 `.hancode/`。
+- T1 应明确 `OperationResult.status` 的类型边界：若表示任务状态则复用 `TaskStatus`，若表示操作结果则新增独立枚举，避免任意字符串扩散。
+- `pyproject.toml` 与 PLAN / SPEC 的 Python 版本要求应统一为 Python 3.11+，除非明确把 3.10 作为兼容目标。
+
+冷启动结论：
+
+- 从“陌生 agent 是否能依据文档启动 T1 / T2 并产出可运行代码”看，本次验证有效。
+- 从过程复盘角度看，本次验证也暴露了上下文范围、红阶段证据和 workspace 初始化语义的不足，这些不足已经转化为后续任务约束。
+- 阶段门收口：可以进入正式开发，但每个实现任务必须重新执行 TDD 红绿重构、验证和代码审查，冷启动 demo 只作为验证样本，不作为可直接合并代码。
 
 ## 8. 对头脑风暴技能的反思
 
@@ -359,17 +424,15 @@ PLAN 的任务依赖最终收敛为 T1-T27 的细粒度任务链：
 - 冷启动候选任务改为当前任务编号下的 T1/T2/T5/T13，并把 T20 作为可选主贡献检查。
 - README 的分发说明对齐 `docs/SPEC.md`：MVP 使用 Python package，Docker 只是可选 MockLLM demo 环境。
 
-### 对冷启动验证的影响
+### 对正式开发的影响
 
-冷启动验证仍未实际执行。T0 只表示计划已经准备好被第二个不同 agent 检查；实现阶段仍必须等待正式冷启动验证结果写回本文件。
+冷启动验证已经完成并记录。T0 不再阻塞实现阶段；后续正式开发从 T1 开始，必须使用当前 `docs/PLAN.md` 中已回写冷启动发现的任务卡。
 
-### 对冷启动验证的影响
-
-冷启动验证时，第二个 agent 应优先检查任务卡是否足够独立：
+正式开发时，每个实现 agent 应优先检查任务卡是否足够独立：
 
 - 是否能从 `SPEC 依据` 找到机制契约。
 - 是否能从 `接口契约` 写出最小实现。
 - 是否能从 `预期失败测试` 先进入红阶段。
 - 是否能从 `非目标 / 边界` 避免引入真实 LLM、复杂 WebUI、Docker demo 或现成 agent framework。
 
-如果第二个 agent 仍需要口头解释某个任务如何开始，说明 PLAN 的任务卡还不够完整，应先修订 PLAN，而不是进入实现。
+如果实现 agent 仍需要口头解释某个任务如何开始，说明 PLAN 的任务卡还不够完整，应先修订 PLAN，而不是继续实现。

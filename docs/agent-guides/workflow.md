@@ -13,27 +13,23 @@ guardrail, parser, feedback, memory, configuration, or credential code.
 
 ## Phase Gate
 
-The repository is currently in specification and planning.
+The repository has completed the SPEC / PLAN / cold-start-validation gate.
+Formal implementation may begin from `docs/PLAN.md` task T1.
 
-Before implementation code begins, all must be complete:
+The completed gate evidence is:
 
 1. `docs/SPEC.md`
 2. `docs/PLAN.md`
 3. cold-start validation by a different coding agent
 4. revisions recorded in `docs/SPEC_PROCESS.md`
 
-Before this gate, work may update only:
+The cold-start run used OpenCode + GLM-5.2 with `SPEC.md`, `PLAN.md`, and
+`系统架构.md`; this is recorded as an extended-context cold start. Treat its
+findings as implementation constraints, especially the T1 / T2 notes now folded
+back into `docs/PLAN.md`.
 
-- project rules
-- specs
-- plans
-- process notes
-- logs
-- README planning sections
-- documentation placeholders
-
-Do not create or modify implementation modules under `src/hancode/` before the
-gate passes.
+From this point on, implementation code may be created or modified only for the
+current `docs/PLAN.md` task, with TDD evidence and verification recorded.
 
 ## Required Superpowers Flow
 
@@ -49,8 +45,8 @@ The assignment expects this sequence:
 
 If you deviate, record the deviation and reason in `docs/AGENT_LOG.md`.
 
-Do not skip directly from idea to implementation. Do not implement code before
-`docs/SPEC.md`, `docs/PLAN.md`, and cold-start validation are complete.
+Do not skip directly from task selection to implementation. Every implementation
+task still needs task-card review, TDD red evidence, verification, and review.
 
 ## Brainstorming And SPEC Evidence
 

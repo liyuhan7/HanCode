@@ -1,9 +1,9 @@
 # HanCode 实现计划
 
-> 状态：设计草案
+> 状态：冷启动后实现准备完成
 > 项目类型：A · Coding Agent Harness
 > 项目定位：面向学生课程项目的轻量级 Coding Agent Harness
-> 实现原则：完整实现必须在 `docs/SPEC.md`、`docs/PLAN.md`、冷启动验证和 `docs/SPEC_PROCESS.md` 修订记录完成后开始。
+> 实现原则：`docs/SPEC.md`、`docs/PLAN.md`、冷启动验证和 `docs/SPEC_PROCESS.md` 修订记录已完成；正式实现从 T1 开始逐任务 TDD 推进。
 > Agentic workers：实现任务必须按任务卡逐项执行，并采用 TDD：先红、再绿、再重构。
 
 ---
@@ -28,7 +28,7 @@ HanCode 的核心交付不是 prompt、规则文件或宿主 Coding Agent 的能
 ## 2. 全局规则
 
 * 遵循工作流：brainstorming -> writing-plans -> using-git-worktrees -> subagent-driven-development / executing-plans -> test-driven-development -> requesting-code-review -> finishing-a-development-branch。
-* 在 `docs/SPEC.md`、`docs/PLAN.md`、冷启动验证和 `docs/SPEC_PROCESS.md` 修订记录完成前，不得修改 `src/hancode/` 下的 harness kernel 实现模块。
+* `docs/SPEC.md`、`docs/PLAN.md`、冷启动验证和 `docs/SPEC_PROCESS.md` 修订记录已完成；现在可以按任务卡修改 `src/hancode/` 下对应 harness kernel 模块。
 * 实现任务必须使用 TDD：先写失败测试并观察红色结果，再写最小实现，再重构。
 * 每个实现任务使用独立 worktree、独立分支或独立执行会话。
 * 每个任务完成后更新本文件状态、提交 hash、验证结果，并在 `docs/AGENT_LOG.md` 记录过程证据。
@@ -175,7 +175,7 @@ T24 CLI 可先实现 --help / init 骨架，demo 命令等 T23 后接入。
 | 主贡献相关         | 否          |
 | Commit        | 未提交；本轮为规划文档修订 |
 | 验证            | UTF-8 读取、锚点扫描、路径一致性扫描、git status |
-| 备注            | 冷启动验证安排已准备；正式冷启动验证仍需由第二个不同 agent 执行 |
+| 备注            | OpenCode + GLM-5.2 已完成扩展上下文冷启动验证；暴露问题已回写 T1 / T2 任务卡 |
 
 ### 目标
 
@@ -220,7 +220,7 @@ T24 CLI 可先实现 --help / init 骨架，demo 命令等 T23 后接入。
 
 ```powershell
 Get-Content -Raw -Encoding UTF8 docs/PLAN.md
-Select-String -Path docs/PLAN.md -Pattern '## T1','## T27','# 8. 需求→任务追溯','# 9. 冷启动验证安排'
+Select-String -Path docs/PLAN.md -Pattern '## T1','## T27','# 8. 需求→任务追溯','# 9. 冷启动验证结果'
 git status --short
 ```
 
@@ -228,7 +228,7 @@ git status --short
 
 * `docs/PLAN.md` 可被陌生 agent 直接用于执行任务。
 * 文档中路径、术语和任务编号一致。
-* `docs/SPEC_PROCESS.md` 中记录冷启动验证安排。
+* `docs/SPEC_PROCESS.md` 中记录冷启动验证结果和修订点。
 
 ### 非目标 / 边界
 
@@ -291,12 +291,14 @@ class Risk: ...
 * `test_phase_allows_only_six_project_phases`
 * `test_structured_error_has_code_message_hint`
 * `test_operation_result_serializes_to_dict`
+* `test_operation_result_rejects_unknown_status`
 
 ### 实现要点
 
 * 优先使用标准库 `dataclass`、`Enum`。
 * 必要时使用 pydantic，但不引入复杂依赖。
 * 错误结构至少包含 `code`、`message`、`hint`、`details`。
+* 冷启动验证发现 `OperationResult.status` 若使用任意字符串会污染后续 AgentLoop / ToolResult / ResultBuilder 状态边界；正式实现必须使用受限状态类型。若表示任务状态，复用 `TaskStatus`；若表示操作状态，定义独立 enum，不允许 `"ok"` 这类未声明状态。
 
 ### 验证步骤
 
@@ -366,6 +368,9 @@ def task_path(project_root: Path, task_id: str) -> Path: ...
 * `test_task_workspace_initializes_required_artifacts`
 * `test_workspace_has_separate_history`
 * `test_workspace_rejects_path_outside_project_root`
+* `test_project_workspace_init_preserves_existing_files`
+* `test_task_workspace_init_preserves_existing_state_and_trace`
+* `test_task_workspace_requires_initialized_project_workspace`
 
 ### 实现要点
 
@@ -373,6 +378,8 @@ def task_path(project_root: Path, task_id: str) -> Path: ...
 * 初始化 Markdown 文件时写入最小标题，不写空白文件。
 * 初始化 `trace.jsonl`、`history.jsonl` 为空文件。
 * 初始化 `checkpoints/` 目录，但不创建真实 checkpoint。
+* 冷启动验证发现直接重跑 init 会覆盖 `state.json`、`trace.jsonl`、`history.jsonl` 和 Markdown 产物；正式实现必须保持初始化幂等：只创建缺失文件，不覆盖已有 evidence。需要 reset 时必须另设显式 reset 语义，不放在 init 中。
+* `init_task_workspace` 必须要求 Project Workspace 已初始化且包含有效 `project.json` 和项目级记忆文件；不得静默创建半完整 `.hancode/`。
 
 ### 验证步骤
 
@@ -386,6 +393,8 @@ python -m mypy src/hancode/workspace.py
 
 * 能在 `tmp_path` 中生成完整 workspace。
 * 不同 task 的状态、trace、history、checkpoint 互不混用。
+* 重复初始化不会清空已有状态、trace、history、checkpoint 或阶段产物。
+* 未初始化 Project Workspace 时，创建 Task Workspace 会明确失败。
 
 ### 非目标 / 边界
 
@@ -2317,6 +2326,7 @@ hancode demo --provider mock
 * `pyproject.toml` 保留 console script：
 
   * `hancode = "hancode.cli:app"`
+* `pyproject.toml` 必须与项目约定保持一致：`requires-python >= 3.11`，ruff / mypy 目标版本也使用 Python 3.11。
 * GitHub Actions 可作为仓库 CI。
 * 若课程要求 GitLab CI，补 `.gitlab-ci.yml` 的 `unit-test` job。
 * `python -m build` 需要补充 build 依赖。
@@ -2457,52 +2467,58 @@ git status --short
 
 ---
 
-# 9. 冷启动验证安排
+# 9. 冷启动验证结果
 
-冷启动验证必须在实现前完成。
+冷启动验证已在实现前完成并记录到 `docs/SPEC_PROCESS.md`。
 
-## 9.1 验证规则
+## 9.1 已执行验证
 
-1. 使用不同于主开发智能体的第二个 agent。
-2. 新 session，不导入当前对话历史或 memory。
-3. 只提供：
+1. 第二个 agent：OpenCode + GLM-5.2。
+2. 验证目录：`D:\agent-leanring\demo`。
+3. 提供上下文：
 
-   * `docs/SPEC.md`
-   * `docs/PLAN.md`
-4. 不提供：
+   * `SPEC.md`
+   * `PLAN.md`
+   * `系统架构.md`
+4. 未提供：
 
    * 之前聊天记录。
    * 隐藏上下文。
    * 口头解释。
    * 主 agent 的记忆。
-5. 让第二个 agent 尝试 1-2 个小任务，优先选择：
+5. 尝试任务：
 
    * T1 共享模型与错误类型。
    * T2 Workspace 初始化。
-   * T5 PhaseGate。
-6. 要求第二个 agent 在不确定时暂停提问，不要猜测。
-7. 将结果记录到 `docs/SPEC_PROCESS.md`。
+6. 复核结果：
 
-## 9.2 需要记录的内容
+   * pytest：19 passed。
+   * ruff：passed。
+   * mypy：passed。
+   * secret 模式扫描：无命中。
 
-* 第二个 agent 名称。
-* 尝试的任务。
-* 提供的上下文。
-* agent 暂停或提问的位置。
-* agent 误解之处。
-* 问题属于 SPEC 不清、PLAN 不清，还是 agent 执行错误。
-* 根据发现修订了哪些 SPEC / PLAN 内容。
-* 关键修订前后差异。
+说明：本次额外提供了 `系统架构.md`，因此属于扩展上下文冷启动验证；它证明 T1 / T2 可由陌生 agent 启动并产出可运行代码，但不能抹去正式实现时的 TDD / 日志 / 评审要求。
 
-## 9.3 冷启动通过标准
+## 9.2 已回写的发现
 
-冷启动验证通过必须满足：
+冷启动复核发现以下问题，并已回写到 T1 / T2 任务卡：
 
-* 第二个 agent 能仅凭 SPEC + PLAN 理解任务边界。
-* 第二个 agent 能写出合理的红阶段测试计划。
-* 第二个 agent 没有误以为可以跳过 phase gate、MockLLM 或 TDD。
-* 第二个 agent 没有尝试使用真实 LLM、真实 key 或外部 agent framework 作为 harness kernel。
-* 暴露的问题已记录并修订。
+* `OperationResult.status` 不得使用任意字符串。
+* Workspace 初始化必须幂等，不得覆盖已有 state、trace、history、checkpoint 或阶段产物。
+* Task Workspace 初始化必须依赖有效 Project Workspace。
+* Python 版本目标必须与项目约定保持一致。
+* 冷启动 demo 的 TDD 红阶段和过程日志不足，不能作为正式任务完成证据。
+
+## 9.3 正式实现入口
+
+正式开发从 T1 开始。每个任务必须满足：
+
+* 先写失败测试并记录红阶段输出。
+* 只实现当前任务卡范围内的代码。
+* 运行任务卡列出的 pytest / ruff / mypy 验证。
+* 更新本文件对应任务状态、验证结果和 commit hash。
+* 在 `docs/AGENT_LOG.md` 记录 agent、上下文、红绿重构证据、人工干预和经验教训。
+* 进入下一任务前完成代码审查。
 
 ---
 
