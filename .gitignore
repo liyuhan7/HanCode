@@ -43,3 +43,6 @@ Thumbs.db
 .hancode/
 .agent_state/
 .local_memory/
+
+# 本地隔离 worktree
+.worktrees/

@@ -20,6 +20,19 @@ long-term experience; Task Workspace manages task SPEC, PLAN, Trace,
 Checkpoint, and learning artifacts; Phase Mode governs each course-project
 stage.
 
+## Codex Operating Contract
+
+This repository assumes a Codex agent working in the real local workspace
+`D:\agent-leanring\HanCode`, not a hypothetical sandbox-only project copy.
+
+- Use Chinese for user interaction unless the user explicitly asks for another language.
+- Base decisions on real repository files, real command output, and real test results.
+- Understand the current request, boundary, goal, and acceptance criteria before coding.
+- Write a short task plan before implementation: scope, dependency order, files, tests, and done criteria.
+- Work one small task at a time; use an isolated branch, worktree, or execution session per task.
+- Prefer the minimum viable implementation first; keep module boundaries and shared interfaces stable.
+- Make every change traceable: what changed, why, how it was verified, and what the result was.
+
 ## Source Priority
 
 When instructions conflict, follow this order:
@@ -63,6 +76,17 @@ Do not batch unrelated tasks into one implementation pass. The cold-start review
 found extra constraints for T1 / T2; follow the current task cards rather than
 copying the demo implementation directly.
 
+Implementation admission and execution rules:
+
+- Implement only work that maps to a clear `docs/PLAN.md` task card.
+- Confirm the task ID, scope, allowed file range, and acceptance criteria before editing code.
+- Keep changes minimal; avoid unrelated refactors and never overwrite user changes.
+- Read the relevant context before modifying files.
+- Do not use prompts, comments, or docs as substitutes for required harness mechanisms.
+- Core mechanisms must stay deterministic, testable, and auditable through MockLLM, stubs, or other repeatable tests.
+- Handle failures as structured feedback, not blind retries; keep errors explicit enough to support repair.
+- Use command results as ground truth. If tests, lint, type check, or runtime verification fail, report the failure and next correction path instead of claiming success.
+
 ## Default Workflow
 
 Use the required Superpowers sequence unless the user explicitly scopes the task
@@ -81,13 +105,20 @@ Record necessary workflow deviations in `docs/AGENT_LOG.md`.
 ## Non-Negotiables
 
 - Implementation tasks use TDD: failing test first, then minimal code, then refactor.
+- Confirm the failing test result before writing the implementation, then rerun verification after the change.
 - Required harness mechanisms must be deterministic code, not prompts, rules, or hosted-agent behavior.
 - Course assignment files, teacher tests, grading scripts, and sample data are protected by policy.
 - Core mechanisms must be testable with MockLLM or stubs, without network or a real LLM.
+- Define stable models, states, errors, and results before spreading new interfaces across modules.
+- Prefer structured errors with clear cause and repair direction over vague exceptions.
+- CI quality gates should cover tests, lint, and type checking at minimum; add build or demo checks when the task needs them.
 - Never commit real credentials, API keys, tokens, or secrets.
 - Do not print secret values in logs, errors, README examples, tests, or agent records.
 - Stay within the task scope and avoid unrelated refactors.
+- Keep code and docs aligned: when task scope requires it, update plan, log, tests, README, and CI together.
 - Do not claim completion without fresh verification evidence.
+- "Runs once" is not enough: completion requires correct boundaries, error handling, synchronized docs, and fresh verification evidence.
+- Human developers keep final authority over design tradeoffs, scope, and acceptance criteria.
 
 ## Task Routing
 
@@ -110,6 +141,10 @@ python -m mypy src
 For documentation-only changes, verify by reading changed files with
 `Get-Content -Raw -Encoding UTF8`, checking required phrases, and confirming
 `git status --short`.
+
+For implementation tasks, final reporting should include what changed, why it
+changed, how it was verified, the verification result, and any remaining risk
+or unfinished work.
 
 ## Final Rule
 
