@@ -20,6 +20,42 @@
 
 ## 记录条目
 
+### 2026-07-08 19:53 +08:00 — T1 — 共享模型与错误类型
+
+- 使用的技能：using-superpowers；using-git-worktrees；writing-plans；test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求“现在开始开发，完成 T1，先开辟一个 worktree”，随后修正任务为 T1。
+  - 用户要求后续提交信息中冒号后的信息采用中文。
+  - 已读取 `AGENTS.md`、`docs/PLAN.md` T1、`docs/SPEC.md`、`docs/agent-guides/workflow.md`、`docs/agent-guides/harness-boundary.md`、`docs/agent-guides/safety-and-verification.md`。
+- 摘要：
+  - 创建并使用 worktree `D:\agent-leanring\HanCode\.worktrees\t1`，分支为 `codex/t1`。
+  - 新增 `src/hancode/models.py`，提供 `Phase`、`TaskStatus`、`OperationStatus`、`Risk`、`OperationResult`。
+  - 新增 `src/hancode/errors.py`，提供 `StructuredError` 和 `HanCodeError`。
+  - 新增 `tests/test_models.py` 与 `tests/test_errors.py`，覆盖六阶段枚举、任务状态枚举、受限 operation status、结构化错误字段和 JSON 可序列化结果。
+  - 新增 `docs/superpowers/plans/2026-07-08-t1-shared-models-errors.md` 作为 T1 执行计划产物。
+- TDD 证据：
+  - Red：`$env:PYTHONPATH='src'; python -m pytest tests/test_models.py tests/test_errors.py -v` 失败，原因为 `ModuleNotFoundError: No module named 'hancode.errors'`。
+  - Green：同一命令通过，8 passed。
+- 验证：
+  - `$env:PYTHONPATH='src'; python -m pytest` 通过，27 passed；pytest cache 写入 warning 仍存在。
+  - `python -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py` 通过；ruff cache 写入 warning 仍存在。
+  - 标准 `python -m mypy src/hancode/models.py src/hancode/errors.py` 因 mypy 2.2.0 sqlite cache `disk I/O error` 失败。
+  - `$env:PYTHONPATH='src'; python -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-cache-t1 --show-traceback` 通过，no issues found in 2 source files。
+- 人工干预：
+  - 用户将任务从 T0 修正为 T1。
+  - 用户要求提交信息冒号后采用中文。
+  - 用户拒绝提交主 checkout 的 `.gitignore` worktree ignore 配置；该拒绝已遵守，T1 在新 worktree 中继续。
+- 工作流偏离：
+  - 未 dispatch 独立 subagent，也未使用 executing-plans；原因是用户明确要求当前会话直接开始 T1，并先开辟 worktree。已用本会话执行 `writing-plans` 和 TDD 流程，并保留计划产物。
+  - 未派发 code-review subagent；原因是当前多代理工具要求只有用户显式要求 subagent / delegation 时才允许 spawn。改为按 review gate 在本会话执行范围与质量自审。
+- 提交：
+  - `895065e` — `feat: 完成 T1 共享模型与结构化错误`
+- 经验教训：
+  - 在 `src/` layout 尚未 editable install 的环境中，T1 测试需要显式 `PYTHONPATH=src` 才能验证本地包。
+  - 当前默认 `python` 是 3.10.11，低于项目 3.11+ 目标；后续环境门禁或 CI 任务需要收敛解释器版本。
+  - Windows worktree 路径下 pytest / ruff / mypy cache 可能受本地权限或路径语义影响；验证时需要区分代码失败和 cache 写入失败。
+
 ### 2026-07-08 17:21 +08:00 — T0 — 冷启动后阶段门收拢与正式开发入口确认
 
 - 使用的技能：using-superpowers；verification-before-completion
