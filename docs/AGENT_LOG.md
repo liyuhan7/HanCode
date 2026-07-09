@@ -20,6 +20,65 @@
 
 ## 记录条目
 
+### 2026-07-09 21:15 +08:00 — T1 — 共享模型与错误类型返工
+
+- 使用的技能：using-superpowers；brainstorming；writing-plans；using-git-worktrees；test-driven-development；requesting-code-review；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求“直接按这版 PLAN 返工 T1 代码和测试”。
+  - 已先将 `docs/PLAN.md` 与 `docs/SPEC.md` 的错误契约对齐，T1 需改为 `error_code` / `message` / `phase` / `denied_rule` / `suggested_fix`。
+  - 本轮只允许返工 `src/hancode/errors.py`、`src/hancode/models.py`、`tests/test_errors.py`、`tests/test_models.py`，不扩到 T2 及后续模块。
+- 摘要：
+  - 将 `StructuredError` 从旧字段 `code` / `hint` / `details` 返工为 SPEC 顶层字段契约。
+  - 保持 `HanCodeError` 包装接口不变，但错误展示文案改为基于 `error_code`。
+  - 扩展 `OperationResult.to_dict()` 的递归序列化路径，使嵌套 `Risk`、枚举、tuple/list/mapping 在 `data` 中可稳定导出为 JSON。
+  - 重写 T1 测试，使其同时覆盖新错误字段和嵌套共享模型序列化。
+- TDD 证据：
+  - Red：`$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_errors.py tests/test_models.py -v -p no:cacheprovider` 失败，4 failed；失败原因为 `StructuredError.__init__()` 不接受 `error_code` 等新字段。
+  - Green：同一命令在返工后通过，8 passed。
+- 评审：
+  - Spec 合规检查：确认 `StructuredError` 顶层字段与 `docs/SPEC.md` §10.21.5 一致；解析失败、策略拒绝和工具失败后续可复用同一字段名。
+  - 代码质量检查：确认返工只影响 T1 共享模型和对应测试；通过递归 `to_dict()` 避免 `OperationResult.data` 残留不可 JSON 序列化的共享模型对象。
+- 工作流偏离：
+  - 未创建新 worktree；原因是用户要求在当前工作树直接返工，且目标实现文件在本轮开始时无未提交改动。按当前执行会话保持最小范围修改。
+  - 未派发 code-review subagent；原因是当前多代理约束要求只有用户显式要求 delegation 时才允许 spawn，故改为本会话内联两阶段复核。
+- 提交：
+  - 未提交
+- 验证：
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_errors.py tests/test_models.py -v -p no:cacheprovider` 通过，8 passed。
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-t1-review` 通过，no issues found in 2 source files。
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest -p no:cacheprovider` 通过，27 passed。
+- 经验教训：
+  - 共享错误模型一旦与上位 SPEC 失配，问题会沿 `ParseError`、`PolicyDecision`、`Feedback`、`ToolResult` 整条链路扩散；必须先收敛字段名，再推进后续任务。
+  - 共享结果模型的“可序列化”不能只看顶层字段；嵌套共享 dataclass 也必须在首个任务就被回归测试覆盖。
+
+### 2026-07-09 20:27 +08:00 — DOCS — Python 工具链统一为 uv
+
+- 使用的技能：using-superpowers
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求后续包管理统一使用 uv，并查找 Python 相关内容、更新相应文档。
+  - 本轮仅更新当前规范、开发指南和未执行任务卡，不修改实现代码、CI 或历史验证事实。
+- 摘要：
+  - `AGENTS.md`、`README.md` 和安全验证指南增加 uv 环境初始化与质量门禁命令。
+  - `docs/SPEC.md` 明确 uv 负责 Python 版本、虚拟环境、依赖、命令执行和包构建。
+  - `docs/PLAN.md` 从 T2 起统一使用 `uv run`，T26 增加 `uv.lock`、`uv sync`、`uv build` 和 uv CI 约束。
+  - `docs/系统架构.md` 将 Python 包管理器从 pip 收敛为 uv。
+  - T1、`docs/SPEC_PROCESS.md` 和既有日志中的旧命令作为真实历史证据保留。
+- 工作流偏离：
+  - 未使用 brainstorming、worktree、TDD、subagent、code review 和 branch finishing；原因是本轮属于小型文档与开发命令迁移，不修改运行行为。
+- 提交：
+  - 未提交
+- 验证：
+  - `uv --version` 返回 `uv 0.11.16`。
+  - `uv venv --help`、`uv sync --help`、`uv build --help`、`uv tool install --help` 均确认对应子命令可用。
+  - UTF-8 回读全部 6 个目标文档成功，且均包含 uv 约定。
+  - 检索确认 `docs/PLAN.md` T2 之后不存在 `python -m pytest/ruff/mypy/build` 或 pip 安装命令。
+  - `git diff --check` 通过；本轮未运行代码测试，因为没有修改实现或测试代码。
+- 经验教训：
+  - 工具链迁移应区分当前规范与历史证据；历史命令必须保留，避免把未实际执行的 uv 命令写成既有验证结果。
+
 ### 2026-07-08 19:53 +08:00 — T1 — 共享模型与错误类型
 
 - 使用的技能：using-superpowers；using-git-worktrees；writing-plans；test-driven-development；verification-before-completion

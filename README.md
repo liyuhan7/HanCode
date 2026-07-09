@@ -119,7 +119,7 @@ spec -> plan -> code -> test -> review -> deliver
 
 1. 先写失败测试并记录红阶段结果。
 2. 再写最小实现。
-3. 运行任务卡中的 pytest / ruff / mypy 验证。
+3. 通过 uv 运行任务卡中的 pytest / ruff / mypy 验证。
 4. 更新 `docs/PLAN.md` 和 `docs/AGENT_LOG.md`。
 5. 进入下一任务前完成代码审查。
 
@@ -128,6 +128,7 @@ spec -> plan -> code -> test -> review -> deliver
 ## 技术栈
 
 - Python 3.11+
+- uv
 - pytest
 - ruff
 - mypy
@@ -155,12 +156,19 @@ MVP 分发格式为 Python package（wheel / sdist）。Docker 仅作为可选 M
 
 ## 验证
 
+首次开发前初始化项目环境：
+
+```powershell
+uv venv --python 3.11
+uv sync --extra dev
+```
+
 可运行的检查命令：
 
 ```powershell
-python -m pytest
-python -m ruff check src tests
-python -m mypy src
+uv run pytest
+uv run ruff check src tests
+uv run mypy src
 ```
 
 设计测试范围覆盖 Phase Gate、Tool Policy、Trace Logging、Checkpoint Rollback、

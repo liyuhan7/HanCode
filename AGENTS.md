@@ -1,153 +1,56 @@
-﻿# HanCode Agent Map
+﻿你是运行在真实本地仓库中的 Codex 编码代理。 
 
-This file is a map, not a manual. Read it first, then open only the detailed
-agent guide that matches the current task.
+工作目录：
+D:\agent-leanring\HanCode
 
-## Project Identity
+交互语言：
+始终使用中文与用户交流，除非用户明确要求使用其他语言。
 
-HanCode is an AI4SE final project, category A: Coding Agent Harness.
+核心职责：
+协助完成 HanCode AI4SE Coding Agent Harness 项目的设计、实现、测试、文档和验证。你必须基于真实仓库文件、真实命令输出、真实测试结果行动，不得凭空假设项目状态。
 
-Goal: build a lightweight coding-agent harness for student course projects with
-phase-gated coding, deterministic test-feedback, trace logging,
-checkpoint-based rollback, and knowledge-oriented delivery.
+每次开发必读规则：
+1. 先理解需求，再写代码。开始实现前必须明确需求、边界、目标和验收标准。
+2. 先写计划，再执行实现。计划必须包含任务拆分、依赖顺序、涉及文件、预期测试和完成标准。
+3. 按小任务逐步开发。每次只做一个明确的小功能或机制。
+4. 严格遵守任务边界。不得顺手实现当前任务之外的内容。
+5. 使用 TDD。先写失败测试，确认 red，再写最小实现让测试通过，最后再重构。
+6. 每次修改都要可追踪。记录改了什么、为什么改、如何验证、验证结果。
+7. 每个任务独立开发。使用独立分支、worktree 或独立执行会话，避免任务互相污染。
+8. 先做最小可用实现。优先实现能跑通、能测试、边界清楚的 MVP，避免过度设计。
+9. 代码必须可维护。模块职责清晰，避免把多个机制塞进一个大文件或一个大任务。
+10. 接口和数据结构要稳定。先定义模型、状态、错误、结果等基础结构，再让后续模块复用。
+11. 错误要结构化处理。失败不能只抛出模糊异常，要返回明确错误码、错误信息、原因和修复建议。
+12. 使用 mock / stub 做可重复测试。外部模型、工具、凭据、命令执行等不稳定部分必须可替换。
+13. CI 必须覆盖基础质量门禁。至少包括测试、lint、type check；后续可加入 build 和 demo 命令。
+14. 安全优先。不提交真实密钥，不在日志、错误信息、测试快照、trace、README 中打印 secret。
+15. 失败后要反馈和修正。测试失败、策略拒绝、解析错误等必须转化为明确反馈，不得盲目重试。
+16. 文档和代码保持一致。计划、测试、README、CI、代码实现必须同步更新。
+17. 不把“能运行”当作“完成”。完成必须同时满足测试、边界、错误处理、文档同步和验证证据。
+18. 人类开发者保留判断权。关键设计取舍、范围控制、验收标准由开发者决定。
 
-Main contribution: deterministic feedback loop and reversible coding state.
-Code changes must create checkpoints, tests provide objective feedback,
-FeedbackBuilder classifies failures and feeds observations back into the loop,
-and exhausted retry budget forces rollback. Workspace-scoped memory is a
-supporting dimension: Project Workspace manages course-project context and
-long-term experience; Task Workspace manages task SPEC, PLAN, Trace,
-Checkpoint, and learning artifacts; Phase Mode governs each course-project
-stage.
+实现准入规则：
+1. 只有当任务对应 docs/PLAN.md 中的明确任务卡时，才允许开始实现。
+2. 开发前必须确认当前任务编号、任务边界、验收标准和允许修改的文件范围。
+3. 不允许一次性批量处理多个无关任务。
+4. 不允许用 prompt、注释或文档冒充核心机制实现。
+5. HanCode 的核心机制必须是 deterministic、可测试、可审计的代码。
+6. 核心行为必须能通过 MockLLM、stub 或 deterministic test 验证，不依赖真实网络 LLM。
 
-## Codex Operating Contract
+执行规则：
+1. 修改文件前先阅读相关上下文。
+2. 保持最小改动，不做无关重构。
+3. 不覆盖用户已有改动。
+4. 不执行 destructive git 命令，例如 git reset --hard、git clean、强制 checkout，除非用户明确要求。
+5. 运行命令后必须依据真实输出判断结果。
+6. 测试、lint、type check 或运行验证失败时，必须说明失败点和下一步修正方向。
 
-This repository assumes a Codex agent working in the real local workspace
-`D:\agent-leanring\HanCode`, not a hypothetical sandbox-only project copy.
-
-- Use Chinese for user interaction unless the user explicitly asks for another language.
-- Base decisions on real repository files, real command output, and real test results.
-- Understand the current request, boundary, goal, and acceptance criteria before coding.
-- Write a short task plan before implementation: scope, dependency order, files, tests, and done criteria.
-- Work one small task at a time; use an isolated branch, worktree, or execution session per task.
-- Prefer the minimum viable implementation first; keep module boundaries and shared interfaces stable.
-- Make every change traceable: what changed, why, how it was verified, and what the result was.
-
-## Source Priority
-
-When instructions conflict, follow this order:
-
-1. `docs/AI4SE_Final_Project_通用要求.md`
-2. `docs/AI4SE_Final_Project_A_Coding_Agent_Harness (1).md`
-3. `docs/SPEC.md`
-4. `docs/PLAN.md`
-5. `README.md`
-6. `docs/AGENT_LOG.md`
-7. this map
-
-## Read On Demand
-
-Use these detailed guides only when relevant:
-
-- Assignment and deliverables: `docs/agent-guides/assignment-map.md`
-- Workflow, phase gates, TDD, cold-start validation: `docs/agent-guides/workflow.md`
-- Harness boundary and mechanism design: `docs/agent-guides/harness-boundary.md`
-- Credentials, workspace safety, verification, completion: `docs/agent-guides/safety-and-verification.md`
-
-If a guide conflicts with the assignment files, the assignment files win.
-
-## Current Phase Gate
-
-The specification, plan, and cold-start validation evidence are now recorded.
-Formal implementation may begin, starting from `docs/PLAN.md` task T1.
-
-Implementation code is allowed only when it is scoped to a `docs/PLAN.md` task
-and follows the required task workflow:
-
-1. read the task card and referenced SPEC / architecture sections
-2. create or use an isolated worktree / branch / execution session
-3. write the failing test first and record the red result
-4. implement the minimum code
-5. rerun verification
-6. update `docs/PLAN.md` and `docs/AGENT_LOG.md`
-7. request review before moving to the next task
-
-Do not batch unrelated tasks into one implementation pass. The cold-start review
-found extra constraints for T1 / T2; follow the current task cards rather than
-copying the demo implementation directly.
-
-Implementation admission and execution rules:
-
-- Implement only work that maps to a clear `docs/PLAN.md` task card.
-- Confirm the task ID, scope, allowed file range, and acceptance criteria before editing code.
-- Keep changes minimal; avoid unrelated refactors and never overwrite user changes.
-- Read the relevant context before modifying files.
-- Do not use prompts, comments, or docs as substitutes for required harness mechanisms.
-- Core mechanisms must stay deterministic, testable, and auditable through MockLLM, stubs, or other repeatable tests.
-- Handle failures as structured feedback, not blind retries; keep errors explicit enough to support repair.
-- Use command results as ground truth. If tests, lint, type check, or runtime verification fail, report the failure and next correction path instead of claiming success.
-
-## Default Workflow
-
-Use the required Superpowers sequence unless the user explicitly scopes the task
-as a small documentation/configuration edit:
-
-1. `brainstorming`
-2. `writing-plans`
-3. `using-git-worktrees`
-4. `subagent-driven-development` or `executing-plans`
-5. `test-driven-development`
-6. `requesting-code-review`
-7. `finishing-a-development-branch`
-
-Record necessary workflow deviations in `docs/AGENT_LOG.md`.
-
-## Non-Negotiables
-
-- Implementation tasks use TDD: failing test first, then minimal code, then refactor.
-- Confirm the failing test result before writing the implementation, then rerun verification after the change.
-- Required harness mechanisms must be deterministic code, not prompts, rules, or hosted-agent behavior.
-- Course assignment files, teacher tests, grading scripts, and sample data are protected by policy.
-- Core mechanisms must be testable with MockLLM or stubs, without network or a real LLM.
-- Define stable models, states, errors, and results before spreading new interfaces across modules.
-- Prefer structured errors with clear cause and repair direction over vague exceptions.
-- CI quality gates should cover tests, lint, and type checking at minimum; add build or demo checks when the task needs them.
-- Never commit real credentials, API keys, tokens, or secrets.
-- Do not print secret values in logs, errors, README examples, tests, or agent records.
-- Stay within the task scope and avoid unrelated refactors.
-- Keep code and docs aligned: when task scope requires it, update plan, log, tests, README, and CI together.
-- Do not claim completion without fresh verification evidence.
-- "Runs once" is not enough: completion requires correct boundaries, error handling, synchronized docs, and fresh verification evidence.
-- Human developers keep final authority over design tradeoffs, scope, and acceptance criteria.
-
-## Task Routing
-
-- Editing `docs/SPEC.md`: read assignment files and `docs/agent-guides/workflow.md`.
-- Editing `docs/PLAN.md`: read `docs/SPEC.md`, assignment files, and `docs/agent-guides/workflow.md`.
-- Designing implementation mechanisms: read `docs/系统架构.md` and `docs/agent-guides/harness-boundary.md`.
-- Touching credentials, tools, shell commands, paths, logs, or verification: read `docs/agent-guides/safety-and-verification.md`.
-- Completing a task: update `docs/PLAN.md` and `docs/AGENT_LOG.md` when the task type requires it.
-
-## Verification Shortcuts
-
-Prefer these commands when relevant:
-
-```powershell
-python -m pytest
-python -m ruff check src tests
-python -m mypy src
-```
-
-For documentation-only changes, verify by reading changed files with
-`Get-Content -Raw -Encoding UTF8`, checking required phrases, and confirming
-`git status --short`.
-
-For implementation tasks, final reporting should include what changed, why it
-changed, how it was verified, the verification result, and any remaining risk
-or unfinished work.
-
-## Final Rule
-
-HanCode must prove its core behavior through engineering mechanisms. If removing
-the real LLM makes a claimed mechanism untestable, that mechanism is not
-sufficiently implemented.
+任务完成规则：
+1. 实现类任务完成后，必须更新 docs/PLAN.md 和 docs/AGENT_LOG.md，除非用户明确说明当前任务只读分析。
+2. 最终回答必须包含：
+   - 改了什么；
+   - 为什么这样改；
+   - 如何验证；
+   - 验证结果；
+   - 剩余风险或未完成项。
+3. 没有新鲜验证证据时，不得声称“已完成”“已修复”“测试通过”。

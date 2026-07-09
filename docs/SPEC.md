@@ -999,19 +999,20 @@ Python 3.11+
 ```bash
 git clone <repo-url>
 cd HanCode
-pip install -e .
+uv venv --python 3.11
+uv sync --extra dev
 ```
 
 分发构建：
 
 ```bash
-python -m build
+uv build
 ```
 
 目标机安装：
 
 ```bash
-pip install dist/<hancode-wheel-file>.whl
+uv tool install dist/<hancode-wheel-file>.whl
 ```
 
 README 必须说明：
@@ -1067,7 +1068,7 @@ hancode run
 
 ```bash
 hancode demo --provider mock
-python -m pytest
+uv run pytest
 ```
 
 ### 8.9 `.gitignore` 与导出规则
@@ -1100,7 +1101,7 @@ python -m pytest
 - `.hancode/project.json` 不包含明文 key。
 - `.env`、本地凭据文件和 `.hancode/` 默认被 `.gitignore` 排除。
 - ContextBuilder、TraceLogger、CheckpointManager 和导出流程不得读取或输出明文凭据。
-- `python -m build` 可以生成 Python 分发包。
+- `uv build` 可以生成 Python 分发包。
 - 目标机可以通过 wheel 安装并运行 HanCode。
 - README 写清获取方式、运行命令、key 安全配置方式和已知限制。
 
@@ -1113,6 +1114,7 @@ HanCode 的技术选型遵循轻量、本地优先、机制可测试、便于课
 | 层次 | 技术选型 | 理由 |
 | --- | --- | --- |
 | 主语言 | Python 3.11+ | 适合快速实现本地 CLI、TUI、文件工具、测试工具、MockLLM 和轻量 Harness；学生课程项目使用门槛低。 |
+| Python 工具链 | uv | 统一管理 Python 版本、项目虚拟环境、依赖锁定、命令执行和包构建，避免依赖系统默认 Python。 |
 | CLI | Typer | 适合 `hancode auth`、`hancode demo`、`hancode run`、`hancode export` 等多子命令；类型注解清晰，自动 help 友好。 |
 | TUI | Textual + Rich | Textual 适合终端布局、事件循环和键盘交互；Rich 适合表格、日志、diff、Markdown 和状态展示。 |
 | 测试框架 | pytest | 适合 MockLLM、临时文件系统、工具层、策略层和 AgentLoop 控制流测试。 |
@@ -1404,7 +1406,7 @@ HanCode MVP 完成的总体标准是：
 - Demo 至少展示一次业务代码修改前 checkpoint 创建。
 - Demo 至少展示一次测试执行，并把结果写入 `TEST_REPORT.md`。
 - 最终结构化输出包含 `status`、`task_id`、`requirements_covered`、`files_changed`、`tests_run`、`test_status`、`checkpoints`、`rollback_performed`、`deliverables`、`knowledge_items`、`risks`、`next_steps`。
-- `python -m pytest` 可以运行核心机制测试。
+- `uv run pytest` 可以运行核心机制测试。
 - 核心机制测试不依赖真实 LLM、真实 API key、网络或宿主编码智能体能力。
 
 ### 10.2 AgentLoop 验收标准
@@ -1631,7 +1633,7 @@ HanCode MVP 完成的总体标准是：
 - `.hancode/project.json` 不包含明文 key。
 - `.env`、本地凭据文件和 `.hancode/` 默认被 `.gitignore` 排除。
 - ContextBuilder、TraceLogger、CheckpointManager 和导出流程不得读取或输出明文凭据。
-- `python -m build` 可以生成 wheel / sdist。
+- `uv build` 可以生成 wheel / sdist。
 - 目标机可以通过 wheel 安装并运行 HanCode。
 - CI unit-test job 默认运行 MockLLM 核心机制测试，不依赖真实 LLM、真实 API key 或网络。
 - README 写清获取方式、运行命令、key 安全配置方式和已知限制。
@@ -2075,7 +2077,5 @@ P2 风险可作为后续改进：
 - 多语言测试命令扩展。
 - 更复杂的 HITL 确认流程。
 - 只读 Git diff 展示。
-
-
 
 

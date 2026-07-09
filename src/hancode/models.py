@@ -97,8 +97,9 @@ def _serialize_mapping(values: Mapping[str, object]) -> dict[str, object]:
 def _serialize_value(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
-    if isinstance(value, StructuredError):
-        return value.to_dict()
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
     if isinstance(value, Mapping):
         return {str(key): _serialize_value(item) for key, item in value.items()}
     if isinstance(value, list):

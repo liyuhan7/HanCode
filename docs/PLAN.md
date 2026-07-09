@@ -251,7 +251,7 @@ git status --short
 | 可并行           | 不并行；后续模块依赖共享类型        |
 | Worktree / PR | `codex/t1`            |
 | 主贡献相关         | 否，基础支撑                |
-| Commit        | `895065e`             |
+| Commit        | 未提交（在 `895065e` 基础上返工） |
 
 ### 目标
 
@@ -268,6 +268,7 @@ git status --short
 
 * `state.json` 状态约束。
 * Trace、ToolResult、PolicyDecision、FeedbackReport、AgentRunResult 等结构化输出要求。
+* `docs/SPEC.md` §10.21.5「结构化错误与策略拒绝」字段契约。
 * 核心机制必须可测试、可序列化、可审查。
 
 ### 接口契约
@@ -289,7 +290,7 @@ class Risk: ...
 
 * `test_task_status_allows_only_defined_values`
 * `test_phase_allows_only_six_project_phases`
-* `test_structured_error_has_code_message_hint`
+* `test_structured_error_has_required_spec_fields`
 * `test_operation_result_serializes_to_dict`
 * `test_operation_result_rejects_unknown_status`
 
@@ -297,8 +298,9 @@ class Risk: ...
 
 * 优先使用标准库 `dataclass`、`Enum`。
 * 必要时使用 pydantic，但不引入复杂依赖。
-* 错误结构至少包含 `code`、`message`、`hint`、`details`。
+* `StructuredError` 顶层字段必须与 `docs/SPEC.md` §10.21.5 对齐：至少包含 `error_code`、`message`、`phase`、`denied_rule`、`suggested_fix`；policy denial、parse failure、tool failure、credential error 复用同一套字段名，不得并行引入 `code` / `hint` / `rule_id` 等旧契约。
 * 冷启动验证发现 `OperationResult.status` 若使用任意字符串会污染后续 AgentLoop / ToolResult / ResultBuilder 状态边界；正式实现必须使用受限状态类型。若表示任务状态，复用 `TaskStatus`；若表示操作状态，定义独立 enum，不允许 `"ok"` 这类未声明状态。
+* `OperationResult.to_dict()` 必须能递归序列化枚举、共享 dataclass、list / tuple / mapping 等嵌套共享模型，避免后续 ToolResult / AgentRunResult 在 JSON 导出时残留不可序列化对象。
 
 ### 验证步骤
 
@@ -312,6 +314,8 @@ python -m mypy src/hancode/models.py src/hancode/errors.py
 
 * 共享模型测试全绿。
 * 后续模块能复用同一套 phase、status、error、result。
+* 所有策略拒绝、解析失败、工具失败和凭据错误都复用统一的顶层错误字段。
+* 嵌套共享模型可稳定序列化为 dict / JSON。
 
 ### 实际验证
 
@@ -321,6 +325,11 @@ python -m mypy src/hancode/models.py src/hancode/errors.py
 * Lint：`python -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py` 通过；当前 worktree 下 ruff cache 写入有 warning。
 * Type check：标准 `python -m mypy src/hancode/models.py src/hancode/errors.py` 因 mypy 2.2.0 sqlite cache `disk I/O error` 失败；使用 `$env:PYTHONPATH='src'; python -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-cache-t1 --show-traceback` 通过，no issues found in 2 source files。
 * 环境备注：当前 `python` 为 3.10.11，低于项目 `pyproject.toml` 的 Python 3.11+ 目标；本轮未修改解释器配置。
+* 2026-07-09 两阶段评审先发现当前 commit `895065e` 仍实现旧版错误字段 `code` / `hint` / `details`，且 `OperationResult` 未保证嵌套共享模型递归 JSON 序列化；随后已在当前工作树返工并重新验证。
+* 返工验证：`$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_errors.py tests/test_models.py -v -p no:cacheprovider` 先红后绿，最终 8 passed。
+* 返工验证：`$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py --no-cache` 通过。
+* 返工验证：`$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-t1-review` 通过，no issues found in 2 source files。
+* 返工验证：`$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest -p no:cacheprovider` 通过，27 passed。
 
 ### 非目标 / 边界
 
@@ -393,9 +402,9 @@ def task_path(project_root: Path, task_id: str) -> Path: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_workspace.py -v
-python -m ruff check src/hancode/workspace.py tests/test_workspace.py
-python -m mypy src/hancode/workspace.py
+uv run pytest tests/test_workspace.py -v
+uv run ruff check src/hancode/workspace.py tests/test_workspace.py
+uv run mypy src/hancode/workspace.py
 ```
 
 ### 完成判定
@@ -477,9 +486,9 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_config.py -v
-python -m ruff check src/hancode/config.py tests/test_config.py
-python -m mypy src/hancode/config.py
+uv run pytest tests/test_config.py -v
+uv run ruff check src/hancode/config.py tests/test_config.py
+uv run mypy src/hancode/config.py
 ```
 
 ### 完成判定
@@ -566,9 +575,9 @@ def reconcile_state(task_root: Path, state: TaskState) -> TaskState: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_state.py -v
-python -m ruff check src/hancode/state.py tests/test_state.py
-python -m mypy src/hancode/state.py
+uv run pytest tests/test_state.py -v
+uv run ruff check src/hancode/state.py tests/test_state.py
+uv run mypy src/hancode/state.py
 ```
 
 ### 完成判定
@@ -647,9 +656,9 @@ def can_write_source(phase: Phase, state: TaskState) -> bool: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_phase_gate.py -v
-python -m ruff check src/hancode/phases.py tests/test_phase_gate.py
-python -m mypy src/hancode/phases.py
+uv run pytest tests/test_phase_gate.py -v
+uv run ruff check src/hancode/phases.py tests/test_phase_gate.py
+uv run mypy src/hancode/phases.py
 ```
 
 ### 完成判定
@@ -731,9 +740,9 @@ def select_next_phase(state: TaskState) -> RoutingDecision: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_router.py -v
-python -m ruff check src/hancode/router.py tests/test_router.py
-python -m mypy src/hancode/router.py
+uv run pytest tests/test_router.py -v
+uv run ruff check src/hancode/router.py tests/test_router.py
+uv run mypy src/hancode/router.py
 ```
 
 ### 完成判定
@@ -818,9 +827,9 @@ phase
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_action_schema.py -v
-python -m ruff check src/hancode/actions.py tests/test_action_schema.py
-python -m mypy src/hancode/actions.py
+uv run pytest tests/test_action_schema.py -v
+uv run ruff check src/hancode/actions.py tests/test_action_schema.py
+uv run mypy src/hancode/actions.py
 ```
 
 ### 完成判定
@@ -871,7 +880,7 @@ def parse_action(raw: dict[str, object]) -> Action | ParseError: ...
 输入：LLM / MockLLM 原始输出。
 输出：Action 或 ParseError。
 不变量：parser 只做格式和 schema 校验，不做安全策略判断。
-错误处理：解析失败返回 ParseError，包含 code、message、hint。
+错误处理：解析失败返回 ParseError，至少包含 `error_code`、`message`、`phase`、`denied_rule`、`suggested_fix`；其中 parse error 的 `denied_rule` 为 `null`。
 
 ### 预期失败测试
 
@@ -891,9 +900,9 @@ def parse_action(raw: dict[str, object]) -> Action | ParseError: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_action_parser.py -v
-python -m ruff check src/hancode/actions.py tests/test_action_parser.py
-python -m mypy src/hancode/actions.py
+uv run pytest tests/test_action_parser.py -v
+uv run ruff check src/hancode/actions.py tests/test_action_parser.py
+uv run mypy src/hancode/actions.py
 ```
 
 ### 完成判定
@@ -970,9 +979,9 @@ class MockLLM:
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_llm.py -v
-python -m ruff check src/hancode/llm.py tests/test_llm.py
-python -m mypy src/hancode/llm.py
+uv run pytest tests/test_llm.py -v
+uv run ruff check src/hancode/llm.py tests/test_llm.py
+uv run mypy src/hancode/llm.py
 ```
 
 ### 完成判定
@@ -1045,9 +1054,9 @@ class AgentLoop:
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_agent_loop.py -v
-python -m ruff check src/hancode/agent_loop.py tests/test_agent_loop.py
-python -m mypy src/hancode/agent_loop.py
+uv run pytest tests/test_agent_loop.py -v
+uv run ruff check src/hancode/agent_loop.py tests/test_agent_loop.py
+uv run mypy src/hancode/agent_loop.py
 ```
 
 ### 完成判定
@@ -1132,9 +1141,9 @@ class ToolRegistry:
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_tool_registry.py -v
-python -m ruff check src/hancode/tools.py tests/test_tool_registry.py
-python -m mypy src/hancode/tools.py
+uv run pytest tests/test_tool_registry.py -v
+uv run ruff check src/hancode/tools.py tests/test_tool_registry.py
+uv run mypy src/hancode/tools.py
 ```
 
 ### 完成判定
@@ -1207,9 +1216,9 @@ def search_text(project_root: Path, query: str) -> ToolResult: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_file_tools.py -v
-python -m ruff check src/hancode/file_tools.py tests/test_file_tools.py
-python -m mypy src/hancode/file_tools.py
+uv run pytest tests/test_file_tools.py -v
+uv run ruff check src/hancode/file_tools.py tests/test_file_tools.py
+uv run mypy src/hancode/file_tools.py
 ```
 
 ### 完成判定
@@ -1287,9 +1296,9 @@ def classify_path(project_root: Path, target: str, protected_patterns: list[str]
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_path_classifier.py -v
-python -m ruff check src/hancode/path_policy.py tests/test_path_classifier.py
-python -m mypy src/hancode/path_policy.py
+uv run pytest tests/test_path_classifier.py -v
+uv run ruff check src/hancode/path_policy.py tests/test_path_classifier.py
+uv run mypy src/hancode/path_policy.py
 ```
 
 ### 完成判定
@@ -1341,7 +1350,7 @@ def evaluate_policy(action: Action, phase: Phase, state: TaskState, config: HanC
 ```
 
 输入：Action、phase、TaskState、HanCodeConfig。
-输出：PolicyDecision，包含 allowed、reason、requires_checkpoint、rule_id、hint。
+输出：PolicyDecision，包含 `allowed`、`reason`、`requires_checkpoint`、`denied_rule`、`suggested_fix`。
 不变量：policy decision 必须由代码完成，不能依赖提示词。
 错误处理：拒绝时不得执行工具，并把拒绝原因交给 FeedbackBuilder。
 
@@ -1352,20 +1361,20 @@ def evaluate_policy(action: Action, phase: Phase, state: TaskState, config: HanC
 * `test_non_code_phase_source_write_is_denied`
 * `test_spec_and_plan_required_before_source_write`
 * `test_code_phase_source_write_requires_checkpoint`
-* `test_policy_denial_contains_rule_id_and_hint`
+* `test_policy_denial_contains_denied_rule_and_suggested_fix`
 
 ### 实现要点
 
 * policy 先检查工具是否允许，再检查 phase，再检查 path zone，再检查 checkpoint requirement。
 * 合法 source write 在 code phase 中返回 `requires_checkpoint=True`。
-* denial 必须包含 correction hint。
+* denial 必须包含 `denied_rule` 和可执行的 `suggested_fix`。
 
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_tool_policy.py -v
-python -m ruff check src/hancode/tool_policy.py tests/test_tool_policy.py
-python -m mypy src/hancode/tool_policy.py
+uv run pytest tests/test_tool_policy.py -v
+uv run ruff check src/hancode/tool_policy.py tests/test_tool_policy.py
+uv run mypy src/hancode/tool_policy.py
 ```
 
 ### 完成判定
@@ -1413,7 +1422,7 @@ python -m mypy src/hancode/tool_policy.py
 
 ```text
 输入：Action path、protected patterns、phase、state、config。
-输出：PolicyDecision denied，rule_id 指向 protected file rule。
+输出：PolicyDecision denied，`denied_rule` 指向 protected file rule，并提供 `suggested_fix`。
 不变量：protected 文件默认不能被 Agent 修改或删除。
 错误处理：受保护文件写入请求被拒绝，记录可回灌的原因和建议。
 ```
@@ -1440,9 +1449,9 @@ python -m mypy src/hancode/tool_policy.py
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_course_file_protection.py -v
-python -m ruff check src/hancode/tool_policy.py src/hancode/path_policy.py tests/test_course_file_protection.py
-python -m mypy src/hancode/tool_policy.py src/hancode/path_policy.py
+uv run pytest tests/test_course_file_protection.py -v
+uv run ruff check src/hancode/tool_policy.py src/hancode/path_policy.py tests/test_course_file_protection.py
+uv run mypy src/hancode/tool_policy.py src/hancode/path_policy.py
 ```
 
 ### 完成判定
@@ -1519,9 +1528,9 @@ def append_trace(task_root: Path, event: TraceEvent) -> None: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_trace.py -v
-python -m ruff check src/hancode/trace.py tests/test_trace.py
-python -m mypy src/hancode/trace.py
+uv run pytest tests/test_trace.py -v
+uv run ruff check src/hancode/trace.py tests/test_trace.py
+uv run mypy src/hancode/trace.py
 ```
 
 ### 完成判定
@@ -1603,9 +1612,9 @@ def create_checkpoint(task_root: Path, files: list[Path], reason: str) -> Checkp
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_checkpoints.py -v
-python -m ruff check src/hancode/checkpoints.py tests/test_checkpoints.py
-python -m mypy src/hancode/checkpoints.py
+uv run pytest tests/test_checkpoints.py -v
+uv run ruff check src/hancode/checkpoints.py tests/test_checkpoints.py
+uv run mypy src/hancode/checkpoints.py
 ```
 
 ### 完成判定
@@ -1678,9 +1687,9 @@ def rollback_last_checkpoint(task_root: Path) -> RollbackResult: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_rollback.py -v
-python -m ruff check src/hancode/checkpoints.py tests/test_rollback.py
-python -m mypy src/hancode/checkpoints.py
+uv run pytest tests/test_rollback.py -v
+uv run ruff check src/hancode/checkpoints.py tests/test_rollback.py
+uv run mypy src/hancode/checkpoints.py
 ```
 
 ### 完成判定
@@ -1758,9 +1767,9 @@ def build_context(project_root: Path, task_id: str, phase: Phase, config: HanCod
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_context_builder.py -v
-python -m ruff check src/hancode/context.py tests/test_context_builder.py
-python -m mypy src/hancode/context.py
+uv run pytest tests/test_context_builder.py -v
+uv run ruff check src/hancode/context.py tests/test_context_builder.py
+uv run mypy src/hancode/context.py
 ```
 
 ### 完成判定
@@ -1801,7 +1810,7 @@ python -m mypy src/hancode/context.py
 
 * 反馈回灌机制。
 * 反馈必须来自确定性工具结果或系统判定，不能由 LLM 自行判断。
-* 测试失败分类和 hint 必须稳定可测试。
+* 测试失败分类和纠正建议必须稳定可测试。
 
 ### 接口契约
 
@@ -1820,7 +1829,7 @@ def build_observation(result: ToolResult | PolicyDecision | RollbackResult | Par
 
 输入：测试输出、退出码、工具结果、策略拒绝、rollback 结果、parse error。
 输出：FeedbackReport / Observation。
-不变量：同一输入分类结果稳定；hint 由规则表生成。
+不变量：同一输入分类结果稳定；纠正建议由规则表生成。
 错误处理：无法分类但 exit code 非零时返回 UNKNOWN，保留摘要并提示人工检查。
 
 ### 预期失败测试
@@ -1846,21 +1855,21 @@ def build_observation(result: ToolResult | PolicyDecision | RollbackResult | Par
   * error exception
   * unknown
 * 分类在完整输出上执行，摘要截断在分类之后执行。
-* policy denial observation 包含 rule_id、reason、hint。
+* policy denial observation 包含 `denied_rule`、`reason`、`suggested_fix`。
 * 不调用 LLM 判断失败原因。
 
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_feedback.py -v
-python -m ruff check src/hancode/feedback.py tests/test_feedback.py
-python -m mypy src/hancode/feedback.py
+uv run pytest tests/test_feedback.py -v
+uv run ruff check src/hancode/feedback.py tests/test_feedback.py
+uv run mypy src/hancode/feedback.py
 ```
 
 ### 完成判定
 
 * 同一输入输出稳定。
-* failure hint 由规则表生成。
+* failure suggested_fix 由规则表生成。
 * 反馈来自工具结果或系统判定。
 
 ### 非目标 / 边界
@@ -1927,9 +1936,9 @@ python -m mypy src/hancode/feedback.py
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_feedback_loop.py -v
-python -m ruff check src/hancode/agent_loop.py tests/test_feedback_loop.py
-python -m mypy src/hancode/agent_loop.py
+uv run pytest tests/test_feedback_loop.py -v
+uv run ruff check src/hancode/agent_loop.py tests/test_feedback_loop.py
+uv run mypy src/hancode/agent_loop.py
 ```
 
 ### 完成判定
@@ -2011,9 +2020,9 @@ def write_deliverables(task_root: Path, result: AgentRunResult) -> Path: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_delivery.py -v
-python -m ruff check src/hancode/delivery.py tests/test_delivery.py
-python -m mypy src/hancode/delivery.py
+uv run pytest tests/test_delivery.py -v
+uv run ruff check src/hancode/delivery.py tests/test_delivery.py
+uv run mypy src/hancode/delivery.py
 ```
 
 ### 完成判定
@@ -2094,15 +2103,15 @@ def run_mock_demo(project_root: Path) -> AgentRunResult: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_mock_demo.py -v
-python scripts/demo_mock_loop.py
-python -m ruff check scripts/demo_mock_loop.py tests/test_mock_demo.py
-python -m mypy src
+uv run pytest tests/test_mock_demo.py -v
+uv run python scripts/demo_mock_loop.py
+uv run ruff check scripts/demo_mock_loop.py tests/test_mock_demo.py
+uv run mypy src
 ```
 
 ### 完成判定
 
-* `python scripts/demo_mock_loop.py` 可重复运行。
+* `uv run python scripts/demo_mock_loop.py` 可重复运行。
 * demo 不依赖真实 LLM、网络或 API key。
 * trace 能证明 policy、feedback、checkpoint、rollback、deliver 发生过。
 
@@ -2178,10 +2187,10 @@ hancode export --task task-001 --out deliverables/
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_cli.py -v
-python -m ruff check src/hancode/cli.py tests/test_cli.py
-python -m mypy src/hancode/cli.py
-hancode --help
+uv run pytest tests/test_cli.py -v
+uv run ruff check src/hancode/cli.py tests/test_cli.py
+uv run mypy src/hancode/cli.py
+uv run hancode --help
 ```
 
 ### 完成判定
@@ -2257,9 +2266,9 @@ def credentials_clear(provider: str) -> None: ...
 ### 验证步骤
 
 ```powershell
-python -m pytest tests/test_credentials.py -v
-python -m ruff check src/hancode/credentials.py tests/test_credentials.py
-python -m mypy src/hancode/credentials.py
+uv run pytest tests/test_credentials.py -v
+uv run ruff check src/hancode/credentials.py tests/test_credentials.py
+uv run mypy src/hancode/credentials.py
 ```
 
 ### 完成判定
@@ -2294,6 +2303,7 @@ python -m mypy src/hancode/credentials.py
 ### 涉及文件
 
 * `pyproject.toml`
+* `uv.lock`
 * `Makefile`
 * `.github/workflows/ci.yml`
 * `.gitlab-ci.yml`
@@ -2309,15 +2319,16 @@ python -m mypy src/hancode/credentials.py
 ### 接口契约
 
 ```text
-python -m pytest
-python -m ruff check src tests scripts
-python -m mypy src
-python -m build
-hancode --help
-hancode demo --provider mock
+uv sync --extra dev
+uv run pytest
+uv run ruff check src tests scripts
+uv run mypy src
+uv build
+uv run hancode --help
+uv run hancode demo --provider mock
 ```
 
-输入：干净 checkout、Python 3.11 环境。
+输入：干净 checkout、已安装 uv。
 输出：测试、lint、type check、package build 通过。
 不变量：CI 不要求真实 API key。
 错误处理：CI 失败必须记录原因，不得绕过。
@@ -2326,7 +2337,7 @@ hancode demo --provider mock
 
 * `test_python_package_metadata_has_console_script`
 * `test_make_check_contains_lint_typecheck_test`
-* `test_github_ci_runs_pytest_ruff_mypy`
+* `test_github_ci_uses_uv_for_pytest_ruff_mypy`
 * `test_gitlab_ci_contains_unit_test_job`
 * `test_ci_does_not_require_real_secret`
 
@@ -2336,19 +2347,21 @@ hancode demo --provider mock
 
   * `hancode = "hancode.cli:app"`
 * `pyproject.toml` 必须与项目约定保持一致：`requires-python >= 3.11`，ruff / mypy 目标版本也使用 Python 3.11。
-* GitHub Actions 可作为仓库 CI。
+* `uv.lock` 必须纳入版本控制，确保本地与 CI 使用一致的依赖解析结果。
+* GitHub Actions 可作为仓库 CI，并通过 uv 安装依赖和运行质量门禁。
 * 若课程要求 GitLab CI，补 `.gitlab-ci.yml` 的 `unit-test` job。
-* `python -m build` 需要补充 build 依赖。
+* 使用 `uv build` 生成 wheel / sdist。
 
 ### 验证步骤
 
 ```powershell
-python -m pytest
-python -m ruff check src tests scripts
-python -m mypy src
-python -m build
-hancode --help
-hancode demo --provider mock
+uv sync --extra dev
+uv run pytest
+uv run ruff check src tests scripts
+uv run mypy src
+uv build
+uv run hancode --help
+uv run hancode demo --provider mock
 ```
 
 ### 完成判定
@@ -2426,8 +2439,8 @@ README 至少包含：
 
 ```powershell
 Get-Content -Raw -Encoding UTF8 README.md
-Select-String -Path README.md -Pattern 'hancode demo --provider mock','凭据','已知限制','python -m pytest'
-python -m pytest
+Select-String -Path README.md -Pattern 'hancode demo --provider mock','凭据','已知限制','uv run pytest'
+uv run pytest
 git status --short
 ```
 
@@ -2573,12 +2586,12 @@ T<编号>: <任务名称>
 MVP 完成后，至少运行：
 
 ```powershell
-python -m pytest
-python -m ruff check src tests scripts
-python -m mypy src
-python -m build
-hancode --help
-hancode demo --provider mock
+uv run pytest
+uv run ruff check src tests scripts
+uv run mypy src
+uv build
+uv run hancode --help
+uv run hancode demo --provider mock
 ```
 
 若存在 Makefile：
@@ -2666,12 +2679,12 @@ HanCode MVP 完成必须同时满足：
 
 * 所有 T1-T27 状态为 [x]。
 * 所有任务都有 commit hash 和验证记录。
-* `python -m pytest` 通过。
-* `python -m ruff check src tests scripts` 通过。
-* `python -m mypy src` 通过。
-* `python -m build` 通过。
-* `hancode --help` 可运行。
-* `hancode demo --provider mock` 可运行。
+* `uv run pytest` 通过。
+* `uv run ruff check src tests scripts` 通过。
+* `uv run mypy src` 通过。
+* `uv build` 通过。
+* `uv run hancode --help` 可运行。
+* `uv run hancode demo --provider mock` 可运行。
 * MockLLM demo trace 能证明：
 
   * policy denial。
