@@ -343,12 +343,12 @@ python -m mypy src/hancode/models.py src/hancode/errors.py
 
 | 元信息           | 值                       |
 | ------------- | ----------------------- |
-| 状态            | [ ] 未开始                 |
+| 状态            | [x] 已完成                 |
 | 依赖            | T1                      |
 | 可并行           | 不并行；后续任务依赖 workspace 结构 |
 | Worktree / PR | `codex/workspace-init`  |
 | 主贡献相关         | 否，支撑维度                  |
-| Commit        | TODO                    |
+| Commit        | TODO（worktree 未提交）       |
 
 ### 目标
 
@@ -419,6 +419,23 @@ uv run mypy src/hancode/workspace.py
 * 不实现 state 读写逻辑。
 * 不实现 checkpoint 快照。
 * 不实现 ContextBuilder。
+
+### 实际验证
+
+* Red-1：`test_task_workspace_state_json_contains_all_required_fields` 失败，缺失 8 个字段（`goal`、`checkpoint_seq`、`tests_run`、`test_status_consumed`、`phase_completed`、`source_edits_this_phase`、`rollback_required`、`rollback_done`）。
+* Red-2：`test_task_workspace_init_preserves_existing_state_and_trace` 失败，`FileExistsError`——`init_task_workspace` 不幂等。
+* Red-3：`test_workspace_rejects_tasks_directory_escape_via_link` 失败；`task_path()` 仅校验 `candidate` 位于已解析 `tasks_root` 下，未拒绝 `.hancode/tasks` 经 symlink / junction 逃逸到项目根外。
+* Green-1：补齐 `state.json` 初始字段，对齐架构文档 §8.4 全部 18 个字段。
+* Green-2：`init_task_workspace` 幂等化——`mkdir(exist_ok=True)` + `state.json`/`trace.jsonl`/`history.jsonl` 只在不存在时写入。
+* Green-3：`task_path()` 同时要求已解析 `candidate` 保持在已解析 `tasks_root` 与 `.hancode` workspace root 内，阻止目录链接造成的路径逃逸。
+* 旧测试 `test_task_workspace_initializes_required_artifacts` 的 state.json 精确等值断言已同步更新为完整字段集。
+* 覆盖补强：`test_task_workspace_init_preserves_existing_checkpoints_and_artifacts` 首次运行即通过，确认 checkpoint 与阶段产物幂等性行为已存在，但此前缺少回归测试保护。
+* 代码评审后补测：`test_task_workspace_rejects_incomplete_project_metadata`（4 个参数化场景：缺字段/空值/错误版本）、`test_task_workspace_rejects_missing_memory_files`（Markdown 记忆文件缺失）。
+* 任务测试：`$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
+* 全量测试：`$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 通过，47 passed。
+* Lint：`$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
+* Type check：`$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-fix` 通过，no issues found in 1 source file。
+* 评审遗留项（不阻塞 T2 合并）：(1) `workspace_version` 字段需同步到架构文档 §8.3；(2) init 错误的 `phase="spec"` 语义需 spec 决策（Phase 枚举是否加 INIT 或允许 None）。
 
 ---
 

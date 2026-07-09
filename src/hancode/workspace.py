@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from hancode.errors import HanCodeError, StructuredError
+
+
+_PROJECT_MARKDOWN_FILES = {
+    "project_memory.md": "# Project Memory\n",
+    "course_context.md": "# Course Context\n",
+    "experience.md": "# Experience\n",
+}
+_TASK_ARTIFACTS = (
+    "SPEC.md",
+    "PLAN.md",
+    "TEST_REPORT.md",
+    "REVIEW.md",
+    "KNOWLEDGE.md",
+    "DELIVERABLES.md",
+)
+
+
+def init_project_workspace(
+    project_root: Path,
+    project_id: str,
+    course_name: str,
+    assignment_name: str,
+) -> Path:
+    workspace = project_root.resolve() / ".hancode"
+    workspace.mkdir(exist_ok=True)
+    (workspace / "tasks").mkdir(exist_ok=True)
+
+    project_data = {
+        "workspace_version": 1,
+        "project_id": project_id,
+        "course_name": course_name,
+        "assignment_name": assignment_name,
+        "project_root": ".",
+    }
+    project_file = workspace / "project.json"
+    if not project_file.exists():
+        project_file.write_text(
+            json.dumps(project_data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    for filename, content in _PROJECT_MARKDOWN_FILES.items():
+        path = workspace / filename
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
+
+    return workspace
+
+
+def task_path(project_root: Path, task_id: str) -> Path:
+    workspace_root = (project_root.resolve() / ".hancode").resolve()
+    tasks_root = (workspace_root / "tasks").resolve()
+    task_id_path = Path(task_id)
+    candidate = (tasks_root / task_id_path).resolve()
+
+    if (
+        task_id_path.is_absolute()
+        or not candidate.is_relative_to(tasks_root)
+        or not candidate.is_relative_to(workspace_root)
+    ):
+        raise HanCodeError(
+            StructuredError(
+                error_code="workspace_path_outside_project_root",
+                message="Task workspace path must stay inside the project workspace.",
+                phase="spec",
+                denied_rule="workspace_root_boundary",
+                suggested_fix="Use a relative task ID without parent-directory segments.",
+            )
+        )
+
+    if len(task_id_path.parts) != 1 or task_id_path.name in {"", ".", ".."}:
+        raise HanCodeError(
+            StructuredError(
+                error_code="invalid_task_id",
+                message="Task ID must be a single non-empty path component.",
+                phase="spec",
+                denied_rule="valid_task_id_required",
+                suggested_fix="Use a task ID without path separators or dot segments.",
+            )
+        )
+
+    return candidate
+
+
+def init_task_workspace(project_root: Path, task_id: str) -> Path:
+    workspace = project_root.resolve() / ".hancode"
+    required_files = [
+        workspace / "project.json",
+        *(workspace / filename for filename in _PROJECT_MARKDOWN_FILES),
+    ]
+    if not (workspace / "tasks").is_dir() or any(
+        not path.is_file() for path in required_files
+    ):
+        raise HanCodeError(
+            StructuredError(
+                error_code="project_workspace_not_initialized",
+                message="Project workspace is not initialized.",
+                phase="spec",
+                denied_rule="project_workspace_required",
+                suggested_fix=(
+                    "Initialize the project workspace before creating a task workspace."
+                ),
+            )
+        )
+
+    _validate_project_metadata(workspace / "project.json")
+    task_workspace = task_path(project_root, task_id)
+    task_workspace.mkdir(exist_ok=True)
+    (task_workspace / "checkpoints").mkdir(exist_ok=True)
+
+    for filename in ("trace.jsonl", "history.jsonl"):
+        path = task_workspace / filename
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+
+    state_file = task_workspace / "state.json"
+    if not state_file.exists():
+        initial_state = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "goal": None,
+            "status": "created",
+            "current_phase": "spec",
+            "files_changed": [],
+            "latest_checkpoint": None,
+            "checkpoint_seq": 0,
+            "tests_run": [],
+            "latest_test_status": "none",
+            "test_status_consumed": False,
+            "retry_budget_remaining": 2,
+            "inconsistent": False,
+            "source_edits_this_phase": 0,
+            "rollback_required": False,
+            "rollback_done": False,
+            "phase_completed": {
+                "spec": False,
+                "plan": False,
+                "code": False,
+                "test": False,
+                "review": False,
+                "deliver": False,
+            },
+            "artifacts": {artifact: False for artifact in _TASK_ARTIFACTS},
+        }
+        state_file.write_text(
+            json.dumps(initial_state, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return task_workspace
+
+
+def _validate_project_metadata(project_file: Path) -> None:
+    try:
+        metadata = json.loads(project_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        metadata = None
+
+    required_text_fields = ("project_id", "course_name", "assignment_name")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("workspace_version") != 1
+        or metadata.get("project_root") != "."
+        or any(
+            not isinstance(metadata.get(field), str) or not metadata[field]
+            for field in required_text_fields
+        )
+    ):
+        raise HanCodeError(
+            StructuredError(
+                error_code="invalid_project_workspace",
+                message="Project workspace metadata is invalid.",
+                phase="spec",
+                denied_rule="valid_project_metadata_required",
+                suggested_fix="Repair project.json before creating a task workspace.",
+            )
+        )

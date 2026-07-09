@@ -20,6 +20,64 @@
 
 ## 记录条目
 
+### 2026-07-10 00:02 +08:00 — T2 — 评审后路径逃逸修复与回归补强
+
+- 使用的技能：systematic-debugging；test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求按“两阶段评审”先做 spec 合规检查、再做代码质量检查，并在收到评审结论后要求“开始修复”。
+  - 评审确认一个真实缺陷和一个测试缺口：`task_path()` 未拒绝 `.hancode/tasks` 经 symlink / junction 逃逸到项目根外；checkpoint / 阶段产物幂等性缺少回归测试。
+- 根因分析：
+  - `task_path()` 只校验 `candidate` 是否位于已解析 `tasks_root` 下；当 `tasks_root` 自身被目录链接重定向到仓库外时，`candidate` 仍满足该条件，从而绕过 project root 边界。
+  - `init_task_workspace` 对 checkpoint / 阶段产物的幂等行为已存在，但此前没有测试锁定，评审只能靠代码阅读确认。
+- TDD 证据：
+  - Red：`$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider -k "escape_via_link or preserves_existing_checkpoints_and_artifacts"` 失败，`test_workspace_rejects_tasks_directory_escape_via_link` 报 `Failed: DID NOT RAISE HanCodeError`；同批次 `test_task_workspace_init_preserves_existing_checkpoints_and_artifacts` 首次即通过，证明这是覆盖补强而非行为缺陷。
+  - Green：`task_path()` 增加 `.hancode` workspace root 内约束后，同一命令通过，2 passed。
+- 摘要：
+  - 新增目录链接逃逸测试，覆盖 `.hancode/tasks` 被 symlink / junction 重定向到 project root 外的场景。
+  - 新增 checkpoint / 阶段产物幂等回归测试，锁定重复 init 不清空既有 evidence。
+  - 最小修改 `src/hancode/workspace.py`，仅收紧 `task_path()` 的根边界判断，不扩展 init 语义。
+- 人工干预：
+  - 用户在看到评审结论后明确要求继续修复。
+- 工作流偏离：
+  - 未派发 reviewer subagent；原因是当前多代理约束要求只有用户显式要求 delegation 时才允许 spawn，故继续使用 inline 修复与验证。
+- 提交：
+  - 未提交
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-fix` 通过，no issues found in 1 source file。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 通过，47 passed。
+- 经验教训：
+  - 只校验“解析后的候选路径在解析后的任务目录下”不足以防止链接逃逸；还必须确认最终路径仍位于 project workspace 根内。
+  - 评审发现的“现有行为缺测试”也要补成回归用例，否则后续重构时容易把幂等性悄悄打穿。
+
+### 2026-07-09 22:30 +08:00 — T2 — Workspace 初始化缺口修复
+
+- 使用的技能：test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求评估 worktree 中的 workspace.py 代码，随后要求接续 T2 任务完成。
+  - 评审发现两个阻塞缺口：state.json 缺失 8 个字段（架构文档 §8.4）、init_task_workspace 不幂等。
+- 摘要：
+  - Red-1：写 `test_task_workspace_state_json_contains_all_required_fields`，验证 state.json 包含全部 18 个字段，失败原因正确（缺失 8 个字段）。
+  - Green-1：补齐 `goal`、`checkpoint_seq`、`tests_run`、`test_status_consumed`、`phase_completed`、`source_edits_this_phase`、`rollback_required`、`rollback_done`。
+  - Red-2：写 `test_task_workspace_init_preserves_existing_state_and_trace`，失败原因正确（`FileExistsError`）。
+  - Green-2：`init_task_workspace` 幂等化——`mkdir(exist_ok=True)` + state/trace/history 只在不存在时写入。
+  - 旧测试 `test_task_workspace_initializes_required_artifacts` 的精确等值断言同步更新为完整字段集。
+- 人工干预：
+  - 用户先要求评估代码，确认缺口后再要求修复。
+- 工作流偏离：
+  - 未使用 worktree（已在 `codex/workspace-init` worktree 中）；未使用 brainstorming（缺口明确，无需探索）。
+- 提交：
+  - 未提交
+- 验证：
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest -v -p no:cacheprovider` 通过，40 passed。
+  - `ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
+  - `mypy src/hancode/workspace.py` 通过，no issues found in 1 source file。
+- 经验教训：
+  - state.json 初始字段必须与架构文档 §8.4 完全对齐，否则 T4 StateStore、T6 WorkspaceRouter、T17 CheckpointManager 都要补字段，破坏幂等性。
+
 ### 2026-07-09 21:15 +08:00 — T1 — 共享模型与错误类型返工
 
 - 使用的技能：using-superpowers；brainstorming；writing-plans；using-git-worktrees；test-driven-development；requesting-code-review；verification-before-completion
