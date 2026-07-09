@@ -42,12 +42,12 @@
 - 工作流偏离：
   - 未派发 reviewer subagent；原因是当前多代理约束要求只有用户显式要求 delegation 时才允许 spawn，故继续使用 inline 修复与验证。
 - 提交：
-  - 未提交
+  - `6d7f894` — `feat: 完成 T2 Workspace 初始化`
 - 验证：
   - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
   - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
   - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-fix` 通过，no issues found in 1 source file。
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 通过，47 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 在当前 worktree 状态通过，47 passed；该结果包含用户已批准同步到该分支但未并入本次 T2 提交的 `tests/test_course_project_scaffold.py` 变更。
 - 经验教训：
   - 只校验“解析后的候选路径在解析后的任务目录下”不足以防止链接逃逸；还必须确认最终路径仍位于 project workspace 根内。
   - 评审发现的“现有行为缺测试”也要补成回归用例，否则后续重构时容易把幂等性悄悄打穿。

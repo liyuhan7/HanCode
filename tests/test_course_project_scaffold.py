@@ -140,10 +140,11 @@ def test_code_change_requires_test_or_risk_note() -> None:
 
 
 def test_max_steps_prevents_infinite_loop() -> None:
+    spec = read_text("docs/SPEC.md")
     plan = read_text("docs/PLAN.md")
 
     assert "test_max_steps_prevents_infinite_loop" in plan
-    assert "maximum loop iterations" in read_text("docs/agent-guides/harness-boundary.md")
+    assert "`max_steps` 必须限制 AgentLoop 最大执行步数" in spec
 
 
 def test_deliver_requires_knowledge_file() -> None:
@@ -176,4 +177,3 @@ def test_policy_protects_teacher_tests_or_grading_scripts() -> None:
 
     assert "老师提供的测试文件、评分脚本或样例数据" in spec
     assert "test_policy_protects_teacher_tests_or_grading_scripts" in plan
-

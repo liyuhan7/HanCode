@@ -348,7 +348,7 @@ python -m mypy src/hancode/models.py src/hancode/errors.py
 | 可并行           | 不并行；后续任务依赖 workspace 结构 |
 | Worktree / PR | `codex/workspace-init`  |
 | 主贡献相关         | 否，支撑维度                  |
-| Commit        | TODO（worktree 未提交）       |
+| Commit        | `6d7f894`              |
 
 ### 目标
 
@@ -432,7 +432,7 @@ uv run mypy src/hancode/workspace.py
 * 覆盖补强：`test_task_workspace_init_preserves_existing_checkpoints_and_artifacts` 首次运行即通过，确认 checkpoint 与阶段产物幂等性行为已存在，但此前缺少回归测试保护。
 * 代码评审后补测：`test_task_workspace_rejects_incomplete_project_metadata`（4 个参数化场景：缺字段/空值/错误版本）、`test_task_workspace_rejects_missing_memory_files`（Markdown 记忆文件缺失）。
 * 任务测试：`$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
-* 全量测试：`$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 通过，47 passed。
+* 全量测试：`$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 在当前 worktree 状态通过，47 passed；其中包含用户已批准同步到该分支但尚未并入 T2 提交的 `tests/test_course_project_scaffold.py` 变更。
 * Lint：`$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
 * Type check：`$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-fix` 通过，no issues found in 1 source file。
 * 评审遗留项（不阻塞 T2 合并）：(1) `workspace_version` 字段需同步到架构文档 §8.3；(2) init 错误的 `phase="spec"` 语义需 spec 决策（Phase 枚举是否加 INIT 或允许 None）。
