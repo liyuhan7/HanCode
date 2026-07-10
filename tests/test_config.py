@@ -39,16 +39,66 @@ def test_config_loads_defaults(tmp_path: Path) -> None:
         max_context_chars=24000,
         max_trace_events=40,
         protected_patterns=(
+            "assignment.md",
             "assignment/**",
+            "tests/teacher_*",
             "teacher_tests/**",
             "grading/**",
+            "samples/**",
             "sample_data/**",
             ".env",
             ".env.*",
             "credentials/**",
+            "secrets/**",
+            "*.key",
+            "*.pem",
+            "*.token",
         ),
         writable_roots=(tmp_path.resolve() / "src", tmp_path.resolve() / "tests"),
     )
+
+
+@pytest.mark.parametrize(
+    "configured_patterns",
+    [[], ["docs/SPEC.md", "credentials/**"]],
+    ids=["empty_override", "additional_patterns"],
+)
+def test_config_keeps_mandatory_protected_patterns(
+    tmp_path: Path, configured_patterns: list[str]
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["protected_patterns"] = configured_patterns
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    mandatory_patterns = {
+        "assignment.md",
+        "assignment/**",
+        "tests/teacher_*",
+        "teacher_tests/**",
+        "grading/**",
+        "samples/**",
+        "sample_data/**",
+        ".env",
+        ".env.*",
+        "credentials/**",
+        "secrets/**",
+        "*.key",
+        "*.pem",
+        "*.token",
+    }
+    assert mandatory_patterns.issubset(config.protected_patterns)
+    assert config.protected_patterns.count("credentials/**") == 1
+    if configured_patterns:
+        assert config.protected_patterns[-1] == "docs/SPEC.md"
 
 
 def test_config_loads_project_json_overrides(tmp_path: Path) -> None:
@@ -96,7 +146,8 @@ def test_config_loads_project_json_overrides(tmp_path: Path) -> None:
     assert config.max_observation_bytes == 4096
     assert config.max_context_chars == 16000
     assert config.max_trace_events == 25
-    assert config.protected_patterns == ("docs/SPEC.md", "fixtures/**")
+    assert config.protected_patterns[-2:] == ("docs/SPEC.md", "fixtures/**")
+    assert "credentials/**" in config.protected_patterns
     assert config.writable_roots == (
         tmp_path.resolve() / "src",
         tmp_path.resolve() / "tests",
@@ -117,11 +168,98 @@ def test_config_requires_initialized_project_workspace(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "project_json",
+    ("field", "value"),
     [
-        "{invalid",
-        "[]",
-        """{
+        ("workspace_version", 2),
+        ("project_id", ""),
+        ("project_root", "../outside"),
+    ],
+)
+def test_config_reuses_project_workspace_metadata_validation(
+    tmp_path: Path, field: str, value: int | str
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data[field] = value
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "invalid_project_workspace",
+        "message": "Project workspace metadata is invalid.",
+        "phase": "spec",
+        "denied_rule": "valid_project_metadata_required",
+        "suggested_fix": "Repair project.json before creating a task workspace.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("unsupported_option", "enabled"),
+        ("provider", {"base_url": "https://example.invalid"}),
+    ],
+    ids=["unknown_top_level_field", "nested_configuration"],
+)
+def test_config_rejects_unknown_or_nested_configuration(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data[field] = value
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "invalid_project_config",
+        "message": f"Project configuration field is invalid: {field}.",
+        "phase": "spec",
+        "denied_rule": "valid_project_config_required",
+        "suggested_fix": f"Remove or repair {field} in project.json.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("project_json", "expected_error"),
+    [
+        (
+            "{invalid",
+            {
+                "error_code": "invalid_project_workspace",
+                "message": "Project workspace metadata is invalid.",
+                "phase": "spec",
+                "denied_rule": "valid_project_metadata_required",
+                "suggested_fix": "Repair project.json before creating a task workspace.",
+            },
+        ),
+        (
+            "[]",
+            {
+                "error_code": "invalid_project_workspace",
+                "message": "Project workspace metadata is invalid.",
+                "phase": "spec",
+                "denied_rule": "valid_project_metadata_required",
+                "suggested_fix": "Repair project.json before creating a task workspace.",
+            },
+        ),
+        (
+            """{
   "workspace_version": 1,
   "project_id": "course-project",
   "course_name": "AI4SE",
@@ -130,10 +268,20 @@ def test_config_requires_initialized_project_workspace(tmp_path: Path) -> None:
   "max_steps": "30"
 }
 """,
+            {
+                "error_code": "invalid_project_config",
+                "message": "Project configuration field is invalid: max_steps.",
+                "phase": "spec",
+                "denied_rule": "valid_project_config_required",
+                "suggested_fix": "Remove or repair max_steps in project.json.",
+            },
+        ),
     ],
     ids=["malformed_json", "non_object_root", "invalid_field_type"],
 )
-def test_config_rejects_invalid_project_config(tmp_path: Path, project_json: str) -> None:
+def test_config_rejects_invalid_project_config(
+    tmp_path: Path, project_json: str, expected_error: dict[str, object]
+) -> None:
     workspace = init_project_workspace(
         tmp_path,
         project_id="course-project",
@@ -145,13 +293,7 @@ def test_config_rejects_invalid_project_config(tmp_path: Path, project_json: str
     with pytest.raises(HanCodeError) as exc_info:
         load_config(tmp_path)
 
-    assert exc_info.value.to_dict() == {
-        "error_code": "invalid_project_config",
-        "message": "Project configuration is invalid.",
-        "phase": "spec",
-        "denied_rule": "valid_project_config_required",
-        "suggested_fix": "Repair project.json configuration fields and try again.",
-    }
+    assert exc_info.value.to_dict() == expected_error
 
 
 @pytest.mark.parametrize(
@@ -185,11 +327,36 @@ def test_config_rejects_invalid_limit_values(
 
     assert exc_info.value.to_dict() == {
         "error_code": "invalid_project_config",
-        "message": "Project configuration is invalid.",
+        "message": f"Project configuration field is invalid: {field}.",
         "phase": "spec",
         "denied_rule": "valid_project_config_required",
-        "suggested_fix": "Repair project.json configuration fields and try again.",
+        "suggested_fix": f"Remove or repair {field} in project.json.",
     }
+
+
+def test_config_reports_invalid_limit_field_without_value(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["max_steps"] = 0
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "invalid_project_config",
+        "message": "Project configuration field is invalid: max_steps.",
+        "phase": "spec",
+        "denied_rule": "valid_project_config_required",
+        "suggested_fix": "Remove or repair max_steps in project.json.",
+    }
+    assert "0" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -209,20 +376,20 @@ def test_config_rejects_invalid_limit_values(
             {"llm_provider": "anthropic", "model_name": ""},
             {
                 "error_code": "invalid_project_config",
-                "message": "Project configuration is invalid.",
+                "message": "Project configuration field is invalid: model_name.",
                 "phase": "spec",
                 "denied_rule": "valid_project_config_required",
-                "suggested_fix": "Repair project.json configuration fields and try again.",
+                "suggested_fix": "Remove or repair model_name in project.json.",
             },
         ),
         (
             {"credential_source": "file"},
             {
                 "error_code": "invalid_project_config",
-                "message": "Project configuration is invalid.",
+                "message": "Project configuration field is invalid: credential_source.",
                 "phase": "spec",
                 "denied_rule": "valid_project_config_required",
-                "suggested_fix": "Repair project.json configuration fields and try again.",
+                "suggested_fix": "Remove or repair credential_source in project.json.",
             },
         ),
     ],
@@ -248,13 +415,58 @@ def test_config_rejects_invalid_provider_settings(
     assert exc_info.value.to_dict() == expected_error
 
 
+@pytest.mark.parametrize("provider", ["openai_compatible", "anthropic"])
+def test_config_requires_credential_source_for_remote_provider(
+    tmp_path: Path, provider: str
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update({"llm_provider": provider, "model_name": "configured-model"})
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "invalid_project_config",
+        "message": "Project configuration field is invalid: credential_source.",
+        "phase": "spec",
+        "denied_rule": "valid_project_config_required",
+        "suggested_fix": "Remove or repair credential_source in project.json.",
+    }
+
+
+def test_config_allows_local_provider_without_credential_source(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update({"llm_provider": "local", "model_name": "local-model"})
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    assert load_config(tmp_path).credential_source is None
+
+
 @pytest.mark.parametrize(
     ("updates", "field_name"),
     [
         ({"api_key": "live-secret-value"}, "api_key"),
         ({"provider": {"access_token": "live-secret-value"}}, "access_token"),
+        ({"credentials": {"value": "live-secret-value"}}, "credentials"),
+        ({"private_key": "live-secret-value"}, "private_key"),
+        ({"api_key_value": "live-secret-value"}, "api_key_value"),
     ],
-    ids=["top_level", "nested"],
+    ids=["top_level", "nested", "credentials_container", "private_key", "key_value"],
 )
 def test_config_does_not_accept_plaintext_secret(
     tmp_path: Path, updates: dict[str, object], field_name: str
@@ -307,6 +519,33 @@ def test_config_rejects_writable_root_outside_project(
         "phase": "spec",
         "denied_rule": "workspace_root_boundary",
         "suggested_fix": "Use a relative path inside the project workspace.",
+    }
+
+
+@pytest.mark.parametrize("writable_root", ["", ".", "/**"])
+def test_config_rejects_project_root_as_writable_root(
+    tmp_path: Path, writable_root: str
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["writable_roots"] = [writable_root]
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "invalid_project_config",
+        "message": "Project configuration field is invalid: writable_roots.",
+        "phase": "spec",
+        "denied_rule": "valid_project_config_required",
+        "suggested_fix": "Remove or repair writable_roots in project.json.",
     }
 
 

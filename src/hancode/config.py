@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path, PureWindowsPath
 from typing import cast
 
 from hancode.errors import HanCodeError, StructuredError
-from hancode.workspace import task_path
+from hancode.workspace import load_project_metadata, task_path
 
 
 _DEFAULT_PROTECTED_PATTERNS = (
+    "assignment.md",
     "assignment/**",
+    "tests/teacher_*",
     "teacher_tests/**",
     "grading/**",
+    "samples/**",
     "sample_data/**",
     ".env",
     ".env.*",
     "credentials/**",
+    "secrets/**",
+    "*.key",
+    "*.pem",
+    "*.token",
 )
 _OPTIONAL_STRING_FIELDS = (
     "model_name",
@@ -40,13 +46,37 @@ _SUPPORTED_LLM_PROVIDERS = frozenset(
     {"mock", "openai_compatible", "anthropic", "local"}
 )
 _SUPPORTED_CREDENTIAL_SOURCES = frozenset({"keyring", "env", "dotenv"})
-_SENSITIVE_FIELD_SUFFIXES = (
+_REMOTE_LLM_PROVIDERS = frozenset({"openai_compatible", "anthropic"})
+_SENSITIVE_FIELD_MARKERS = (
     "apikey",
     "token",
     "secret",
     "password",
     "authorization",
+    "privatekey",
+    "credential",
 )
+_PROJECT_METADATA_FIELDS = frozenset(
+    {"workspace_version", "project_id", "course_name", "assignment_name", "project_root"}
+)
+_ACTIVE_CONFIG_FIELDS = frozenset(
+    {
+        "llm_provider",
+        "model_name",
+        "credential_source",
+        "test_command",
+        "build_command",
+        "max_steps",
+        "retry_budget",
+        "max_checkpoints_per_task",
+        "max_observation_bytes",
+        "max_context_chars",
+        "max_trace_events",
+        "protected_patterns",
+        "writable_roots",
+    }
+)
+_ALLOWED_PROJECT_FIELDS = _PROJECT_METADATA_FIELDS | _ACTIVE_CONFIG_FIELDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +139,8 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         max_context_chars=cast(int, project_data.get("max_context_chars", 24000)),
         max_trace_events=cast(int, project_data.get("max_trace_events", 40)),
         protected_patterns=tuple(
-            cast(
-                list[str],
-                project_data.get("protected_patterns", _DEFAULT_PROTECTED_PATTERNS),
+            _merge_protected_patterns(
+                cast(list[str], project_data.get("protected_patterns", []))
             )
         ),
         writable_roots=tuple(
@@ -122,46 +151,47 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
 
 
 def _read_project_config(project_file: Path) -> dict[str, object]:
-    try:
-        project_data = json.loads(project_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        raise _invalid_project_config_error() from None
-
-    if not isinstance(project_data, dict):
-        raise _invalid_project_config_error()
+    project_data = load_project_metadata(project_file)
 
     plaintext_secret_field = _find_plaintext_secret_field(project_data)
     if plaintext_secret_field is not None:
         raise _plaintext_secret_error(plaintext_secret_field)
 
+    for field_name, value in project_data.items():
+        if field_name not in _ALLOWED_PROJECT_FIELDS or isinstance(value, dict):
+            raise _invalid_project_config_error(field_name)
+
     if "llm_provider" in project_data and not isinstance(
         project_data["llm_provider"], str
     ):
-        raise _invalid_project_config_error()
+        raise _invalid_project_config_error("llm_provider")
 
     for field in _OPTIONAL_STRING_FIELDS:
         if field in project_data and project_data[field] is not None and not isinstance(
             project_data[field], str
         ):
-            raise _invalid_project_config_error()
+            raise _invalid_project_config_error(field)
 
     for field in _INTEGER_FIELDS:
         if field in project_data and type(project_data[field]) is not int:
-            raise _invalid_project_config_error()
+            raise _invalid_project_config_error(field)
 
     for field in _POSITIVE_INTEGER_FIELDS:
-        if field in project_data and project_data[field] <= 0:
-            raise _invalid_project_config_error()
+        if field in project_data and cast(int, project_data[field]) <= 0:
+            raise _invalid_project_config_error(field)
 
-    if "retry_budget" in project_data and project_data["retry_budget"] < 0:
-        raise _invalid_project_config_error()
+    if "retry_budget" in project_data and cast(int, project_data["retry_budget"]) < 0:
+        raise _invalid_project_config_error("retry_budget")
 
     for field in _STRING_LIST_FIELDS:
         if field in project_data and (
             not isinstance(project_data[field], list)
-            or not all(isinstance(value, str) for value in project_data[field])
+            or not all(
+                isinstance(value, str)
+                for value in cast(list[object], project_data[field])
+            )
         ):
-            raise _invalid_project_config_error()
+            raise _invalid_project_config_error(field)
 
     provider = cast(str, project_data.get("llm_provider", "mock"))
     if provider not in _SUPPORTED_LLM_PROVIDERS:
@@ -170,20 +200,24 @@ def _read_project_config(project_file: Path) -> dict[str, object]:
     if provider != "mock":
         model_name = project_data.get("model_name")
         if not isinstance(model_name, str) or not model_name.strip():
-            raise _invalid_project_config_error()
+            raise _invalid_project_config_error("model_name")
 
     credential_source = project_data.get("credential_source")
+    if provider in _REMOTE_LLM_PROVIDERS and credential_source is None:
+        raise _invalid_project_config_error("credential_source")
     if (
         credential_source is not None
         and credential_source not in _SUPPORTED_CREDENTIAL_SOURCES
     ):
-        raise _invalid_project_config_error()
+        raise _invalid_project_config_error("credential_source")
 
-    return cast(dict[str, object], project_data)
+    return project_data
 
 
 def _resolve_writable_root(project_root: Path, configured_path: str) -> Path:
     normalized_path = configured_path.removesuffix("/**")
+    if normalized_path in {"", "."}:
+        raise _invalid_project_config_error("writable_roots")
     path = Path(normalized_path)
     windows_path = PureWindowsPath(normalized_path)
     candidate = (project_root / path).resolve()
@@ -195,17 +229,29 @@ def _resolve_writable_root(project_root: Path, configured_path: str) -> Path:
         or not candidate.is_relative_to(project_root)
     ):
         raise _config_path_outside_project_root_error()
+    if candidate == project_root:
+        raise _invalid_project_config_error("writable_roots")
     return candidate
 
 
-def _invalid_project_config_error() -> HanCodeError:
+def _merge_protected_patterns(project_patterns: list[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*_DEFAULT_PROTECTED_PATTERNS, *project_patterns)))
+
+
+def _invalid_project_config_error(field_name: str | None = None) -> HanCodeError:
+    if field_name is None:
+        message = "Project configuration is invalid."
+        suggested_fix = "Repair project.json configuration fields and try again."
+    else:
+        message = f"Project configuration field is invalid: {field_name}."
+        suggested_fix = f"Remove or repair {field_name} in project.json."
     return HanCodeError(
         StructuredError(
             error_code="invalid_project_config",
-            message="Project configuration is invalid.",
+            message=message,
             phase="spec",
             denied_rule="valid_project_config_required",
-            suggested_fix="Repair project.json configuration fields and try again.",
+            suggested_fix=suggested_fix,
         )
     )
 
@@ -256,7 +302,7 @@ def _is_plaintext_secret_field(field_name: str) -> bool:
     )
     return (
         normalized_name != "credentialsource"
-        and normalized_name.endswith(_SENSITIVE_FIELD_SUFFIXES)
+        and any(marker in normalized_name for marker in _SENSITIVE_FIELD_MARKERS)
     )
 
 
