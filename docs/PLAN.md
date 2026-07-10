@@ -552,12 +552,12 @@ uv run --no-sync pytest -p no:cacheprovider
 
 | 元信息           | 值                   |
 | ------------- | ------------------- |
-| 状态            | [ ] 未开始             |
+| 状态            | [x] 已完成（专项与静态门禁通过；全量回归受环境 ACL 阻断） |
 | 依赖            | T1, T2              |
 | 可并行           | 可与 T3 并行            |
 | Worktree / PR | `feature/M1`        |
 | 主贡献相关         | 否，控制流基础             |
-| Commit        | TODO                |
+| Commit        | `84ba160` — `feat: 完成 T4 StateStore` |
 
 ### 目标
 
@@ -615,12 +615,21 @@ def reconcile_state(task_root: Path, state: TaskState) -> TaskState: ...
 * `reconcile_state` 只检测漂移，不自动把 Markdown 文件存在转换为 artifact completed。
 * 损坏 JSON 不应导致高风险工具继续执行。
 
+### 实现结果
+
+* 新增冻结、slots 化的 `TaskState`，严格解析 schema v1 的 18 个字段，复用 `Phase`、`TaskStatus`，校验合法状态、阶段、测试状态、非负计数及固定 artifact / phase 键。
+* `load_state()` 只读取 `state.json`，损坏 JSON、缺失字段、未知字段和非法枚举统一返回脱敏的结构化 `state_parse_error`。
+* `save_state()` 使用临时文件 + 原子替换；写失败保留原文件并返回 `state_write_error`。校验 `task_id` 一致性，防止跨 task 串写；`files_changed` 仅允许持久化 code 且目标为 code/test 时更新。
+* `reconcile_state()` 双向检测 artifact 与文件存在性漂移，返回 `inconsistent`，不回写 artifact 标志、不自动修复、也不自动清除既有 inconsistent 状态。
+* `phase_completed` 与 `artifacts` 使用不可变映射，避免绕过运行时校验后写入非法状态。
+* 不涉及 router、trace、Markdown artifact 生成或 T5 以后机制。
+
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_state.py -v
-uv run ruff check src/hancode/state.py tests/test_state.py
-uv run mypy src/hancode/state.py
+uv run --no-sync pytest tests/test_state.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/state.py tests/test_state.py --no-cache
+uv run --no-sync mypy src/hancode/state.py --no-incremental
 ```
 
 ### 完成判定
@@ -628,6 +637,9 @@ uv run mypy src/hancode/state.py
 * `state.json` 读写稳定。
 * artifact drift 被检测为 inconsistent。
 * 不会从文件系统反向自动修复状态。
+* 实际专项验证：23 passed；Ruff 与 MyPy 通过。
+* 两阶段评审：首次评审发现 3 个 Important，修复后 Spec 合规与代码质量复评均 PASS。
+* 全量回归曾受 Windows pytest 临时目录 ACL 影响（27 passed、81 setup errors），不能据此宣称全量通过。
 
 ### 非目标 / 边界
 

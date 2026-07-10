@@ -20,6 +20,48 @@
 
 ## 记录条目
 
+### 2026-07-10 — T4 — StateStore
+
+- 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；verification-before-completion；Superpowers:subagent-driven-development；Superpowers:requesting-code-review
+- 使用的智能体：OpenAI Codex；T4 Spec Reviewer；T4 Quality Reviewer；T4 Fix Agent
+- 关键提示词 / 上下文：
+  - 用户要求完成 `docs/PLAN.md` 中的 T4 StateStore，并在 `feature/M1` 的 `.worktrees/M1` 中继续开发。
+  - T4 只实现 `state.json` 机器状态读写、一致性检查和结构化状态错误；不实现 router、trace、Markdown artifact 生成或 T5 以后机制。
+  - `docs/SPEC.md` 是高优先级契约：state.json 是唯一机器状态源，artifact drift 进入 inconsistent 且不得自动反向修复。
+- 摘要：
+  - 新增冻结、slots 化的 `TaskState` 与 `load_state()`、`save_state()`、`reconcile_state()`。
+  - 严格解析 schema v1 的 18 个字段、合法 phase/status/test status、固定 phase/artifact 键和非负计数；结构化错误不回显原始 JSON 内容。
+  - `save_state()` 使用临时文件 + 原子替换，写失败保留原文件；校验 task_id 隔离；仅允许合法 code→code/test 变更 `files_changed`。
+  - `reconcile_state()` 双向检测 artifact 漂移，返回 inconsistent，不回写 artifact 标志、不自动修复、不清除既有 inconsistent。
+  - 使用 `MappingProxyType` 防止 `phase_completed` 与 `artifacts` 被运行时 mutation 绕过校验。
+- 逐项 TDD 证据：
+  - Red/Green-1：`hancode.state` 不存在导致单一机器状态源测试收集失败；新增最小 loader 后 1 passed。
+  - Red/Green-2：损坏 JSON 首先暴露 `JSONDecodeError`；转换为结构化 `state_parse_error` 后专项 2 passed。
+  - Red/Green-3：reconcile 接口缺失导致导入失败；实现漂移检测后专项 3 passed。
+  - Red/Green-4：`save_state` 导入失败；加入枚举稳定序列化后专项 9 passed。
+  - Red/Green-5：非 code phase 修改 `files_changed` 未被拒绝；加入持久化 phase 权限检查后专项 10 passed。
+  - Red/Green-6：schema version、未知字段、非法 test status 和不完整映射未被拒绝；严格 schema 与 TaskState 自校验后专项 16 passed。
+  - Red/Green-7：原子替换失败未结构化处理；加入临时文件清理和 `state_write_error` 后专项 19 passed。
+  - 两阶段评审首次发现 3 个 Important：code→review/deliver 迟到写入、task_id 串写、冻结对象内部映射可变。修复代理补充回归测试并修复后，专项 23 passed。
+- 两阶段评审：
+  - 第一阶段 Spec 合规初评：FAIL（3 个 Important）；修复后 `SPEC RE-VERDICT: PASS`，无 Critical/Important。
+  - 第二阶段代码质量初评：FAIL（同 3 个 Important）；修复后 `QUALITY RE-VERDICT: PASS`，无新的 Critical/Important/Minor。
+- 提交：
+  - `84ba160` — `feat: 完成 T4 StateStore`
+  - 文档回写提交：本记录所在的文档提交。
+- 验证：
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_state.py -v -p no:cacheprovider`：23 passed。
+  - `uv run --no-sync ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed。
+  - `uv run --no-sync mypy src/hancode/state.py --no-incremental`：Success，无问题。
+  - 两阶段复评代理独立确认上述 3 项修复；全量 pytest 受 Windows 临时目录 ACL 影响，曾出现 27 passed、81 setup errors，未宣称全量通过。
+- 人工干预：
+  - 用户明确要求使用 Superpowers 子代理进行两阶段评审，并随后授权代码提交和文档回写。
+  - 评审结论中关于 code→review/deliver 的 target phase 语义按 SPEC 的“test/review 只能读取”收紧实现。
+- 经验教训：
+  - `frozen` dataclass 不会自动冻结内部 dict；机器状态映射必须在构造时深层转为不可变映射。
+  - StateStore 保存前必须同时校验持久化 task_id 和 phase 所有权，不能只依赖调用方传入对象。
+  - Windows pytest 临时目录 ACL 会造成 setup 错误；验证日志必须区分环境失败和代码失败。
+
 ### 2026-07-10 返工 — T3 — ConfigLoader 安全与契约加固
 
 - 使用的技能：receiving-code-review；executing-plans；test-driven-development；verification-before-completion
