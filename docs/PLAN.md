@@ -454,12 +454,12 @@ uv run mypy src/hancode/workspace.py
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成               |
 | 依赖            | T1, T2                |
 | 可并行           | 可与 T4 并行              |
 | Worktree / PR | `feature/M1`          |
 | 主贡献相关         | 否，支撑维度                |
-| Commit        | TODO                  |
+| Commit        | `e7fcee3` — `feat: 完成 T3 ConfigLoader` |
 
 ### 目标
 
@@ -506,17 +506,25 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
   * `max_steps = 30`
   * `retry_budget = 2`
   * `max_checkpoints_per_task = 5`
-  * `max_context_chars = 12000`
-  * `max_trace_events = 20`
+  * `max_context_chars = 24000`
+  * `max_trace_events = 40`
 * 默认 protected patterns 包含作业说明、教师测试、评分脚本、样例数据、`.env` 和凭据文件。
 * 不读取真实 secret，只读取 secret source 配置。
+
+### 实现结果
+
+* 新增冻结且使用 `slots` 的 `HanCodeConfig`；`load_config()` 从 `.hancode/project.json` 合并项目级覆盖与默认值，并可通过现有 `task_path()` 安全派生可选 `task_root`。
+* 结构化拒绝未初始化 workspace、损坏或类型/范围非法配置、未知 provider、明文凭据字段和可写根路径逃逸；错误不回显明文值。
+* 可写根仅接受 project root 内的相对目录，规范化 `src/**` 形式，并同时防御 POSIX/Windows 绝对路径、`..` 与符号链接逃逸。
+* 明确不读取 task `state.json`、环境变量值、`.env` 或真实凭据，也不实现 CredentialProvider、路由或 ContextBuilder。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_config.py -v
-uv run ruff check src/hancode/config.py tests/test_config.py
-uv run mypy src/hancode/config.py
+uv run pytest tests/test_config.py -v -p no:cacheprovider
+uv run ruff check src/hancode/config.py tests/test_config.py --no-cache
+uv run mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3"
+uv run pytest -p no:cacheprovider
 ```
 
 ### 完成判定
@@ -524,6 +532,7 @@ uv run mypy src/hancode/config.py
 * 配置错误会清晰失败。
 * 默认配置足够驱动 MockLLM demo。
 * 配置对象可被 ToolPolicy、ContextBuilder、AgentLoop 复用。
+* 2026-07-10 实测：专项 25 passed；Ruff 通过；MyPy 通过；全量 72 passed。
 
 ### 非目标 / 边界
 

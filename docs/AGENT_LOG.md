@@ -20,6 +20,40 @@
 
 ## 记录条目
 
+### 2026-07-10 __:__ +08:00 — T3 — ConfigLoader
+
+- 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；karpathy-guidelines；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求在 `feature/M1` 的 `.worktrees/M1` 中执行已批准的 T3 计划，沿用 M1 单 worktree / 单 PR 策略，不启用子代理。
+  - T3 只实现项目级 `project.json` 配置加载；不读取 task state、环境变量、`.env` 或真实凭据。
+- 摘要：
+  - 新增 `HanCodeConfig` 与 `load_config()`，提供不可变的项目级配置、默认限制、provider / 凭据来源元数据、可写根和可选 task root。
+  - `max_context_chars` 与 `max_trace_events` 的批准默认值同步为 24000 / 40。
+  - 对损坏配置、非法限制、未知 provider、明文敏感字段、跨平台绝对路径、`..` 与符号链接逃逸返回结构化错误；错误仅含字段名，不回显非法值。
+  - `task_id` 仅复用 T2 的 `task_path()` 派生路径，未创建 Task Workspace 或读取 `state.json`。
+- TDD 证据：
+  - Red/Green-1：默认配置测试先因 `ModuleNotFoundError: hancode.config` 失败，新增最小 dataclass / loader 后通过。
+  - Red/Green-2：项目覆盖测试先仍得到 `mock`，加入 JSON 合并后通过。
+  - Red/Green-3 至 8：依次验证 workspace 前置条件、损坏 JSON 与字段类型、数值边界/布尔值、provider/credential source、递归明文凭据扫描、可写根及 task 路径逃逸；每项先出现预期失败，再以最小实现转绿。
+  - 链接逃逸 fixture 首次将目标放在项目根内，按边界定义不构成逃逸；修正为项目根外的同级临时目录后通过。
+- 两阶段评审：
+  - Spec 合规：核对 FR-9 与 §10.4，确认项目级加载、默认值、凭据不落盘、结构化错误和路径边界均有测试覆盖；未扩展到 CredentialProvider、StateStore、路由或 ContextBuilder。
+  - 代码质量：确认 `Path.resolve()` 与 `PureWindowsPath` 联合处理跨平台路径，敏感错误不包含输入值，静态类型与 lint 均通过；未发现阻塞项。
+- 工作流偏离：
+  - 无子代理；用户已批准 inline 执行，且当前约束不允许未经明确授权的 delegation。
+  - `uv run --extra dev` 首次建立本地开发环境时生成未跟踪 `uv.lock`；该文件不在 T3 范围内，已移除且未提交。
+- 提交：
+  - `e7fcee3` — `feat: 完成 T3 ConfigLoader`
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run pytest tests/test_config.py -v -p no:cacheprovider` 通过，25 passed。
+  - `$env:PYTHONPATH='src'; uv run ruff check src/hancode/config.py tests/test_config.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; uv run mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3"` 通过，no issues found in 1 source file。
+  - `$env:PYTHONPATH='src'; uv run pytest -p no:cacheprovider` 通过，72 passed。
+- 经验教训：
+  - 配置路径的安全判定既要检查字面路径（绝对路径与 `..`），也要检查 `resolve()` 后的真实位置，才能覆盖跨平台字符串与目录链接两类逃逸。
+  - 明文凭据防护必须递归扫描字段名，并把错误输出限制为字段名，不能把解析到的值带入异常或日志。
+
 ### 2026-07-10 __:__ +08:00 — T2 — Linux CI 路径判定回归修复
 
 - 使用的技能：systematic-debugging；verification-before-completion
