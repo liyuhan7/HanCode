@@ -474,7 +474,7 @@ uv run mypy src/hancode/workspace.py
 
 * 配置加载与运行约束；T3 只加载共享配置输入，固定 phase 策略由 T5、工具权限决策由 T14 实现。
 * 凭据不得明文写入配置。
-* `max_steps`、`retry_budget`、工具权限、测试命令、保护路径等必须显式配置并校验。
+* `max_steps`、`retry_budget`、测试命令、保护路径和可写根等当前配置字段必须显式校验；phase 规则由 T5、工具权限由 T14 负责。
 
 ### 接口契约
 
@@ -521,6 +521,7 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
 * 明确不读取 task `state.json`、环境变量值、`.env` 或真实凭据，也不实现 CredentialProvider、路由或 ContextBuilder。
 * `project.json` 仅接受 T2 元数据与当前 T3 活动字段；`stack`、`interactive`、`confirm_before_write`、`workspace_root` 等未来字段留给后续任务。
 * 远程 provider 必须同时提供非空 `model_name` 与受支持的 `credential_source`；`mock`、`local` 可无凭据来源。
+* `examples/.hancode-template/project.json` 与当前 schema 对齐；脚手架断言不再要求未来的 `stack` 字段。
 
 ### 验证步骤
 

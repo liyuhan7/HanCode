@@ -59,6 +59,18 @@
   - 默认保护规则必须是安全基线，不能把用户配置当作可替换的 deny-list。
   - 配置 schema 需要先拒绝未知/嵌套数据，再谈字段名敏感扫描；字段名扫描只能作为错误分类和防御纵深。
 
+### 2026-07-10 返工后续 — T3 文档与模板契约对齐
+
+- 触发原因：两阶段评审发现 `docs/PLAN.md`、`docs/系统架构.md` 和 `examples/.hancode-template/project.json` 仍保留 T3 当前不接受的工具/phase/交互字段或旧模板字段。
+- 修改：
+  - 收窄架构文档的 ConfigLoader 当前职责，明确 task state、phase、tool policy 和交互开关属于后续任务。
+  - 将架构中的 `project.json` 示例与 T3 严格 schema 对齐，移除 `stack`、`interactive`、`confirm_before_write`，补齐保护规则和 `project_root`。
+  - 修正模板 `project.json`，并更新脚手架断言验证 `project_root="."` 且不包含未来 `stack`。
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_course_project_scaffold.py -v -p no:cacheprovider`：18 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider`：89 passed。
+  - `git diff --check`：通过；模板 JSON 解析成功，`project_root` 为 `.`，无 `stack` 字段。
+
 ### 2026-07-10 __:__ +08:00 — T3 — ConfigLoader
 
 - 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；karpathy-guidelines；verification-before-completion

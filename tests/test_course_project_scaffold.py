@@ -49,7 +49,8 @@ def test_project_json_contains_course_assignment_metadata() -> None:
     assert data["project_id"] == "hancode-course-demo"
     assert data["course_name"] == "AI4SE"
     assert data["assignment_name"] == "Student Grade Statistics CLI"
-    assert "Python 3.11" in data["stack"]
+    assert data["project_root"] == "."
+    assert "stack" not in data
     assert data["test_command"] == "python -m pytest"
 
 
