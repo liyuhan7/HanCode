@@ -639,7 +639,7 @@ uv run --no-sync mypy src/hancode/state.py --no-incremental
 * 不会从文件系统反向自动修复状态。
 * 实际专项验证：23 passed；Ruff 与 MyPy 通过。
 * 两阶段评审：首次评审发现 3 个 Important，修复后 Spec 合规与代码质量复评均 PASS。
-* 全量回归曾受 Windows pytest 临时目录 ACL 影响（27 passed、81 setup errors），不能据此宣称全量通过。
+* 全量回归复核已通过：`uv run --no-sync pytest -p no:cacheprovider` 为 112 passed；此前曾受 Windows pytest 临时目录 ACL 影响（27 passed、81 setup errors），该中间失败不代表当前代码失败。
 
 ### 非目标 / 边界
 

@@ -53,14 +53,16 @@
   - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_state.py -v -p no:cacheprovider`：23 passed。
   - `uv run --no-sync ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed。
   - `uv run --no-sync mypy src/hancode/state.py --no-incremental`：Success，无问题。
-  - 两阶段复评代理独立确认上述 3 项修复；全量 pytest 受 Windows 临时目录 ACL 影响，曾出现 27 passed、81 setup errors，未宣称全量通过。
+  - 两阶段复评代理独立确认上述 3 项修复；全量 pytest 首次受 Windows 临时目录 ACL 影响，曾出现 27 passed、81 setup errors。
+  - 之后在 worktree 外重新执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest -p no:cacheprovider`：112 passed in 1.51s。
+  - 同步复核 `ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed；`mypy src/hancode/state.py`：Success；`git diff --check HEAD~2..HEAD`：通过。
 - 人工干预：
   - 用户明确要求使用 Superpowers 子代理进行两阶段评审，并随后授权代码提交和文档回写。
   - 评审结论中关于 code→review/deliver 的 target phase 语义按 SPEC 的“test/review 只能读取”收紧实现。
 - 经验教训：
   - `frozen` dataclass 不会自动冻结内部 dict；机器状态映射必须在构造时深层转为不可变映射。
   - StateStore 保存前必须同时校验持久化 task_id 和 phase 所有权，不能只依赖调用方传入对象。
-  - Windows pytest 临时目录 ACL 会造成 setup 错误；验证日志必须区分环境失败和代码失败。
+  - Windows pytest 临时目录 ACL 可能造成 setup 错误；应在批准的沙箱外重跑并区分环境失败和代码失败，最终以新鲜全量结果为准。
 
 ### 2026-07-10 返工 — T3 — ConfigLoader 安全与契约加固
 
