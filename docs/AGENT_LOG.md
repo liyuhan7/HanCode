@@ -20,6 +20,29 @@
 
 ## 记录条目
 
+### 2026-07-10 __:__ +08:00 — T2 — Linux CI 路径判定回归修复
+
+- 使用的技能：systematic-debugging；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户贴出 GitHub Actions / Linux `make test` 失败输出：`test_workspace_rejects_path_outside_project_root[C:/outside]` 期望 `workspace_path_outside_project_root`，实际得到 `invalid_task_id`。
+  - 本轮仅修复 T2 workspace 路径判定的跨平台差异，不扩展 workspace 初始化语义。
+- 根因分析：
+  - `Path("C:/outside").is_absolute()` 在 Windows 本地返回 `True`，但 Linux / POSIX 语义下不会按 Windows drive absolute path 处理。
+  - CI 因此先通过 `Path` 拼接与 `resolve()` 得到仍位于 task root 下的候选路径，随后落入 “包含路径分隔符” 的 `invalid_task_id` 分支。
+- 摘要：
+  - `src/hancode/workspace.py` 引入 `PureWindowsPath`。
+  - `task_path()` 在原有 `Path(task_id).is_absolute()` 基础上增加 `PureWindowsPath(task_id).is_absolute()`，统一拒绝 Windows 风格绝对路径。
+- 提交：
+  - 未提交；用户明确要求提交交给人类开发者。
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-ci-fix` 通过，no issues found in 1 source file。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 通过，47 passed。
+- 经验教训：
+  - 跨平台路径安全测试不能只依赖当前操作系统的 `Path.is_absolute()`；需要显式处理 Windows drive path 与 POSIX path 的差异。
+
 ### 2026-07-10 00:02 +08:00 — T2 — 评审后路径逃逸修复与回归补强
 
 - 使用的技能：systematic-debugging；test-driven-development；verification-before-completion

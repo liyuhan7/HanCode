@@ -435,6 +435,8 @@ uv run mypy src/hancode/workspace.py
 * 全量测试：`$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 在当前 worktree 状态通过，47 passed；其中包含用户已批准同步到该分支但尚未并入 T2 提交的 `tests/test_course_project_scaffold.py` 变更。
 * Lint：`$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
 * Type check：`$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-fix` 通过，no issues found in 1 source file。
+* Linux CI 回归修复：`make test` 在 Linux / Python 3.11.15 下失败，原因是 `Path("C:/outside").is_absolute()` 在 POSIX 语义下不识别 Windows 风格绝对路径，导致 `test_workspace_rejects_path_outside_project_root[C:/outside]` 收到 `invalid_task_id` 而不是 `workspace_path_outside_project_root`。
+* Linux CI Green：`task_path()` 增加 `PureWindowsPath(task_id).is_absolute()` 判定后，Windows 本地验证通过：`$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 20 passed；`$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 47 passed；`ruff` 与 `mypy` 均通过。
 * 评审遗留项（不阻塞 T2 合并）：(1) `workspace_version` 字段需同步到架构文档 §8.3；(2) init 错误的 `phase="spec"` 语义需 spec 决策（Phase 枚举是否加 INIT 或允许 None）。
 
 ---

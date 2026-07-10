@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from hancode.errors import HanCodeError, StructuredError
 
@@ -61,6 +61,7 @@ def task_path(project_root: Path, task_id: str) -> Path:
 
     if (
         task_id_path.is_absolute()
+        or PureWindowsPath(task_id).is_absolute()
         or not candidate.is_relative_to(tasks_root)
         or not candidate.is_relative_to(workspace_root)
     ):
