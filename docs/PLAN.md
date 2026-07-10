@@ -5,6 +5,7 @@
 > 项目定位：面向学生课程项目的轻量级 Coding Agent Harness
 > 实现原则：`docs/SPEC.md`、`docs/PLAN.md`、冷启动验证和 `docs/SPEC_PROCESS.md` 修订记录已完成；正式实现从 T1 开始逐任务 TDD 推进。
 > Agentic workers：实现任务必须按任务卡逐项执行，并采用 TDD：先红、再绿、再重构。
+> M1 分组策略：T1-T7 合并为 M1 基础骨架里程碑，统一在 `feature/M1` 分支开发，单次 PR 合并。M1 内各任务仍按 TDD 逐个推进并独立提交。
 
 ---
 
@@ -30,7 +31,15 @@ HanCode 的核心交付不是 prompt、规则文件或宿主 Coding Agent 的能
 * 遵循工作流：brainstorming -> writing-plans -> using-git-worktrees -> subagent-driven-development / executing-plans -> test-driven-development -> requesting-code-review -> finishing-a-development-branch。
 * `docs/SPEC.md`、`docs/PLAN.md`、冷启动验证和 `docs/SPEC_PROCESS.md` 修订记录已完成；现在可以按任务卡修改 `src/hancode/` 下对应 harness kernel 模块。
 * 实现任务必须使用 TDD：先写失败测试并观察红色结果，再写最小实现，再重构。
-* 每个实现任务使用独立 worktree、独立分支或独立执行会话。
+* 每个里程碑使用独立 worktree / 分支、单次 PR 合并：
+  * M1（T1-T7）→ `feature/M1`
+  * M2（T8-T10）→ `feature/M2`
+  * M3（T11-T15）→ `feature/M3`
+  * M4（T16-T18）→ `feature/M4`
+  * M5（T19-T21）→ `feature/M5`
+  * M6（T22-T23）→ `feature/M6`
+  * M7（T24-T27）→ `feature/M7`
+* 里程碑内各任务仍按 TDD 逐个推进、独立提交。
 * 每个任务完成后更新本文件状态、提交 hash、验证结果，并在 `docs/AGENT_LOG.md` 记录过程证据。
 * 核心机制测试不得依赖网络、真实 LLM、真实 API key 或宿主 Coding Agent 能力。
 * 不得提交真实凭据，不得在日志、trace、README、测试快照或错误信息中打印 secret。
@@ -91,17 +100,17 @@ HanCode 的核心交付不是 prompt、规则文件或宿主 Coding Agent 的能
 M0 规划与冷启动
   T0 规划文档一致性与冷启动验证准备
 
-M1 基础骨架
+M1 基础骨架（含 Action Schema）
   T1 共享模型与错误类型
     -> T2 Workspace 初始化
     -> T3 ConfigLoader
     -> T4 StateStore
     -> T5 Phase 枚举与 PhaseGate
     -> T6 WorkspaceRouter
+    -> T7 Action Schema
 
-M2 Action 与 Loop 基础
-  T7 Action Schema
-    -> T8 ActionParser
+M2 ActionParser 与 Loop 基础
+  T8 ActionParser
     -> T9 MockLLM
     -> T10 AgentLoop 最小循环骨架
 
@@ -137,7 +146,7 @@ M7 CLI / 凭据 / CI
 
 ```text
 T3 ConfigLoader 与 T4 StateStore 可在 T1 后并行。
-T7 Action Schema 与 T11 ToolResult / ToolRegistry 可在 T1 后并行。
+T7 Action Schema 与 T11 ToolResult / ToolRegistry 可在 T1 后并行（T7 属于 M1，T11 属于 M3）。
 T16 TraceLogger 可在 T1 / T4 后提前做，不必等待完整 AgentLoop。
 T19 ContextBuilder 可在 T2 / T4 / T5 后独立推进。
 T20 FeedbackBuilder 可在 T11 后独立推进，不必等待完整 AgentLoop。
@@ -151,8 +160,8 @@ T24 CLI 可先实现 --help / init 骨架，demo 命令等 T23 后接入。
 | 里程碑           | 完成条件                                                                    | 对应任务    |
 | ------------- | ----------------------------------------------------------------------- | ------- |
 | M0 计划可冷启动     | 陌生 agent 仅凭 `docs/SPEC.md` + `docs/PLAN.md` 可尝试 1-2 个任务，并把问题记录到 `docs/SPEC_PROCESS.md` | T0      |
-| M1 骨架可跑       | workspace、config、state、phase、router 可独立测试；缺 SPEC / PLAN 时拒绝进入 code      | T1-T6   |
-| M2 最小 loop 可跑 | MockLLM 能驱动 parse -> policy -> tool -> observation 的受控链路                | T7-T15  |
+| M1 骨架可跑       | workspace、config、state、phase、router、action schema 可独立测试；缺 SPEC / PLAN 时拒绝进入 code | T1-T7   |
+| M2 最小 loop 可跑 | MockLLM 能驱动 parse -> policy -> tool -> observation 的受控链路                | T8-T15  |
 | M3 可恢复状态成立    | trace、checkpoint、rollback 可独立测试，secret 不泄露                              | T16-T18 |
 | M4 主贡献闭环成立    | 测试失败 -> feedback -> retry -> rollback 可在 MockLLM 下确定性复现                 | T19-T21 |
 | M5 Demo 可证明机制 | MockLLM demo 生成 trace、TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES         | T22-T23 |
@@ -249,9 +258,9 @@ git status --short
 | 状态            | [x] 已完成               |
 | 依赖            | T0                    |
 | 可并行           | 不并行；后续模块依赖共享类型        |
-| Worktree / PR | `codex/t1`            |
+| Worktree / PR | `feature/M1`         |
 | 主贡献相关         | 否，基础支撑                |
-| Commit        | 未提交（在 `895065e` 基础上返工） |
+| Commit        | 已合并到 `main`            |
 
 ### 目标
 
@@ -346,9 +355,9 @@ python -m mypy src/hancode/models.py src/hancode/errors.py
 | 状态            | [x] 已完成                 |
 | 依赖            | T1                      |
 | 可并行           | 不并行；后续任务依赖 workspace 结构 |
-| Worktree / PR | `codex/workspace-init`  |
+| Worktree / PR | `feature/M1`              |
 | 主贡献相关         | 否，支撑维度                  |
-| Commit        | `6d7f894`              |
+| Commit        | 已合并到 `main`              |
 
 ### 目标
 
@@ -448,7 +457,7 @@ uv run mypy src/hancode/workspace.py
 | 状态            | [ ] 未开始               |
 | 依赖            | T1, T2                |
 | 可并行           | 可与 T4 并行              |
-| Worktree / PR | `codex/config-loader` |
+| Worktree / PR | `feature/M1`          |
 | 主贡献相关         | 否，支撑维度                |
 | Commit        | TODO                  |
 
@@ -531,7 +540,7 @@ uv run mypy src/hancode/config.py
 | 状态            | [ ] 未开始             |
 | 依赖            | T1, T2              |
 | 可并行           | 可与 T3 并行            |
-| Worktree / PR | `codex/state-store` |
+| Worktree / PR | `feature/M1`        |
 | 主贡献相关         | 否，控制流基础             |
 | Commit        | TODO                |
 
@@ -620,7 +629,7 @@ uv run mypy src/hancode/state.py
 | 状态            | [ ] 未开始            |
 | 依赖            | T1, T4             |
 | 可并行           | 可与 T6 前置设计并行       |
-| Worktree / PR | `codex/phase-gate` |
+| Worktree / PR | `feature/M1`        |
 | 主贡献相关         | 否，控制流基础            |
 | Commit        | TODO               |
 
@@ -699,8 +708,8 @@ uv run mypy src/hancode/phases.py
 | ------------- | ------------------------ |
 | 状态            | [ ] 未开始                  |
 | 依赖            | T4, T5                   |
-| 可并行           | 完成后释放 T7-T10 与 T13-T15   |
-| Worktree / PR | `codex/workspace-router` |
+| 可并行           | 完成后释放 T8-T10 与 T13-T15   |
+| Worktree / PR | `feature/M1`              |
 | 主贡献相关         | 否，控制流基础                  |
 | Commit        | TODO                     |
 
@@ -777,18 +786,14 @@ uv run mypy src/hancode/router.py
 
 ---
 
-# M2：Action 与 Loop 基础
-
----
-
 ## T7：Action Schema
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
 | 状态            | [ ] 未开始               |
-| 依赖            | T1                    |
+| 依赖            | T1, T6                |
 | 可并行           | 可与 T11 并行             |
-| Worktree / PR | `codex/action-schema` |
+| Worktree / PR | `feature/M1`           |
 | 主贡献相关         | 是，主循环输入协议             |
 | Commit        | TODO                  |
 
@@ -864,6 +869,10 @@ uv run mypy src/hancode/actions.py
 
 ---
 
+# M2：ActionParser 与 Loop 基础
+
+---
+
 ## T8：ActionParser
 
 | 元信息           | 值                     |
@@ -871,7 +880,7 @@ uv run mypy src/hancode/actions.py
 | 状态            | [ ] 未开始               |
 | 依赖            | T7                    |
 | 可并行           | 可与 T9 并行              |
-| Worktree / PR | `codex/action-parser` |
+| Worktree / PR | `feature/M2`          |
 | 主贡献相关         | 是，主循环输入校验             |
 | Commit        | TODO                  |
 
@@ -945,7 +954,7 @@ uv run mypy src/hancode/actions.py
 | 状态            | [ ] 未开始          |
 | 依赖            | T7               |
 | 可并行           | 可与 T8 并行         |
-| Worktree / PR | `codex/mock-llm` |
+| Worktree / PR | `feature/M2`     |
 | 主贡献相关         | 是，确定性测试基础        |
 | Commit        | TODO             |
 
@@ -1023,7 +1032,7 @@ uv run mypy src/hancode/llm.py
 | 状态            | [ ] 未开始                                          |
 | 依赖            | T6, T8, T9                                       |
 | 可并行           | 依赖注入 stub policy / stub tool，可先于真实 ToolPolicy 集成 |
-| Worktree / PR | `codex/agent-loop-minimal`                       |
+| Worktree / PR | `feature/M2`                                    |
 | 主贡献相关         | 是，主循环基础                                          |
 | Commit        | TODO                                             |
 
@@ -1104,7 +1113,7 @@ uv run mypy src/hancode/agent_loop.py
 | 状态            | [ ] 未开始               |
 | 依赖            | T1, T7                |
 | 可并行           | 可与 T8/T9 并行           |
-| Worktree / PR | `codex/tool-registry` |
+| Worktree / PR | `feature/M3`          |
 | 主贡献相关         | 是，工具调度基础              |
 | Commit        | TODO                  |
 
@@ -1185,7 +1194,7 @@ uv run mypy src/hancode/tools.py
 | 状态            | [ ] 未开始            |
 | 依赖            | T2, T11            |
 | 可并行           | 可与 T13 并行          |
-| Worktree / PR | `codex/file-tools` |
+| Worktree / PR | `feature/M3`       |
 | 主贡献相关         | 是，工具能力基础           |
 | Commit        | TODO               |
 
@@ -1260,7 +1269,7 @@ uv run mypy src/hancode/file_tools.py
 | 状态            | [ ] 未开始                 |
 | 依赖            | T2, T3                  |
 | 可并行           | 可与 T12 并行               |
-| Worktree / PR | `codex/path-classifier` |
+| Worktree / PR | `feature/M3`            |
 | 主贡献相关         | 是，治理护栏基础                |
 | Commit        | TODO                    |
 
@@ -1340,7 +1349,7 @@ uv run mypy src/hancode/path_policy.py
 | 状态            | [ ] 未开始                   |
 | 依赖            | T3, T5, T6, T7, T13       |
 | 可并行           | 可与 T15 紧密衔接               |
-| Worktree / PR | `codex/tool-policy-basic` |
+| Worktree / PR | `feature/M3`               |
 | 主贡献相关         | 是，治理护栏核心                  |
 | Commit        | TODO                      |
 
@@ -1417,7 +1426,7 @@ uv run mypy src/hancode/tool_policy.py
 | 状态            | [ ] 未开始                        |
 | 依赖            | T13, T14                       |
 | 可并行           | 不并行；属于治理护栏加固                   |
-| Worktree / PR | `codex/course-file-protection` |
+| Worktree / PR | `feature/M3`                      |
 | 主贡献相关         | 是，学生课程项目特定化治理                  |
 | Commit        | TODO                           |
 
@@ -1497,7 +1506,7 @@ uv run mypy src/hancode/tool_policy.py src/hancode/path_policy.py
 | 状态            | [ ] 未开始              |
 | 依赖            | T1, T4               |
 | 可并行           | 可与 T13/T14 并行        |
-| Worktree / PR | `codex/trace-logger` |
+| Worktree / PR | `feature/M4`         |
 | 主贡献相关         | 是，可观测性核心             |
 | Commit        | TODO                 |
 
@@ -1573,7 +1582,7 @@ uv run mypy src/hancode/trace.py
 | 状态            | [ ] 未开始                    |
 | 依赖            | T13, T15, T16              |
 | 可并行           | 不并行；依赖路径和保护规则              |
-| Worktree / PR | `codex/checkpoint-manager` |
+| Worktree / PR | `feature/M4`                |
 | 主贡献相关         | 是，可回退编码状态核心                |
 | Commit        | TODO                       |
 
@@ -1657,7 +1666,7 @@ uv run mypy src/hancode/checkpoints.py
 | 状态            | [ ] 未开始                  |
 | 依赖            | T17                      |
 | 可并行           | 不并行                      |
-| Worktree / PR | `codex/rollback-manager` |
+| Worktree / PR | `feature/M4`              |
 | 主贡献相关         | 是，可回退编码状态核心              |
 | Commit        | TODO                     |
 
@@ -1736,7 +1745,7 @@ uv run mypy src/hancode/checkpoints.py
 | 状态            | [ ] 未开始                 |
 | 依赖            | T2, T3, T4, T5, T16     |
 | 可并行           | 可与 T20 并行               |
-| Worktree / PR | `codex/context-builder` |
+| Worktree / PR | `feature/M5`             |
 | 主贡献相关         | 否，支撑维度                  |
 | Commit        | TODO                    |
 
@@ -1812,7 +1821,7 @@ uv run mypy src/hancode/context.py
 | 状态            | [ ] 未开始                  |
 | 依赖            | T8, T11, T14, T18        |
 | 可并行           | 可与 T19 并行                |
-| Worktree / PR | `codex/feedback-builder` |
+| Worktree / PR | `feature/M5`              |
 | 主贡献相关         | 是，反馈闭环核心                 |
 | Commit        | TODO                     |
 
@@ -1906,7 +1915,7 @@ uv run mypy src/hancode/feedback.py
 | 状态            | [ ] 未开始                           |
 | 依赖            | T10, T14, T16, T18, T20           |
 | 可并行           | 不并行；主贡献闭环任务                       |
-| Worktree / PR | `codex/feedback-loop-integration` |
+| Worktree / PR | `feature/M5`                         |
 | 主贡献相关         | 是，主贡献闭环核心                         |
 | Commit        | TODO                              |
 
@@ -1985,7 +1994,7 @@ uv run mypy src/hancode/agent_loop.py
 | 状态            | [ ] 未开始                    |
 | 依赖            | T19, T20, T21              |
 | 可并行           | 不并行；交付产物依赖反馈与上下文           |
-| Worktree / PR | `codex/delivery-artifacts` |
+| Worktree / PR | `feature/M6`                |
 | 主贡献相关         | 是，知识沉淀交付                   |
 | Commit        | TODO                       |
 
@@ -2065,7 +2074,7 @@ uv run mypy src/hancode/delivery.py
 | 状态            | [ ] 未开始           |
 | 依赖            | T21, T22          |
 | 可并行           | 不并行；集成演示任务        |
-| Worktree / PR | `codex/mock-demo` |
+| Worktree / PR | `feature/M6`      |
 | 主贡献相关         | 是，主贡献演示           |
 | Commit        | TODO              |
 
@@ -2153,7 +2162,7 @@ uv run mypy src
 | 状态            | [ ] 未开始                           |
 | 依赖            | T2, T23                           |
 | 可并行           | 可先实现 help / init，demo 命令等 T23 后接入 |
-| Worktree / PR | `codex/cli-minimal`               |
+| Worktree / PR | `feature/M7`                      |
 | 主贡献相关         | 否，交付入口                            |
 | Commit        | TODO                              |
 
@@ -2233,7 +2242,7 @@ uv run hancode --help
 | 状态            | [ ] 未开始             |
 | 依赖            | T3, T24             |
 | 可并行           | 可与 T26 部分并行         |
-| Worktree / PR | `codex/credentials` |
+| Worktree / PR | `feature/M7`        |
 | 主贡献相关         | 否，安全边界              |
 | Commit        | TODO                |
 
@@ -2311,7 +2320,7 @@ uv run mypy src/hancode/credentials.py
 | 状态            | [ ] 未开始            |
 | 依赖            | T24, T25           |
 | 可并行           | 不并行；交付验证任务         |
-| Worktree / PR | `codex/package-ci` |
+| Worktree / PR | `feature/M7`       |
 | 主贡献相关         | 否，交付质量保障           |
 | Commit        | TODO               |
 
@@ -2404,7 +2413,7 @@ uv run hancode demo --provider mock
 | 状态            | [ ] 未开始                      |
 | 依赖            | T23, T24, T25, T26           |
 | 可并行           | 最终文档任务                       |
-| Worktree / PR | `codex/readme-delivery-docs` |
+| Worktree / PR | `feature/M7`                   |
 | 主贡献相关         | 否，最终交付文档                     |
 | Commit        | TODO                         |
 
@@ -2505,6 +2514,82 @@ git status --short
 | 记忆与上下文机制                                 | T2, T19                      | [ ] |
 | 主贡献维度                                    | T16, T17, T18, T20, T21, T23 | [ ] |
 | MockLLM 机制演示                             | T9, T21, T23                 | [ ] |
+
+### 里程碑分支与 PR 一览
+
+所有里程碑均使用统一分支开发、单次 PR 合并：
+
+| 里程碑 | 分支            | 覆盖任务       | PR |
+| ---- | ------------- | ----------- | -- |
+| M1   | `feature/M1` | T1-T7       | 单 PR |
+| M2   | `feature/M2` | T8-T10      | 单 PR |
+| M3   | `feature/M3` | T11-T15     | 单 PR |
+| M4   | `feature/M4` | T16-T18     | 单 PR |
+| M5   | `feature/M5` | T19-T21     | 单 PR |
+| M6   | `feature/M6` | T22-T23     | 单 PR |
+| M7   | `feature/M7` | T24-T27     | 单 PR |
+
+#### M1 覆盖详情
+
+| 子任务 | 模块                | 文件                            |
+| ---- | ----------------- | ----------------------------- |
+| T1   | 共享模型与错误类型        | `models.py`, `errors.py`      |
+| T2   | Workspace 初始化    | `workspace.py`                |
+| T3   | ConfigLoader      | `config.py`                   |
+| T4   | StateStore        | `state.py`                    |
+| T5   | Phase 枚举与 PhaseGate | `phases.py`                   |
+| T6   | WorkspaceRouter   | `router.py`                   |
+| T7   | Action Schema     | `actions.py`                  |
+
+#### M2 覆盖详情
+
+| 子任务 | 模块            | 文件                   |
+| ---- | ------------- | -------------------- |
+| T8   | ActionParser  | `actions.py`         |
+| T9   | MockLLM       | `llm.py`             |
+| T10  | AgentLoop 最小骨架 | `agent_loop.py`      |
+
+#### M3 覆盖详情
+
+| 子任务 | 模块                  | 文件                            |
+| ---- | ------------------- | ----------------------------- |
+| T11  | ToolResult 与 ToolRegistry | `tools.py`                    |
+| T12  | FileTools 最小读写       | `file_tools.py`               |
+| T13  | PathClassifier      | `path_policy.py`              |
+| T14  | ToolPolicy 基础规则     | `tool_policy.py`              |
+| T15  | Course File Protection | `tool_policy.py`, `path_policy.py` |
+
+#### M4 覆盖详情
+
+| 子任务 | 模块                | 文件                |
+| ---- | ----------------- | ----------------- |
+| T16  | TraceLogger       | `trace.py`        |
+| T17  | CheckpointManager | `checkpoints.py`  |
+| T18  | RollbackManager   | `checkpoints.py`  |
+
+#### M5 覆盖详情
+
+| 子任务 | 模块                        | 文件              |
+| ---- | ------------------------- | --------------- |
+| T19  | ContextBuilder            | `context.py`    |
+| T20  | FeedbackBuilder 失败分类      | `feedback.py`   |
+| T21  | AgentLoop 集成 feedback/retry/rollback | `agent_loop.py` |
+
+#### M6 覆盖详情
+
+| 子任务 | 模块                    | 文件              |
+| ---- | --------------------- | --------------- |
+| T22  | Delivery Artifacts 生成 | `delivery.py`   |
+| T23  | MockLLM 机制 Demo      | `scripts/demo_mock_loop.py` |
+
+#### M7 覆盖详情
+
+| 子任务 | 模块                      | 文件                     |
+| ---- | ----------------------- | ---------------------- |
+| T24  | CLI 最小入口               | `cli.py`               |
+| T25  | CredentialProvider      | `credentials.py`       |
+| T26  | Package Build 与 CI     | `pyproject.toml`, CI 配置 |
+| T27  | README 运行与分发文档        | `README.md`            |
 
 ---
 
@@ -2645,20 +2730,20 @@ make check
 
 # 13. 实现顺序建议
 
-推荐按以下顺序执行：
+推荐按以下顺序执行（每个里程碑在对应 `feature/Mx` 分支开发，单 PR 合并）：
 
 ```text
 T0
-T1 -> T2 -> T3 -> T4 -> T5 -> T6
-T7 -> T8 -> T9 -> T10
-T11 -> T12 -> T13 -> T14 -> T15
-T16 -> T17 -> T18
-T19 -> T20 -> T21
-T22 -> T23
-T24 -> T25 -> T26 -> T27
+M1: T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> T7  (feature/M1, 单 PR)
+M2: T8 -> T9 -> T10                          (feature/M2, 单 PR)
+M3: T11 -> T12 -> T13 -> T14 -> T15          (feature/M3, 单 PR)
+M4: T16 -> T17 -> T18                        (feature/M4, 单 PR)
+M5: T19 -> T20 -> T21                        (feature/M5, 单 PR)
+M6: T22 -> T23                               (feature/M6, 单 PR)
+M7: T24 -> T25 -> T26 -> T27                 (feature/M7, 单 PR)
 ```
 
-最小可运行骨架优先顺序：
+最小可运行骨架优先顺序（M1 统一在 `feature/M1` 分支完成）：
 
 ```text
 T1 models/errors
@@ -2667,6 +2752,7 @@ T3 config
 T4 state
 T5 phase gate
 T6 router
+T7 action schema
 ```
 
 主贡献闭环优先顺序：
