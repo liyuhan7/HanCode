@@ -20,6 +20,45 @@
 
 ## 记录条目
 
+### 2026-07-10 返工 — T3 — ConfigLoader 安全与契约加固
+
+- 使用的技能：receiving-code-review；executing-plans；test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 两阶段评审判定 T3 初版不通过，要求修复默认保护可删除、敏感字段绕过、项目根可写、T2 元数据未复用、远程 provider 凭据来源缺失和字段诊断不足。
+  - 已确认 T3 不承载工具权限和 phase 策略：固定 phase 规则留在 T5，工具权限决策留在 T14。
+  - `max_context_chars=24000`、`max_trace_events=40` 来自 2026-07-10 已批准的 T3 开发计划，而非返工阶段临时调整。
+- 摘要：
+  - `workspace.py` 提供共享 `load_project_metadata()`；T2 与 T3 现在使用同一 workspace metadata 契约。
+  - `ConfigLoader` 只接受 T2 元数据与当前活动配置字段，拒绝未知顶层字段和嵌套配置。
+  - protected patterns 改为不可移除基线并支持项目规则追加；补充 `secrets/**`、密钥文件模式和项目根可写拒绝。
+  - 敏感字段扫描覆盖 `credentials`、`private_key`、`api_key_value` 等绕过形式；远程 provider 要求 credential source；错误消息只含字段名，不回显值。
+- 逐项 TDD 证据：
+  - Red-1 / Green-1（元数据）：`test_config_reuses_project_workspace_metadata_validation` 首次运行出现 3 个 `Failed: DID NOT RAISE HanCodeError`；共享校验后该组用例进入返工后专项通过。
+  - Red-2 / Green-2（schema）：评审复现初版对未知顶层字段和嵌套对象直接返回配置；新增 `test_config_rejects_unknown_or_nested_configuration` 锁定该行为，严格字段集合实现后通过。该 Red 为评审复现，未在本次续接会话中重新回放。
+  - Red-3 / Green-3（保护基线）：评审复现 `protected_patterns=[]` 会清空默认规则；`test_config_keeps_mandatory_protected_patterns` 验证基线保留与追加去重，返工后通过。该 Red 依据初版代码路径和评审报告记录。
+  - Red-4 / Green-4（凭据）：评审复现 `credentials.value`、`private_key`、`api_key_value` 可绕过初版后缀扫描；新增三类回归用例，返工后 42 项专项测试通过且异常文本不含测试值。该 Red 未单独在本次续接会话回放。
+  - Red-5 / Green-5（路径与诊断）：评审复现 `writable_roots` 为 `""`、`.` 或 `/**` 可解析到项目根，且错误不带字段名；新增边界与字段诊断用例后通过。
+  - Red-6 / Green-6（provider 与回归）：评审复现远程 provider 缺少 credential source 仍可加载；新增远程必填、local 例外和既有路径/task ID 回归用例后，专项 42 passed、全量 89 passed。
+  - 说明：返工提交 `e3ddce9` 已包含完整测试增量；除 Red-1 外，其余初版失败依据评审报告与初版代码行为记录，不冒充本次续接会话重新执行的命令输出。
+- 两阶段评审：
+  - 第一阶段 Spec 合规：确认 T2 元数据复用、不可移除课程保护、严格 schema、24000/40 来源、远程凭据来源和 T5/T14 边界已写入任务契约。
+  - 第二阶段代码质量：确认 `Path.resolve()` / `PureWindowsPath`、字段级错误、敏感值不回显、local provider 例外与无副作用加载；Ruff 与 MyPy 通过。
+- 提交：
+  - `e3ddce9` — `fix: 加固 T3 ConfigLoader`
+  - 文档回填提交：本记录所在的 `docs: 回填 T3 返工验证记录` 提交。
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_config.py -v -p no:cacheprovider`：42 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/config.py tests/test_config.py --no-cache`：All checks passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3-review"`：Success，无问题。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider`：89 passed。
+- 人工干预：
+  - 用户确认采用“仅远程 provider 必须 credential_source，local 可为 None”。
+  - 用户确认 T3 仅支持当前活动字段，未来字段由后续任务加入。
+- 经验教训：
+  - 默认保护规则必须是安全基线，不能把用户配置当作可替换的 deny-list。
+  - 配置 schema 需要先拒绝未知/嵌套数据，再谈字段名敏感扫描；字段名扫描只能作为错误分类和防御纵深。
+
 ### 2026-07-10 __:__ +08:00 — T3 — ConfigLoader
 
 - 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；karpathy-guidelines；verification-before-completion

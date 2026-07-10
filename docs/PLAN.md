@@ -454,12 +454,12 @@ uv run mypy src/hancode/workspace.py
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [x] 已完成               |
+| 状态            | [x] 已完成（返工后）       |
 | 依赖            | T1, T2                |
 | 可并行           | 可与 T4 并行              |
 | Worktree / PR | `feature/M1`          |
 | 主贡献相关         | 否，支撑维度                |
-| Commit        | `e7fcee3` — `feat: 完成 T3 ConfigLoader` |
+| Commit        | `e7fcee3` + `e3ddce9` — T3 初版与安全返工 |
 
 ### 目标
 
@@ -472,7 +472,7 @@ uv run mypy src/hancode/workspace.py
 
 ### SPEC 依据
 
-* 配置加载与运行约束。
+* 配置加载与运行约束；T3 只加载共享配置输入，固定 phase 策略由 T5、工具权限决策由 T14 实现。
 * 凭据不得明文写入配置。
 * `max_steps`、`retry_budget`、工具权限、测试命令、保护路径等必须显式配置并校验。
 
@@ -508,8 +508,10 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
   * `max_checkpoints_per_task = 5`
   * `max_context_chars = 24000`
   * `max_trace_events = 40`
-* 默认 protected patterns 包含作业说明、教师测试、评分脚本、样例数据、`.env` 和凭据文件。
+* 默认 protected patterns 是不可移除基线，包含作业说明、教师测试、评分脚本、样例数据、`.env`、凭据目录和常见密钥文件；项目配置只能追加规则。
 * 不读取真实 secret，只读取 secret source 配置。
+
+* `max_context_chars = 24000`、`max_trace_events = 40` 的权威来源是 2026-07-10 已批准的 T3 开发计划；本任务不再使用旧的 `12000/20` 草案值。
 
 ### 实现结果
 
@@ -517,14 +519,16 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
 * 结构化拒绝未初始化 workspace、损坏或类型/范围非法配置、未知 provider、明文凭据字段和可写根路径逃逸；错误不回显明文值。
 * 可写根仅接受 project root 内的相对目录，规范化 `src/**` 形式，并同时防御 POSIX/Windows 绝对路径、`..` 与符号链接逃逸。
 * 明确不读取 task `state.json`、环境变量值、`.env` 或真实凭据，也不实现 CredentialProvider、路由或 ContextBuilder。
+* `project.json` 仅接受 T2 元数据与当前 T3 活动字段；`stack`、`interactive`、`confirm_before_write`、`workspace_root` 等未来字段留给后续任务。
+* 远程 provider 必须同时提供非空 `model_name` 与受支持的 `credential_source`；`mock`、`local` 可无凭据来源。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_config.py -v -p no:cacheprovider
-uv run ruff check src/hancode/config.py tests/test_config.py --no-cache
-uv run mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3"
-uv run pytest -p no:cacheprovider
+uv run --no-sync pytest tests/test_config.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/config.py tests/test_config.py --no-cache
+uv run --no-sync mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3-review"
+uv run --no-sync pytest -p no:cacheprovider
 ```
 
 ### 完成判定
@@ -532,7 +536,8 @@ uv run pytest -p no:cacheprovider
 * 配置错误会清晰失败。
 * 默认配置足够驱动 MockLLM demo。
 * 配置对象可被 ToolPolicy、ContextBuilder、AgentLoop 复用。
-* 2026-07-10 实测：专项 25 passed；Ruff 通过；MyPy 通过；全量 72 passed。
+* 2026-07-10 初版实测：专项 25 passed；全量 72 passed。
+* 2026-07-10 返工后实测：专项 42 passed；Ruff 通过；MyPy 通过；全量 89 passed。
 
 ### 非目标 / 边界
 
