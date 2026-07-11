@@ -20,6 +20,31 @@
 
 ## 记录条目
 
+### 2026-07-11 — T12 — FileTools 最小读写
+
+- 使用的技能：using-superpowers；karpathy-guidelines；brainstorming；writing-plans；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
+- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全审查智能体；控制代理（沙箱外 pytest 验证）。
+- 关键提示词 / 上下文：
+  - T12 只实现 `read_file`、`write_file`、`list_files`、`search_text` 与基础 root containment；不得提前实现 PathClassifier、ToolPolicy、checkpoint、trace、run_tests 或精确 edit_file。
+  - 所有结果使用 T11 `ToolResult`；`.env`/`.env.*` 是 T12 的最小硬安全底线；read/search 输出覆盖 SPEC 最小 secret fixture 脱敏。
+- 摘要：
+  - 新增 `src/hancode/file_tools.py`：四个函数均返回结构化输出和安全错误摘要，路径 resolve 后必须留在 project root 内，拒绝绝对路径、父级和 symlink 逃逸。
+  - 读取和搜索使用 UTF-8；搜索按相对 POSIX 路径和行号稳定排序，并报告不可读、非 UTF-8 和凭据文件；写入预编码后按字节落盘，`bytes_written` 与实际内容一致。
+  - `.env`、引号/非引号赋值、Bearer、sk-token 和 JSON secret fixture 均不会完整进入 read/search ToolResult。
+- 逐项 TDD 证据：
+  - Red：新增测试后因 `hancode.file_tools` 不存在，以预期 `ModuleNotFoundError` 在收集阶段失败。
+  - Green：最小实现后沙箱外专项 23 passed、1 skipped；第一阶段新增 2 项脱敏测试先 2 failed 后 2 passed；第二阶段新增安全/编码测试先 5 failed、1 skipped 后 5 passed、1 skipped。
+- 两阶段评审：
+  - 阶段一发现 1 项 Important：带引号 assignment、JSON password 与 query 原样泄漏；已修复并验证。
+  - 阶段二发现 1 项 Critical 与 4 项 Important：symlink alias 绕过 `.env`、resolve 异常外泄、Windows 落盘字节不一致等。批准范围内问题均已修复；通用凭据扫描和并发 TOCTOU 明确留作后续风险。复审无剩余 Critical/Important。
+- 提交：
+  - `41b831d` — `feat: implement T12 file tools`：新增 FileTools 与完整 T12 测试。
+- 验证：
+  - T11+T12：40 passed、2 skipped；全量沙箱外：258 passed、2 skipped in 2.58s；两个 skip 均为 Windows 文件 symlink 权限限制。
+  - Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 13 source files`；`git diff --check` 通过。
+- 剩余风险：
+  - `.npmrc`/YAML/ghp/AKIA 等通用凭据扫描、恶意并发 symlink/junction TOCTOU 和极端 symlink loop 不属于 T12 最小 fixture/basic containment，后续安全机制必须统一处理。
+
 ### 2026-07-11 — T11 — ToolResult 与 ToolRegistry
 
 - 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。

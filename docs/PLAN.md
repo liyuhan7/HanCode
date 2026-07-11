@@ -1320,12 +1320,12 @@ uv run mypy src/hancode/tools.py
 
 | 元信息           | 值                  |
 | ------------- | ------------------ |
-| 状态            | [ ] 未开始            |
+| 状态            | [x] 已完成（专项、静态门禁、全量复验与两阶段评审通过） |
 | 依赖            | T2, T11            |
 | 可并行           | 可与 T13 并行          |
 | Worktree / PR | `feature/M3`       |
 | 主贡献相关         | 是，工具能力基础           |
-| Commit        | TODO               |
+| Commit        | `41b831d` — `feat: implement T12 file tools` |
 
 ### 目标
 
@@ -1382,6 +1382,21 @@ uv run mypy src/hancode/file_tools.py
 
 * FileTools 返回 ToolResult。
 * 文件读取、写入、列出、搜索在 tmp workspace 中可测试。
+
+### 实际验证
+
+* Red：先新增 `tests/test_file_tools.py`，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_file_tools.py -v -p no:cacheprovider`；因 `hancode.file_tools` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+* Green：新增 `src/hancode/file_tools.py` 后，沙箱外专项为 23 passed、1 skipped；评审新增的脱敏测试和安全边界测试均先观察到预期失败，再以最小修复转绿。
+* T11+T12 回归：40 passed、2 skipped；skip 均因当前 Windows 环境不允许创建文件 symlink。
+* 静态检查：`uv run --no-sync ruff check src tests --no-cache` 通过；`uv run --no-sync mypy src --no-incremental` 为 `Success: no issues found in 13 source files`。
+* 全量：沙箱外 `uv run --no-sync pytest -q -p no:cacheprovider` 为 258 passed、2 skipped in 2.58s；受限沙箱的 tmp_path 测试仍会在 pytest 临时目录 `.lock` 处触发既有 `PermissionError`。
+* `git diff --check` 通过。
+
+### 两阶段评审与剩余风险
+
+* 第一阶段契约审查发现带引号赋值、JSON password 和 search query 的脱敏缺口；补失败测试后统一使用 `[REDACTED]` 修复，且未越界实现 T13-T15/T17。
+* 第二阶段质量审查发现 search 可经 symlink alias 读取 `.env`，并指出 resolve 异常、Windows 换行与 UTF-8 编码、空 query 边界；均补回归测试并修复。复审确认 T12 范围内无剩余 Critical/Important。
+* 非阻断风险：通用 `.npmrc`/YAML/ghp/AKIA 脱敏、恶意并发替换 symlink/junction 的 TOCTOU，以及极端 symlink loop 的统一处理留给后续安全机制；T12 只承诺已批准的最小 secret fixture 与基础 root containment。
 
 ### 非目标 / 边界
 
