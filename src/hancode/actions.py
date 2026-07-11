@@ -138,6 +138,52 @@ _TOOL_NAMES = frozenset(
 
 _NO_ARGUMENT_TOOLS = frozenset({"run_tests", "rollback_last_checkpoint"})
 
+_PARSER_FIELDS = frozenset({"type", "phase", "tool_name", "args", "reason"})
+
+
+def parse_action(raw: dict[str, object], current_phase: Phase) -> Action | ParseError:
+    if not isinstance(raw, dict):
+        return _parser_error(
+            "invalid_action_payload",
+            "Action payload must be an object.",
+            current_phase,
+            "Provide an object with the required action fields.",
+        )
+
+    fields = set(raw)
+    if _PARSER_FIELDS - fields:
+        return _parser_error(
+            "missing_action_fields",
+            "Action payload is missing required fields.",
+            current_phase,
+            "Provide all required action fields.",
+        )
+    if fields - _PARSER_FIELDS:
+        return _parser_error(
+            "unexpected_action_fields",
+            "Action payload contains unexpected fields.",
+            current_phase,
+            "Provide only the required action fields.",
+        )
+
+    action = Action.from_values(
+        type=raw["type"],
+        phase=raw["phase"],
+        tool_name=raw["tool_name"],
+        args=raw["args"],
+        reason=raw["reason"],
+    )
+    if isinstance(action, ParseError):
+        return action
+    if action.phase is not current_phase:
+        return _parser_error(
+            "phase_mismatch",
+            "Action phase does not match the current phase.",
+            current_phase,
+            "Use the current phase.",
+        )
+    return action
+
 
 def _parse_action_type(value: object) -> ActionType | None:
     try:
@@ -160,6 +206,18 @@ def _parse_error(error_code: str, message: str, phase: str) -> ParseError:
         phase=phase,
         denied_rule=None,
         suggested_fix="Provide a valid action schema.",
+    )
+
+
+def _parser_error(
+    error_code: str, message: str, current_phase: Phase, suggested_fix: str
+) -> ParseError:
+    return ParseError(
+        error_code=error_code,
+        message=message,
+        phase=current_phase.value,
+        denied_rule=None,
+        suggested_fix=suggested_fix,
     )
 
 

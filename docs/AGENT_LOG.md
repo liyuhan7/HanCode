@@ -20,6 +20,109 @@
 
 ## 记录条目
 
+### 2026-07-11 — T10 — AgentLoop 最小循环骨架
+
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；test-driven-development；requesting-code-review；receiving-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；独立只读审查智能体；控制代理（沙箱外全量验证）。
+- 关键提示词 / 上下文：
+  - T10 只实现可注入的最小控制流，依赖 T6/T8/T9；不能提前实现真实 ToolRegistry、ToolPolicy、ContextBuilder、FeedbackBuilder、trace、retry 或 rollback。
+  - `finish_phase` / `final` 经 parser 与 policy 后只结束本次 run，返回 `running`；`MockLLMExhausted` 必须由 loop 转成当前 phase 的完整结构化 `blocked` 错误。
+- 摘要：
+  - 新增 `src/hancode/agent_loop.py`：定义 T10 所需的依赖 Protocol、`AgentRunResult` 与 `AgentLoop.run(task_id)`；每轮固定执行 context -> LLM -> parser -> policy -> tool -> feedback，并将工具 observation 注入下一轮 context。
+  - `tool_call` 只有在 parser 成功且 policy allow 后才 dispatch；parse error、policy denial、MockLLM 耗尽、max_steps 和未支持的 `ask_user` 都停止为 `blocked`，不执行工具。
+  - `finish_phase`、`final` 返回 `running`；Router 已完成时以 0 step 返回 `completed`；本任务不保存 state、生成 trace 或解释未来 ToolResult。
+- 逐项 TDD 证据：
+  - Red：新增 `tests/test_agent_loop.py` 后，专项测试在收集阶段因 `hancode.agent_loop` 不存在以预期 `ModuleNotFoundError` 失败。
+  - Green：新增最小 loop 后专项 12 passed；独立审查发现 `final` 缺少独立停止测试，补充该测试后专项 13 passed in 0.04s。
+- 审查：
+  - 只读审查无 Critical/Important；Minor 为 `final` 分支缺少单独测试。确认该分支已由 `ActionType.FINAL` 与 `FINISH_PHASE` 的同一停止分支实现后，仅新增回归测试并验证通过。
+- 提交：
+  - `2f7dc5f` — `feat: 完成 T10 AgentLoop`：新增 loop 与 13 项 T10 测试。
+- 验证：
+  - T8+T9+T10 回归：35 passed in 0.09s；Ruff 通过；MyPy 为 `Success: no issues found in 1 source file`。
+  - 全量受限沙箱因 pytest 临时目录 `.lock` 的 `PermissionError` 得到 120 passed、97 errors；同命令沙箱外复验为 218 passed in 1.75s。
+  - `git diff --check` 通过。
+- 剩余风险：
+  - 真实 ToolResult、ToolPolicy、ContextBuilder、FeedbackBuilder、trace、state 持久化、retry 和 rollback 仍由 T11/T14/T19-T21 实现；T10 的 Protocol 是可替换接缝，不是这些模块的最终接口。
+
+### 2026-07-11 — T9 — MockLLM
+
+- 使用的技能：test-driven-development；verification-before-completion。
+- 使用的智能体：OpenAI Codex；控制代理（沙箱外全量验证）。
+- 关键提示词 / 上下文：
+  - T9 只实现确定性、离线的 `LLMClient` Protocol、`MockLLM` 和 `MockLLMExhausted`；不得调用网络、凭据、provider、parser、trace、policy 或工具，也不得提前实现 T10 AgentLoop。
+  - 原始 action dict 不作 schema 校验，以便后续 ActionParser 接收 malformed payload；构造、每次输出与 context/history 公开边界均必须隔离可变嵌套值。
+- 摘要：
+  - 新增 `src/hancode/llm.py`：`MockLLM` 按输入序列深拷贝返回 action，在耗尽检查前深拷贝记录 context，`contexts` 以 tuple 形式返回深拷贝快照。
+  - 新增 `MockLLMExhausted`，固定诊断为 `mock_llm_exhausted`、`Provide another mock action or stop the loop as blocked.` 与消息 `MockLLM action sequence exhausted.`；不在 T9 映射 blocked 状态，交由 T10 AgentLoop。
+  - 新增 `tests/test_llm.py` 的 8 项测试：顺序、context、确定性、ActionParser 兼容原始输出、耗尽字段/调用记录及输入/输出/history 的防别名语义。
+- 逐项 TDD 证据：
+  - Red：新增测试后执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`，因 `hancode.llm` 不存在在收集阶段以预期 `ModuleNotFoundError` 失败。
+  - Green：新增最小标准库实现并以同一命令复跑，8 passed in 0.04s。
+- 审查修复（仅测试，未修改 `src/hancode/llm.py`）：
+  - 新增 malformed raw action 用例：输入缺少正常 action 字段且 `type` 非法的 dict，断言 `next_action()` 原样返回等值但独立的 dict，证明 MockLLM 不提前抛错、填充字段或执行 schema 校验，保留给 ActionParser 处理。
+  - 新增 returned-action 深层隔离用例：两个预设 action 共用同一嵌套 `args`，修改第一次返回值的深层 `path` 后，断言第二次返回值仍为原始 `README.md`，直接覆盖内部队列不受污染的边界。
+  - 测试补强证据：本次审查时 `src/hancode/llm.py` 已正确满足这两个契约，因此新增的正式回归测试没有形成新的生产 RED；首次按正式断言运行专项测试即为 `10 passed in 0.04s`。未为制造 RED 而改动生产代码。
+  - 验证：T8+T9 回归通过 `22 passed in 0.05s`，`uv run --no-sync ruff check tests/test_llm.py --no-cache` 输出 `All checks passed!`，`git diff --check` 无输出并通过。
+- 提交：
+  - `a86fd44` — `feat: 完成 T9 MockLLM`：新增 `llm.py` 与初始 `tests/test_llm.py`。
+  - `93ae774` — `docs: 回填 T9 验证记录`：首次回填 T9 的 PLAN 与日志验证证据。
+  - `3bba8cb` — `test: 补强 T9 MockLLM 审查覆盖`：新增 malformed raw action 透传和深层返回值隔离测试。
+  - `e9d14ae` — `docs: 纠正 T9 审查验证记录`：纠正审查补测的验证叙述；此提交不新增测试。
+  - `a397ccf` — `docs: 修正 T9 提交记录`：修正日志中的 T9 提交元数据；此提交不新增测试。
+  - `c9d0adc` — `docs: 对齐 T9 耗尽契约`：在 PLAN 明确 T9 抛出异常、T10 映射 `blocked` 的职责边界。
+  - 后续跨文档契约同步（审查发现；均为文档提交，不是源码/测试提交）：
+    - `54cc89b` — `docs: 完整回填 T9 提交审计`：完整回填 T9 审计记录。
+    - `0410035` — `docs: 对齐 T10 MockLLM 耗尽状态`：同步 T10 对 `MockLLMExhausted` 的固定 `blocked` 映射。
+    - `45b966e` — `docs: 同步 MockLLM 耗尽上位契约`：同步 SPEC 与系统架构中的耗尽职责边界。
+    - `8b87619` — `docs: 同步 MockLLM 隔离示例`：同步系统架构中的深拷贝与 `contexts` 隔离示例。
+- 提交审计修正（2026-07-11）：逐一核验原有六个提交的主题和变更文件后，补齐此前遗漏的 `3bba8cb`、`c9d0adc`，并将 `e9d14ae`、`a397ccf` 明确标注为文档提交，避免误记为测试提交；审查随后发现的上述四项跨文档契约同步提交亦已完整列入，且均不属于源码或测试提交。
+- 后续契约同步审计验证（2026-07-11）：设置既有 `PYTHONPATH=src` 与临时 `UV_CACHE_DIR` 后，`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider` 退出码 0（10 passed in 0.03s）；`git diff --check` 退出码 0、无输出。
+- 审计验证证据（2026-07-11）：设置既有 `PYTHONPATH=src` 与临时 `UV_CACHE_DIR` 后，`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider` 退出码 0（10 passed in 0.03s）；`git diff --check` 退出码 0、无输出。
+- 验证：
+  - 专项：`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`：8 passed in 0.04s。
+  - T8+T9 回归：`uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py -v -p no:cacheprovider`：20 passed in 0.05s。
+  - 静态检查：`uv run --no-sync ruff check src/hancode/llm.py tests/test_llm.py --no-cache`：All checks passed；`uv run --no-sync mypy src/hancode/llm.py --no-incremental`：Success: no issues found in 1 source file。
+  - 全量：受限沙箱的 `uv run --no-sync pytest -p no:cacheprovider` 因 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 创建锁文件的 `PermissionError` 中断（106 passed, 97 errors）；控制代理在沙箱外以同一命令复验：203 passed in 6.29s。
+  - `git diff --check` 通过。
+- 剩余风险：
+  - T9 不执行 action、不作 schema/policy/path 决策、也不管理 trace 或循环状态；`MockLLMExhausted` 到 blocked 状态的映射与最大步数控制仍属于 T10。
+- 审查结论处理：
+  - `MockLLMExhausted` 保持运行时异常，不改为 `HanCodeError`；T10 捕获后补齐当前 phase、`denied_rule=None` 和结构化错误字段。
+  - `MockLLM` 保持普通可变类且不新增 `reset()`；action 序列和 context 历史已通过深拷贝隔离，足以防止外部别名污染。
+  - 将确定性测试重命名为 `test_mock_llm_is_deterministic`，并同步 PLAN 的完整测试清单；历史 Red/Green 数字保留为历史证据。
+- Minor 修正验证（2026-07-11）：`tests/test_llm.py` 专项 10 passed；全量 `uv run --no-sync pytest -p no:cacheprovider` 在沙箱外 205 passed；Ruff、MyPy 与 `git diff --check` 通过。
+
+### 2026-07-11 — T8 — ActionParser
+
+- 使用的技能：test-driven-development；systematic-debugging；verification-before-completion。
+- 使用的智能体：OpenAI Codex；控制代理（沙箱外全量验证）。
+- 关键提示词 / 上下文：
+  - T8 仅解析原始 LLM / MockLLM dict；T7 已提供 `Action`、`ActionType`、`ParseError` 和 `Action.from_values()`，必须复用其 schema 校验。
+  - 禁止提前实现 policy、PathClassifier、LLM、tool dispatch、observation 或 trace；原始 payload 的顶层字段必须严格固定，并以可信 `current_phase` 进行最终一致性判断。
+- 摘要：
+  - 在 `src/hancode/actions.py` 新增 `parse_action(raw, current_phase)`：按 payload 类型、缺失字段、多余字段、T7 schema 和 phase 一致性的固定顺序解析。
+  - 新增稳定且不回显候选值的 parser 边界错误：`invalid_action_payload`、`missing_action_fields`、`unexpected_action_fields`、`phase_mismatch`；边界错误以 `current_phase.value` 填充 phase 且 `denied_rule=None`。
+  - 新增 `tests/test_action_parser.py` 共 12 项参数化/边界测试，覆盖三种合法工具 action、非 dict、缺失/多余顶层字段、未知工具、非法参数、缺失 write reason、非法 phase、phase mismatch、精确边界错误及输入/args 不可变性。
+- 逐项 TDD 证据：
+  - Red：新增测试后执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_action_parser.py -v -p no:cacheprovider`，12 failed；全部因 `hancode.actions` 尚无 `parse_action` 而出现预期 `AttributeError`。
+  - Green：新增最小 parser 边界校验、委托 `Action.from_values()` 与 phase 比对后，以相同命令复跑，12 passed in 0.04s。
+  - 静态检查发现两个 walrus 临时变量未使用（ruff F841）；根因是只需布尔集合差而不需错误字段值。移除赋值、保持行为不变后 ruff 通过。
+- 审查修复：
+  - 将 `unknown_tool`、`invalid_action_args`、`missing_reason` 与 `invalid_phase` 的预期值提升为完整 `ParseError`，覆盖 `error_code`、`message`、`phase`、`denied_rule` 和 `suggested_fix`，以确认 parser 原样透传 T7 schema 错误。
+  - Red：先保留旧的 `result.error_code == expected_error` 结构并执行 parser 专项测试，4 failed、8 passed；失败明确表明旧断言只能比较错误码，无法比较完整 `ParseError`。
+  - Green：仅改为 `assert result == expected_error`，未修改 `src/hancode/actions.py`；专项 12 passed in 0.03s，T7+T8 回归 43 passed in 0.08s，`git diff --check` 通过。
+- 提交：
+  - `4afeef1` — `feat: 完成 T8 ActionParser`。
+- 验证：
+  - 专项：`uv run --no-sync pytest tests/test_action_parser.py -v -p no:cacheprovider`：12 passed in 0.04s。
+  - T7+T8 回归：`uv run --no-sync pytest tests/test_action_schema.py tests/test_action_parser.py -v -p no:cacheprovider`：43 passed in 0.06s。
+  - 静态检查：`uv run --no-sync ruff check src/hancode/actions.py tests/test_action_parser.py --no-cache` 通过；`uv run --no-sync mypy src/hancode/actions.py --no-incremental`：Success: no issues found in 1 source file。
+  - 全量：受限沙箱中 `uv run --no-sync pytest -p no:cacheprovider` 因 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 的 `PermissionError` 中断（98 passed, 97 errors）；控制代理使用同一命令在沙箱外复跑：195 passed in 3.83s。
+  - `git diff --check` 通过。
+- 剩余风险：
+  - T8 不执行 action，也不作 policy/path 决策、LLM 调用、observation 或 trace 写入；这些集成属于后续任务。`current_phase` 是调用方提供的可信 Phase，parser 不负责从状态文件取得它。
+
 ### 2026-07-11 — T7 — Action Schema
 
 - 使用的技能：using-superpowers；karpathy-guidelines；brainstorming；using-git-worktrees；executing-plans；test-driven-development。

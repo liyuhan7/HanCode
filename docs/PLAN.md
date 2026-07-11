@@ -938,12 +938,12 @@ git diff --check
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成               |
 | 依赖            | T7                    |
 | 可并行           | 可与 T9 并行              |
 | Worktree / PR | `feature/M2`          |
 | 主贡献相关         | 是，主循环输入校验             |
-| Commit        | TODO                  |
+| Commit        | `4afeef1`            |
 
 ### 目标
 
@@ -963,35 +963,39 @@ git diff --check
 ### 接口契约
 
 ```python
-def parse_action(raw: dict[str, object]) -> Action | ParseError: ...
+def parse_action(raw: dict[str, object], current_phase: Phase) -> Action | ParseError: ...
 ```
 
-输入：LLM / MockLLM 原始输出。
+输入：LLM / MockLLM 原始输出及可信的当前 `Phase`。
 输出：Action 或 ParseError。
-不变量：parser 只做格式和 schema 校验，不做安全策略判断。
+不变量：顶层字段必须恰为 `type`、`phase`、`tool_name`、`args`、`reason`；parser 按 payload 类型、缺失字段、多余字段、`Action.from_values()`、action phase 与当前 phase 的顺序校验，不做安全策略判断。
 错误处理：解析失败返回 ParseError，至少包含 `error_code`、`message`、`phase`、`denied_rule`、`suggested_fix`；其中 parse error 的 `denied_rule` 为 `null`。
 
 ### 预期失败测试
 
-* `test_parse_valid_read_file_action`
-* `test_parse_valid_edit_file_action`
-* `test_parse_valid_run_tests_action`
-* `test_parse_rejects_malformed_payload`
-* `test_parse_rejects_unknown_tool`
-* `test_parse_error_becomes_structured_error`
+* `test_parse_valid_tool_actions`
+* `test_parse_rejects_invalid_payload_boundary`
+* `test_parse_preserves_action_schema_errors`
+* `test_parse_rejects_valid_action_for_a_different_phase`
+* `test_parse_does_not_mutate_input_or_return_mutable_arguments`
 
 ### 实现要点
 
 * parser 支持 dict 输入，不依赖真实 LLM 字符串格式。
 * 后续真实 LLM provider 可在 adapter 中把文本转成 dict。
 * ParseError 应可被 FeedbackBuilder 转成 observation。
+* 实现已新增 `parse_action()`：边界错误使用稳定的 `invalid_action_payload`、`missing_action_fields`、`unexpected_action_fields`、`phase_mismatch` 错误码，schema 错误原样返回 T7 的 `Action.from_values()` 结果。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_action_parser.py -v
-uv run ruff check src/hancode/actions.py tests/test_action_parser.py
-uv run mypy src/hancode/actions.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'
+uv run --no-sync pytest tests/test_action_parser.py -v -p no:cacheprovider
+uv run --no-sync pytest tests/test_action_schema.py tests/test_action_parser.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/actions.py tests/test_action_parser.py --no-cache
+uv run --no-sync mypy src/hancode/actions.py --no-incremental
+uv run --no-sync pytest -p no:cacheprovider
+git diff --check
 ```
 
 ### 完成判定
@@ -999,6 +1003,7 @@ uv run mypy src/hancode/actions.py
 * 合法 action 可解析。
 * 非法 action 不会进入 tool。
 * 错误信息可诊断。
+* 验证证据：parser 专项 12 passed；T7+T8 回归 43 passed；ruff 与 mypy 通过；控制代理在沙箱外全量验证 195 passed in 3.83s；`git diff --check` 通过。
 
 ### 非目标 / 边界
 
@@ -1012,12 +1017,12 @@ uv run mypy src/hancode/actions.py
 
 | 元信息           | 值                |
 | ------------- | ---------------- |
-| 状态            | [ ] 未开始          |
+| 状态            | [x] 已完成          |
 | 依赖            | T7               |
 | 可并行           | 可与 T8 并行         |
 | Worktree / PR | `feature/M2`     |
 | 主贡献相关         | 是，确定性测试基础        |
-| Commit        | TODO             |
+| Commit        | `a86fd44`（源码/初始测试）；`93ae774`（初始文档回填）；`3bba8cb`（malformed raw action 与深层返回值隔离审查补测）；`e9d14ae`（审查验证记录纠正）；`a397ccf`（提交记录修正）；`c9d0adc`（耗尽契约对齐）；后续跨文档契约同步（审查发现）：`54cc89b`（T9 审计回填）、`0410035`（T10 耗尽状态对齐）、`45b966e`（MockLLM 耗尽上位契约同步）、`8b87619`（MockLLM 隔离示例同步） |
 
 ### 目标
 
@@ -1037,27 +1042,39 @@ uv run mypy src/hancode/actions.py
 ### 接口契约
 
 ```python
-from typing import Protocol, Any
+from typing import Protocol
 
 class LLMClient(Protocol):
-    def next_action(self, context: dict[str, Any]) -> dict[str, Any]: ...
+    def next_action(self, context: dict[str, object]) -> dict[str, object]: ...
+
+class MockLLMExhausted(RuntimeError):
+    error_code = "mock_llm_exhausted"
+    suggested_fix = "Provide another mock action or stop the loop as blocked."
 
 class MockLLM:
-    def __init__(self, actions: list[dict[str, Any]]) -> None: ...
-    def next_action(self, context: dict[str, Any]) -> dict[str, Any]: ...
+    def __init__(self, actions: list[dict[str, object]]) -> None: ...
+    @property
+    def contexts(self) -> tuple[dict[str, object], ...]: ...
+    def next_action(self, context: dict[str, object]) -> dict[str, object]: ...
 ```
 
 输入：结构化 context。
 输出：预设 action。
 不变量：MockLLM 不调用网络，不读取真实凭据。
-错误处理：action 序列耗尽时返回 blocked signal 或抛出可诊断 MockLLMExhausted。
+错误处理：action 序列耗尽时先记录 context，再抛出可诊断的 `MockLLMExhausted`。T10 `AgentLoop` 捕获该异常后负责映射为 `blocked`；MockLLM 不返回 blocked dict。
 
 ### 预期失败测试
 
-* `test_mock_llm_returns_actions_in_order`
-* `test_mock_llm_records_contexts`
-* `test_mock_llm_exhaustion_returns_blocked_signal`
+* `test_mock_llm_returns_actions_in_input_order`
+* `test_mock_llm_records_deep_copied_contexts`
 * `test_mock_llm_is_deterministic`
+* `test_mock_llm_returns_raw_action_that_action_parser_can_parse`
+* `test_mock_llm_returns_malformed_raw_actions_without_schema_validation`
+* `test_mock_llm_exhaustion_has_stable_diagnostic_fields`（耗尽时抛出 `MockLLMExhausted`）
+* `test_exhausted_mock_llm_call_still_records_context`
+* `test_mock_llm_isolates_input_actions_and_returned_actions`
+* `test_mock_llm_keeps_later_action_deeply_isolated_from_earlier_return`
+* `test_mock_llm_isolates_input_context_and_public_history`
 
 ### 实现要点
 
@@ -1078,6 +1095,19 @@ uv run mypy src/hancode/llm.py
 * MockLLM 能稳定驱动 AgentLoop。
 * 核心测试不依赖真实 LLM 和网络。
 
+### 实际验证
+
+* Red：先新增 `tests/test_llm.py`，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`；因 `hancode.llm` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+* Green：新增仅使用标准库的 `src/hancode/llm.py` 后，以同一命令复跑，8 passed in 0.04s。覆盖 action 输入顺序、context 记录、等价实例确定性、parser-compatible 原始 action、耗尽异常诊断和耗尽调用记录，以及 action/context/history 的深拷贝隔离。
+* T8+T9 回归：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py -v -p no:cacheprovider`：20 passed in 0.05s。
+* 静态检查：`uv run --no-sync ruff check src/hancode/llm.py tests/test_llm.py --no-cache` 通过；`uv run --no-sync mypy src/hancode/llm.py --no-incremental`：Success: no issues found in 1 source file。
+* 全量：受限沙箱执行 `uv run --no-sync pytest -p no:cacheprovider` 时，pytest 的 `tmp_path` 在 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 创建锁文件遭遇 `PermissionError`，结果为 106 passed、97 errors；控制端在沙箱外以同一命令复验：203 passed in 6.29s。
+* `git diff --check` 通过。
+
+### 耗尽职责边界
+
+`MockLLM` 在耗尽时会先记录本次 context，再抛出 `MockLLMExhausted("MockLLM action sequence exhausted.")`，其固定 `error_code` 为 `mock_llm_exhausted` 并提供 suggested fix。T9 不将该异常转换为 blocked loop state；映射职责属于 T10 AgentLoop。
+
 ### 非目标 / 边界
 
 * 不实现真实 ProviderAdapter。
@@ -1090,12 +1120,12 @@ uv run mypy src/hancode/llm.py
 
 | 元信息           | 值                                                |
 | ------------- | ------------------------------------------------ |
-| 状态            | [ ] 未开始                                          |
+| 状态            | [x] 已完成（专项、静态门禁、回归、全量复验与审查通过）                 |
 | 依赖            | T6, T8, T9                                       |
 | 可并行           | 依赖注入 stub policy / stub tool，可先于真实 ToolPolicy 集成 |
 | Worktree / PR | `feature/M2`                                    |
 | 主贡献相关         | 是，主循环基础                                          |
-| Commit        | TODO                                             |
+| Commit        | `2f7dc5f` — `feat: 完成 T10 AgentLoop`             |
 
 ### 目标
 
@@ -1123,7 +1153,7 @@ class AgentLoop:
 输入：task_id、LLM、ContextBuilder stub、Policy stub、ToolRegistry stub、FeedbackBuilder stub、StateStore。
 输出：AgentRunResult，包含 status、steps、tool calls、risks、final observation。
 不变量：所有工具执行前必须经过 parser 与 policy。
-错误处理：parse error、policy denial、MockLLM 耗尽、超过 max_steps 均返回 blocked 或 failed，不执行高风险工具。
+错误处理：T10 的 `AgentLoop` 捕获 `MockLLMExhausted` 后固定映射为 `blocked`，并构造完整结构化错误：`error_code`、`message`、当前 `phase`、`denied_rule=None` 和 `suggested_fix`；parse error、policy denial、超过 max_steps 与当前不支持的 `ask_user` 均固定返回 `blocked`，且不执行工具。
 
 ### 预期失败测试
 
@@ -1133,12 +1163,36 @@ class AgentLoop:
 * `test_policy_denial_does_not_execute_tool`
 * `test_max_steps_prevents_infinite_loop`
 * `test_finish_action_stops_loop`
+* `test_final_action_stops_loop`
+* `test_tool_observation_is_fed_into_next_context`
+* `test_parse_error_blocks_without_policy_or_tool`
+* `test_mock_llm_exhaustion_returns_structured_blocked_result`
+* `test_terminal_routing_stops_before_llm`
+* `test_ask_user_blocks_without_tool`
+* `test_agent_loop_rejects_non_positive_max_steps`
 
 ### 实现要点
 
 * 第一版 AgentLoop 使用依赖注入的 stub policy、stub tool registry、stub feedback builder。
 * `finish` action 只停止循环，不直接判定 completed。
 * 工具调用顺序应可通过 spy 对象测试。
+* 捕获 `MockLLMExhausted` 时使用当前运行 phase 填充结构化错误的 `phase`，不把 T9 异常改造成策略拒绝；`denied_rule` 固定为 `None`。
+
+### 实现结果
+
+* 新增最小的依赖注入 Protocol：StateStore、ContextBuilder、Policy、ToolRegistry 与 FeedbackBuilder；它们只定义 T10 所需端口，不替代后续 T11/T14/T19/T20 的真实实现。
+* 新增冻结、slots 化 `AgentRunResult`，返回 `status`、`steps`、已 dispatch 的工具名、预留 `risks`、最终 observation 与结构化 error。
+* loop 先使用现有 `select_next_phase()` 取得 phase；每步复制 context、调用 LLM、解析 action、执行 policy，仅允许 `tool_call` 进入 `dispatch()`；工具 observation 回灌到下一次 LLM context。
+* `finish_phase` 与 `final` 都在 policy allow 后停止并返回 `running`，不直接标记 completed；路由已完成时才以 0 步返回 `completed`。T10 不持久化 state、不解释 ToolResult、不处理 retry、rollback 或 trace。
+
+### 实际验证
+
+* Red：先新增 `tests/test_agent_loop.py`，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_agent_loop.py -v -p no:cacheprovider`；因 `hancode.agent_loop` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+* Green：新增最小实现后 T10 专项 12 passed；审查补充 `final` 的独立停止语义回归测试后，专项为 13 passed in 0.04s。
+* T8+T9+T10 回归：`uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py tests/test_agent_loop.py -v -p no:cacheprovider`：35 passed in 0.09s。
+* 静态检查：`uv run --no-sync ruff check src/hancode/agent_loop.py tests/test_agent_loop.py --no-cache` 通过；`uv run --no-sync mypy src/hancode/agent_loop.py --no-incremental`：Success: no issues found in 1 source file。
+* 全量：受限沙箱以 `uv run --no-sync pytest -p no:cacheprovider` 执行时，pytest 在 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 创建锁文件遭遇 `PermissionError`，结果为 120 passed、97 errors；控制端在沙箱外以同一命令复验：218 passed in 1.75s。
+* 独立只读审查：无 Critical/Important；补充 `final` stop 回归测试后关闭 Minor。`git diff --check` 通过。
 
 ### 验证步骤
 
