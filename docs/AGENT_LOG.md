@@ -35,6 +35,10 @@
   - Red：新增测试后执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_action_parser.py -v -p no:cacheprovider`，12 failed；全部因 `hancode.actions` 尚无 `parse_action` 而出现预期 `AttributeError`。
   - Green：新增最小 parser 边界校验、委托 `Action.from_values()` 与 phase 比对后，以相同命令复跑，12 passed in 0.04s。
   - 静态检查发现两个 walrus 临时变量未使用（ruff F841）；根因是只需布尔集合差而不需错误字段值。移除赋值、保持行为不变后 ruff 通过。
+- 审查修复：
+  - 将 `unknown_tool`、`invalid_action_args`、`missing_reason` 与 `invalid_phase` 的预期值提升为完整 `ParseError`，覆盖 `error_code`、`message`、`phase`、`denied_rule` 和 `suggested_fix`，以确认 parser 原样透传 T7 schema 错误。
+  - Red：先保留旧的 `result.error_code == expected_error` 结构并执行 parser 专项测试，4 failed、8 passed；失败明确表明旧断言只能比较错误码，无法比较完整 `ParseError`。
+  - Green：仅改为 `assert result == expected_error`，未修改 `src/hancode/actions.py`；专项 12 passed in 0.03s，T7+T8 回归 43 passed in 0.08s，`git diff --check` 通过。
 - 提交：
   - `4afeef1` — `feat: 完成 T8 ActionParser`。
 - 验证：

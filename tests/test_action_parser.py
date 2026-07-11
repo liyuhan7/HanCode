@@ -119,7 +119,7 @@ def test_parse_rejects_invalid_payload_boundary(
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected_error_code"),
+    ("raw", "expected_error"),
     [
         (
             {
@@ -129,7 +129,13 @@ def test_parse_rejects_invalid_payload_boundary(
                 "args": {},
                 "reason": None,
             },
-            "unknown_tool",
+            ParseError(
+                error_code="unknown_tool",
+                message="Use a registered tool.",
+                phase="code",
+                denied_rule=None,
+                suggested_fix="Provide a valid action schema.",
+            ),
         ),
         (
             {
@@ -139,7 +145,13 @@ def test_parse_rejects_invalid_payload_boundary(
                 "args": {},
                 "reason": None,
             },
-            "invalid_action_args",
+            ParseError(
+                error_code="invalid_action_args",
+                message="Arguments do not match the action schema.",
+                phase="code",
+                denied_rule=None,
+                suggested_fix="Provide a valid action schema.",
+            ),
         ),
         (
             {
@@ -149,7 +161,13 @@ def test_parse_rejects_invalid_payload_boundary(
                 "args": {"path": "src/main.py", "content": "print('ok')"},
                 "reason": None,
             },
-            "missing_reason",
+            ParseError(
+                error_code="missing_reason",
+                message="Write actions require a reason.",
+                phase="code",
+                denied_rule=None,
+                suggested_fix="Provide a valid action schema.",
+            ),
         ),
         (
             {
@@ -159,17 +177,23 @@ def test_parse_rejects_invalid_payload_boundary(
                 "args": {"path": "README.md"},
                 "reason": None,
             },
-            "invalid_phase",
+            ParseError(
+                error_code="invalid_phase",
+                message="Use a supported phase.",
+                phase="unknown",
+                denied_rule=None,
+                suggested_fix="Provide a valid action schema.",
+            ),
         ),
     ],
 )
 def test_parse_preserves_action_schema_errors(
-    raw: dict[str, object], expected_error_code: str
+    raw: dict[str, object], expected_error: ParseError
 ) -> None:
     result = actions.parse_action(raw, Phase.CODE)
 
     assert isinstance(result, ParseError)
-    assert result.error_code == expected_error_code
+    assert result == expected_error
 
 
 def test_parse_rejects_valid_action_for_a_different_phase() -> None:
