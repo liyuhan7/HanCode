@@ -91,7 +91,7 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 - 行为：通过统一接口调用真实 LLM 或 MockLLM；MockLLM 用于离线、确定性地驱动单元测试和机制演示。
 - 输出：LLM 返回的候选 action 或完成信号。
 - 边界条件：核心机制测试不得依赖网络或真实 LLM；MockLLM 必须能稳定复现指定 action 序列。
-- 错误处理：真实 LLM 调用失败时返回可诊断错误；MockLLM action 序列耗尽时返回 blocked 或 failed 状态。
+- 错误处理：真实 LLM 调用失败时返回可诊断错误；MockLLM action 序列耗尽时，`next_action()` 必须先记录当前 context，再抛出 `MockLLMExhausted`；AgentLoop 捕获该异常后，最终系统状态固定为 `blocked`（不返回 `failed`，也不以 `blocked` 或 `final` dict 表示耗尽）。
 
 ##### FR-3：Action 解析与校验
 
@@ -1667,7 +1667,7 @@ HanCode MVP 完成的总体标准是：
 - MockLLM 输出走同一 ActionParser。
 - MockLLM 可驱动 spec → plan → code → test → review → deliver 流程。
 - MockLLM 测试不需要真实 API key。
-- MockLLM action 序列耗尽时返回 `blocked`。
+- MockLLM action 序列耗尽时，`next_action()` 先记录 context 并抛出 `MockLLMExhausted`；AgentLoop 捕获后最终返回 `blocked`。
 - CI 默认运行 MockLLM 核心机制测试。
 
 ### 10.21 可测试性约定
