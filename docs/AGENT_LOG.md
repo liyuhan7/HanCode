@@ -62,6 +62,11 @@
   - `git diff --check` 通过。
 - 剩余风险：
   - T9 不执行 action、不作 schema/policy/path 决策、也不管理 trace 或循环状态；`MockLLMExhausted` 到 blocked 状态的映射与最大步数控制仍属于 T10。
+- 审查结论处理：
+  - `MockLLMExhausted` 保持运行时异常，不改为 `HanCodeError`；T10 捕获后补齐当前 phase、`denied_rule=None` 和结构化错误字段。
+  - `MockLLM` 保持普通可变类且不新增 `reset()`；action 序列和 context 历史已通过深拷贝隔离，足以防止外部别名污染。
+  - 将确定性测试重命名为 `test_mock_llm_is_deterministic`，并同步 PLAN 的完整测试清单；历史 Red/Green 数字保留为历史证据。
+- Minor 修正验证（2026-07-11）：`tests/test_llm.py` 专项 10 passed；全量 `uv run --no-sync pytest -p no:cacheprovider` 在沙箱外 205 passed；Ruff、MyPy 与 `git diff --check` 通过。
 
 ### 2026-07-11 — T8 — ActionParser
 

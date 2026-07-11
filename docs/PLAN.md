@@ -1065,10 +1065,16 @@ class MockLLM:
 
 ### 预期失败测试
 
-* `test_mock_llm_returns_actions_in_order`
-* `test_mock_llm_records_contexts`
-* `test_mock_llm_exhaustion_has_stable_diagnostic_fields`（耗尽时抛出 `MockLLMExhausted`）
+* `test_mock_llm_returns_actions_in_input_order`
+* `test_mock_llm_records_deep_copied_contexts`
 * `test_mock_llm_is_deterministic`
+* `test_mock_llm_returns_raw_action_that_action_parser_can_parse`
+* `test_mock_llm_returns_malformed_raw_actions_without_schema_validation`
+* `test_mock_llm_exhaustion_has_stable_diagnostic_fields`（耗尽时抛出 `MockLLMExhausted`）
+* `test_exhausted_mock_llm_call_still_records_context`
+* `test_mock_llm_isolates_input_actions_and_returned_actions`
+* `test_mock_llm_keeps_later_action_deeply_isolated_from_earlier_return`
+* `test_mock_llm_isolates_input_context_and_public_history`
 
 ### 实现要点
 
@@ -1147,7 +1153,7 @@ class AgentLoop:
 输入：task_id、LLM、ContextBuilder stub、Policy stub、ToolRegistry stub、FeedbackBuilder stub、StateStore。
 输出：AgentRunResult，包含 status、steps、tool calls、risks、final observation。
 不变量：所有工具执行前必须经过 parser 与 policy。
-错误处理：T10 的 `AgentLoop` 捕获 `MockLLMExhausted` 后固定映射为 `blocked`；parse error、policy denial、超过 max_steps 均返回 `blocked` 或 `failed`，不执行高风险工具。
+错误处理：T10 的 `AgentLoop` 捕获 `MockLLMExhausted` 后固定映射为 `blocked`，并构造完整结构化错误：`error_code`、`message`、当前 `phase`、`denied_rule=None` 和 `suggested_fix`；parse error、policy denial、超过 max_steps 均返回 `blocked` 或 `failed`，不执行高风险工具。
 
 ### 预期失败测试
 
@@ -1163,6 +1169,7 @@ class AgentLoop:
 * 第一版 AgentLoop 使用依赖注入的 stub policy、stub tool registry、stub feedback builder。
 * `finish` action 只停止循环，不直接判定 completed。
 * 工具调用顺序应可通过 spy 对象测试。
+* 捕获 `MockLLMExhausted` 时使用当前运行 phase 填充结构化错误的 `phase`，不把 T9 异常改造成策略拒绝；`denied_rule` 固定为 `None`。
 
 ### 验证步骤
 

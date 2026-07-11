@@ -38,7 +38,7 @@ def test_mock_llm_records_deep_copied_contexts() -> None:
     assert llm.contexts == ({"task": {"id": "T9"}},)
 
 
-def test_equal_mock_llm_instances_behave_identically() -> None:
+def test_mock_llm_is_deterministic() -> None:
     actions = [_read_file_action("README.md"), _read_file_action("docs/PLAN.md")]
     first = MockLLM(actions)
     second = MockLLM(actions)
