@@ -1022,7 +1022,7 @@ git diff --check
 | 可并行           | 可与 T8 并行         |
 | Worktree / PR | `feature/M2`     |
 | 主贡献相关         | 是，确定性测试基础        |
-| Commit        | `a86fd44`（源码/测试）；本文档回填提交待定 |
+| Commit        | `a86fd44`（源码/测试）；`93ae774`（初始文档回填）；`e9d14ae`、`a397ccf`（审查覆盖与日志修正） |
 
 ### 目标
 
@@ -1061,13 +1061,13 @@ class MockLLM:
 输入：结构化 context。
 输出：预设 action。
 不变量：MockLLM 不调用网络，不读取真实凭据。
-错误处理：action 序列耗尽时返回 blocked signal 或抛出可诊断 MockLLMExhausted。
+错误处理：action 序列耗尽时先记录 context，再抛出可诊断的 `MockLLMExhausted`。T10 `AgentLoop` 捕获该异常后负责映射为 `blocked`；MockLLM 不返回 blocked dict。
 
 ### 预期失败测试
 
 * `test_mock_llm_returns_actions_in_order`
 * `test_mock_llm_records_contexts`
-* `test_mock_llm_exhaustion_returns_blocked_signal`
+* `test_mock_llm_exhaustion_has_stable_diagnostic_fields`（耗尽时抛出 `MockLLMExhausted`）
 * `test_mock_llm_is_deterministic`
 
 ### 实现要点
@@ -1092,7 +1092,7 @@ uv run mypy src/hancode/llm.py
 ### 实际验证
 
 * Red：先新增 `tests/test_llm.py`，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`；因 `hancode.llm` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
-* Green：新增仅使用标准库的 `src/hancode/llm.py` 后，以同一命令复跑，8 passed in 0.04s。覆盖 action 输入顺序、context 记录、等价实例确定性、parser-compatible 原始 action、耗尽诊断和耗尽调用记录，以及 action/context/history 的深拷贝隔离。
+* Green：新增仅使用标准库的 `src/hancode/llm.py` 后，以同一命令复跑，8 passed in 0.04s。覆盖 action 输入顺序、context 记录、等价实例确定性、parser-compatible 原始 action、耗尽异常诊断和耗尽调用记录，以及 action/context/history 的深拷贝隔离。
 * T8+T9 回归：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py -v -p no:cacheprovider`：20 passed in 0.05s。
 * 静态检查：`uv run --no-sync ruff check src/hancode/llm.py tests/test_llm.py --no-cache` 通过；`uv run --no-sync mypy src/hancode/llm.py --no-incremental`：Success: no issues found in 1 source file。
 * 全量：受限沙箱执行 `uv run --no-sync pytest -p no:cacheprovider` 时，pytest 的 `tmp_path` 在 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 创建锁文件遭遇 `PermissionError`，结果为 106 passed、97 errors；控制端在沙箱外以同一命令复验：203 passed in 6.29s。
