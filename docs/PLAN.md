@@ -938,12 +938,12 @@ git diff --check
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成               |
 | 依赖            | T7                    |
 | 可并行           | 可与 T9 并行              |
 | Worktree / PR | `feature/M2`          |
 | 主贡献相关         | 是，主循环输入校验             |
-| Commit        | TODO                  |
+| Commit        | `4afeef1`            |
 
 ### 目标
 
@@ -963,35 +963,39 @@ git diff --check
 ### 接口契约
 
 ```python
-def parse_action(raw: dict[str, object]) -> Action | ParseError: ...
+def parse_action(raw: dict[str, object], current_phase: Phase) -> Action | ParseError: ...
 ```
 
-输入：LLM / MockLLM 原始输出。
+输入：LLM / MockLLM 原始输出及可信的当前 `Phase`。
 输出：Action 或 ParseError。
-不变量：parser 只做格式和 schema 校验，不做安全策略判断。
+不变量：顶层字段必须恰为 `type`、`phase`、`tool_name`、`args`、`reason`；parser 按 payload 类型、缺失字段、多余字段、`Action.from_values()`、action phase 与当前 phase 的顺序校验，不做安全策略判断。
 错误处理：解析失败返回 ParseError，至少包含 `error_code`、`message`、`phase`、`denied_rule`、`suggested_fix`；其中 parse error 的 `denied_rule` 为 `null`。
 
 ### 预期失败测试
 
-* `test_parse_valid_read_file_action`
-* `test_parse_valid_edit_file_action`
-* `test_parse_valid_run_tests_action`
-* `test_parse_rejects_malformed_payload`
-* `test_parse_rejects_unknown_tool`
-* `test_parse_error_becomes_structured_error`
+* `test_parse_valid_tool_actions`
+* `test_parse_rejects_invalid_payload_boundary`
+* `test_parse_preserves_action_schema_errors`
+* `test_parse_rejects_valid_action_for_a_different_phase`
+* `test_parse_does_not_mutate_input_or_return_mutable_arguments`
 
 ### 实现要点
 
 * parser 支持 dict 输入，不依赖真实 LLM 字符串格式。
 * 后续真实 LLM provider 可在 adapter 中把文本转成 dict。
 * ParseError 应可被 FeedbackBuilder 转成 observation。
+* 实现已新增 `parse_action()`：边界错误使用稳定的 `invalid_action_payload`、`missing_action_fields`、`unexpected_action_fields`、`phase_mismatch` 错误码，schema 错误原样返回 T7 的 `Action.from_values()` 结果。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_action_parser.py -v
-uv run ruff check src/hancode/actions.py tests/test_action_parser.py
-uv run mypy src/hancode/actions.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'
+uv run --no-sync pytest tests/test_action_parser.py -v -p no:cacheprovider
+uv run --no-sync pytest tests/test_action_schema.py tests/test_action_parser.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/actions.py tests/test_action_parser.py --no-cache
+uv run --no-sync mypy src/hancode/actions.py --no-incremental
+uv run --no-sync pytest -p no:cacheprovider
+git diff --check
 ```
 
 ### 完成判定
@@ -999,6 +1003,7 @@ uv run mypy src/hancode/actions.py
 * 合法 action 可解析。
 * 非法 action 不会进入 tool。
 * 错误信息可诊断。
+* 验证证据：parser 专项 12 passed；T7+T8 回归 43 passed；ruff 与 mypy 通过；控制代理在沙箱外全量验证 195 passed in 3.83s；`git diff --check` 通过。
 
 ### 非目标 / 边界
 

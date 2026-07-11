@@ -20,6 +20,32 @@
 
 ## 记录条目
 
+### 2026-07-11 — T8 — ActionParser
+
+- 使用的技能：test-driven-development；systematic-debugging；verification-before-completion。
+- 使用的智能体：OpenAI Codex；控制代理（沙箱外全量验证）。
+- 关键提示词 / 上下文：
+  - T8 仅解析原始 LLM / MockLLM dict；T7 已提供 `Action`、`ActionType`、`ParseError` 和 `Action.from_values()`，必须复用其 schema 校验。
+  - 禁止提前实现 policy、PathClassifier、LLM、tool dispatch、observation 或 trace；原始 payload 的顶层字段必须严格固定，并以可信 `current_phase` 进行最终一致性判断。
+- 摘要：
+  - 在 `src/hancode/actions.py` 新增 `parse_action(raw, current_phase)`：按 payload 类型、缺失字段、多余字段、T7 schema 和 phase 一致性的固定顺序解析。
+  - 新增稳定且不回显候选值的 parser 边界错误：`invalid_action_payload`、`missing_action_fields`、`unexpected_action_fields`、`phase_mismatch`；边界错误以 `current_phase.value` 填充 phase 且 `denied_rule=None`。
+  - 新增 `tests/test_action_parser.py` 共 12 项参数化/边界测试，覆盖三种合法工具 action、非 dict、缺失/多余顶层字段、未知工具、非法参数、缺失 write reason、非法 phase、phase mismatch、精确边界错误及输入/args 不可变性。
+- 逐项 TDD 证据：
+  - Red：新增测试后执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_action_parser.py -v -p no:cacheprovider`，12 failed；全部因 `hancode.actions` 尚无 `parse_action` 而出现预期 `AttributeError`。
+  - Green：新增最小 parser 边界校验、委托 `Action.from_values()` 与 phase 比对后，以相同命令复跑，12 passed in 0.04s。
+  - 静态检查发现两个 walrus 临时变量未使用（ruff F841）；根因是只需布尔集合差而不需错误字段值。移除赋值、保持行为不变后 ruff 通过。
+- 提交：
+  - `4afeef1` — `feat: 完成 T8 ActionParser`。
+- 验证：
+  - 专项：`uv run --no-sync pytest tests/test_action_parser.py -v -p no:cacheprovider`：12 passed in 0.04s。
+  - T7+T8 回归：`uv run --no-sync pytest tests/test_action_schema.py tests/test_action_parser.py -v -p no:cacheprovider`：43 passed in 0.06s。
+  - 静态检查：`uv run --no-sync ruff check src/hancode/actions.py tests/test_action_parser.py --no-cache` 通过；`uv run --no-sync mypy src/hancode/actions.py --no-incremental`：Success: no issues found in 1 source file。
+  - 全量：受限沙箱中 `uv run --no-sync pytest -p no:cacheprovider` 因 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 的 `PermissionError` 中断（98 passed, 97 errors）；控制代理使用同一命令在沙箱外复跑：195 passed in 3.83s。
+  - `git diff --check` 通过。
+- 剩余风险：
+  - T8 不执行 action，也不作 policy/path 决策、LLM 调用、observation 或 trace 写入；这些集成属于后续任务。`current_phase` 是调用方提供的可信 Phase，parser 不负责从状态文件取得它。
+
 ### 2026-07-11 — T7 — Action Schema
 
 - 使用的技能：using-superpowers；karpathy-guidelines；brainstorming；using-git-worktrees；executing-plans；test-driven-development。
