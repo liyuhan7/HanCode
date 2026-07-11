@@ -20,6 +20,31 @@
 
 ## 记录条目
 
+### 2026-07-11 — T11 — ToolResult 与 ToolRegistry
+
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
+- 使用的智能体：OpenAI Codex；独立只读审查智能体；控制代理（沙箱外全量验证）。
+- 关键提示词 / 上下文：
+  - T11 只实现统一 `ToolResult`、工具注册与确定性分发；不提前实现 FileTools、ToolPolicy、trace、shell 执行或 FeedbackBuilder。
+  - 工具异常的 `error_summary` 只暴露异常类型；重复工具名明确拒绝，避免泄露原始异常内容或静默覆盖。
+- 摘要：
+  - 新增 `src/hancode/tools.py`，其中 `ToolResult` 统一承载成功、输出、错误摘要、退出码和 stdout/stderr；`ToolRegistry` 仅以 `Action.args` 调用已注册 callable。
+  - 未注册工具、非工具 Action、异常、错误返回类型和 action-name 不一致均返回结构化失败结果；异常消息不回显。
+  - `AgentLoop` 的 ToolRegistry Protocol 返回类型收紧为 `ToolResult`，T10 的测试 spy 同步对齐。
+- 逐项 TDD 证据：
+  - Red：首次新增专项测试后，因 `hancode.tools` 不存在，以预期 `ModuleNotFoundError` 在收集阶段失败。
+  - Green：最小实现后专项 8 passed；审查补充边界覆盖后 ToolRegistry + AgentLoop 专项 24 passed in 0.09s。
+- 审查：
+  - 独立只读审查发现 1 项 Important：ToolRegistry Protocol 收紧后测试 spy 仍返回 `object`，使 `mypy src tests` 失败。已修复并复验；另补齐 2 项 Minor 测试覆盖（注册参数、未知工具无副作用）。
+- 提交：
+  - `fdc987b` — `feat: implement T11 tool registry`：新增 ToolResult/ToolRegistry、T11 测试，并对齐 AgentLoop 测试接缝。
+- 验证：
+  - T7-T11 回归：74 passed in 0.12s；T11+T10 专项：24 passed in 0.09s；Ruff 通过；MyPy `src` 为 `Success: no issues found in 12 source files`。
+  - 受限沙箱全量 pytest 得到 129 passed、97 个临时目录 `.lock` 权限错误；沙箱外同命令复验为 226 passed in 6.07s。
+  - `git diff --check` 通过。
+- 剩余风险：
+  - `mypy src tests` 尚有 6 项既有错误（LLM context 的 dict 不变性与 Policy Protocol 协变性）；T11 引入的 ToolRegistry Protocol 错误已修复。具体文件工具、策略、trace 与反馈集成继续由 T12-T21 实现。
+
 ### 2026-07-11 — T10 — AgentLoop 最小循环骨架
 
 - 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；test-driven-development；requesting-code-review；receiving-code-review；verification-before-completion。

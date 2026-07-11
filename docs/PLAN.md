@@ -1225,12 +1225,12 @@ uv run mypy src/hancode/agent_loop.py
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成（专项、静态门禁、回归、全量复验与审查通过） |
 | 依赖            | T1, T7                |
 | 可并行           | 可与 T8/T9 并行           |
 | Worktree / PR | `feature/M3`          |
 | 主贡献相关         | 是，工具调度基础              |
-| Commit        | TODO                  |
+| Commit        | `fdc987b` — `feat: implement T11 tool registry` |
 
 ### 目标
 
@@ -1293,6 +1293,20 @@ uv run mypy src/hancode/tools.py
 
 * 所有工具结果格式统一。
 * 工具异常不会静默失败。
+
+### 实际验证
+
+* Red：新增 `tests/test_tool_registry.py` 后，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_tool_registry.py -v -p no:cacheprovider`；因 `hancode.tools` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+* Green：新增 `src/hancode/tools.py` 后，专项 8 passed；审查后补齐注册参数与未知工具无副作用覆盖，最终 T11+T10 专项 24 passed in 0.09s。
+* 回归：T7-T11 的 Action/LLM/AgentLoop/ToolRegistry 测试 74 passed in 0.12s。
+* 静态检查：`uv run --no-sync ruff check src tests --no-cache` 通过；`uv run --no-sync mypy src --no-incremental` 为 `Success: no issues found in 12 source files`。
+* 全量：受限沙箱因 pytest 临时目录 `.lock` 的 `PermissionError` 得到 129 passed、97 errors；沙箱外复验 `uv run --no-sync pytest -p no:cacheprovider` 为 226 passed in 6.07s。
+* `git diff --check` 通过。
+
+### 审查与剩余风险
+
+* 独立只读审查发现 AgentLoop 测试 spy 未随 `ToolRegistry.dispatch() -> ToolResult` 契约更新，已将其返回类型和 observation 断言对齐；同时补齐重复注册参数和 unknown-tool 无副作用测试。
+* `mypy src tests --no-incremental` 仍有 6 项既有错误：`tests/test_llm.py` 的 5 项 `dict` 不变性问题和 `tests/test_agent_loop.py` 的 1 项 Policy Protocol 协变性问题；T11 引入的 ToolRegistry Protocol 错误已消除，剩余问题不在本任务范围。
 
 ### 非目标 / 边界
 
