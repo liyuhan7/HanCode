@@ -41,7 +41,8 @@
   - 验证：T8+T9 回归通过 `22 passed in 0.05s`，`uv run --no-sync ruff check tests/test_llm.py --no-cache` 输出 `All checks passed!`，`git diff --check` 无输出并通过。
 - 提交：
   - `a86fd44` — `feat: 完成 T9 MockLLM`。
-  - 本条与 PLAN 回填提交待定。
+  - `93ae774` — `docs: 回填 T9 验证记录`。
+  - `e9d14ae` — `docs: 纠正 T9 审查验证记录`，记录审查覆盖补强后的准确测试证据。
 - 验证：
   - 专项：`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`：8 passed in 0.04s。
   - T8+T9 回归：`uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py -v -p no:cacheprovider`：20 passed in 0.05s。
