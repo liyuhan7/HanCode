@@ -1017,12 +1017,12 @@ git diff --check
 
 | 元信息           | 值                |
 | ------------- | ---------------- |
-| 状态            | [ ] 未开始          |
+| 状态            | [x] 已完成          |
 | 依赖            | T7               |
 | 可并行           | 可与 T8 并行         |
 | Worktree / PR | `feature/M2`     |
 | 主贡献相关         | 是，确定性测试基础        |
-| Commit        | TODO             |
+| Commit        | `a86fd44`（源码/测试）；本文档回填提交待定 |
 
 ### 目标
 
@@ -1042,14 +1042,20 @@ git diff --check
 ### 接口契约
 
 ```python
-from typing import Protocol, Any
+from typing import Protocol
 
 class LLMClient(Protocol):
-    def next_action(self, context: dict[str, Any]) -> dict[str, Any]: ...
+    def next_action(self, context: dict[str, object]) -> dict[str, object]: ...
+
+class MockLLMExhausted(RuntimeError):
+    error_code = "mock_llm_exhausted"
+    suggested_fix = "Provide another mock action or stop the loop as blocked."
 
 class MockLLM:
-    def __init__(self, actions: list[dict[str, Any]]) -> None: ...
-    def next_action(self, context: dict[str, Any]) -> dict[str, Any]: ...
+    def __init__(self, actions: list[dict[str, object]]) -> None: ...
+    @property
+    def contexts(self) -> tuple[dict[str, object], ...]: ...
+    def next_action(self, context: dict[str, object]) -> dict[str, object]: ...
 ```
 
 输入：结构化 context。
@@ -1082,6 +1088,19 @@ uv run mypy src/hancode/llm.py
 
 * MockLLM 能稳定驱动 AgentLoop。
 * 核心测试不依赖真实 LLM 和网络。
+
+### 实际验证
+
+* Red：先新增 `tests/test_llm.py`，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`；因 `hancode.llm` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+* Green：新增仅使用标准库的 `src/hancode/llm.py` 后，以同一命令复跑，8 passed in 0.04s。覆盖 action 输入顺序、context 记录、等价实例确定性、parser-compatible 原始 action、耗尽诊断和耗尽调用记录，以及 action/context/history 的深拷贝隔离。
+* T8+T9 回归：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py -v -p no:cacheprovider`：20 passed in 0.05s。
+* 静态检查：`uv run --no-sync ruff check src/hancode/llm.py tests/test_llm.py --no-cache` 通过；`uv run --no-sync mypy src/hancode/llm.py --no-incremental`：Success: no issues found in 1 source file。
+* 全量：受限沙箱执行 `uv run --no-sync pytest -p no:cacheprovider` 时，pytest 的 `tmp_path` 在 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 创建锁文件遭遇 `PermissionError`，结果为 106 passed、97 errors；控制端在沙箱外以同一命令复验：203 passed in 6.29s。
+* `git diff --check` 通过。
+
+### 耗尽职责边界
+
+`MockLLM` 在耗尽时会先记录本次 context，再抛出 `MockLLMExhausted("MockLLM action sequence exhausted.")`，其固定 `error_code` 为 `mock_llm_exhausted` 并提供 suggested fix。T9 不将该异常转换为 blocked loop state；映射职责属于 T10 AgentLoop。
 
 ### 非目标 / 边界
 

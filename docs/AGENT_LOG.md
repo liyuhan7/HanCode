@@ -20,6 +20,32 @@
 
 ## 记录条目
 
+### 2026-07-11 — T9 — MockLLM
+
+- 使用的技能：test-driven-development；verification-before-completion。
+- 使用的智能体：OpenAI Codex；控制代理（沙箱外全量验证）。
+- 关键提示词 / 上下文：
+  - T9 只实现确定性、离线的 `LLMClient` Protocol、`MockLLM` 和 `MockLLMExhausted`；不得调用网络、凭据、provider、parser、trace、policy 或工具，也不得提前实现 T10 AgentLoop。
+  - 原始 action dict 不作 schema 校验，以便后续 ActionParser 接收 malformed payload；构造、每次输出与 context/history 公开边界均必须隔离可变嵌套值。
+- 摘要：
+  - 新增 `src/hancode/llm.py`：`MockLLM` 按输入序列深拷贝返回 action，在耗尽检查前深拷贝记录 context，`contexts` 以 tuple 形式返回深拷贝快照。
+  - 新增 `MockLLMExhausted`，固定诊断为 `mock_llm_exhausted`、`Provide another mock action or stop the loop as blocked.` 与消息 `MockLLM action sequence exhausted.`；不在 T9 映射 blocked 状态，交由 T10 AgentLoop。
+  - 新增 `tests/test_llm.py` 的 8 项测试：顺序、context、确定性、ActionParser 兼容原始输出、耗尽字段/调用记录及输入/输出/history 的防别名语义。
+- 逐项 TDD 证据：
+  - Red：新增测试后执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`，因 `hancode.llm` 不存在在收集阶段以预期 `ModuleNotFoundError` 失败。
+  - Green：新增最小标准库实现并以同一命令复跑，8 passed in 0.04s。
+- 提交：
+  - `a86fd44` — `feat: 完成 T9 MockLLM`。
+  - 本条与 PLAN 回填提交待定。
+- 验证：
+  - 专项：`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`：8 passed in 0.04s。
+  - T8+T9 回归：`uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py -v -p no:cacheprovider`：20 passed in 0.05s。
+  - 静态检查：`uv run --no-sync ruff check src/hancode/llm.py tests/test_llm.py --no-cache`：All checks passed；`uv run --no-sync mypy src/hancode/llm.py --no-incremental`：Success: no issues found in 1 source file。
+  - 全量：受限沙箱的 `uv run --no-sync pytest -p no:cacheprovider` 因 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 创建锁文件的 `PermissionError` 中断（106 passed, 97 errors）；控制代理在沙箱外以同一命令复验：203 passed in 6.29s。
+  - `git diff --check` 通过。
+- 剩余风险：
+  - T9 不执行 action、不作 schema/policy/path 决策、也不管理 trace 或循环状态；`MockLLMExhausted` 到 blocked 状态的映射与最大步数控制仍属于 T10。
+
 ### 2026-07-11 — T8 — ActionParser
 
 - 使用的技能：test-driven-development；systematic-debugging；verification-before-completion。
