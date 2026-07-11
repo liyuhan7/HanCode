@@ -839,12 +839,12 @@ git diff --check
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成               |
 | 依赖            | T1, T6                |
 | 可并行           | 可与 T11 并行             |
 | Worktree / PR | `feature/M1`           |
 | 主贡献相关         | 是，主循环输入协议             |
-| Commit        | TODO                  |
+| Commit        | 待提交                 |
 
 ### 目标
 
@@ -893,16 +893,28 @@ phase
 
 ### 实现要点
 
-* `finish` action 表示模型请求结束，但是否 completed 由 ResultBuilder / AgentLoop 状态判定。
+* `finish_phase` action 表示模型请求阶段结束，但是否 completed 由 ResultBuilder / AgentLoop 状态判定。
 * write action 包括 `write_file`、`edit_file`。
 * `run_tests` 不允许携带任意 shell command，实际命令来自 config。
+
+### 实现结果
+
+* 新增冻结、slots 化的 `Action`、`ActionType` 和 `ParseError`，并以 `Action.from_values()` 作为类型化候选 action 的确定性校验入口；原始 dict 的字段解析仍由 T8 实现。
+* `ActionType` 固定为 `tool_call`、`finish_phase`、`ask_user`、`final`；action 不含 `target_kind`。
+* 七个 MVP 工具使用固定参数 schema：`read_file(path)`、`list_files()` / `list_files(path)`、`search_text(query)`、`write_file(path, content)`、`edit_file(path, old_string, new_string)`、`run_tests()`、`rollback_last_checkpoint()`。
+* `write_file` 和 `edit_file` 必须有非空 `reason`；`run_tests` 不接收 `command`；非法类型、phase、工具、参数和控制 action 工具名均返回不回显候选值的 `ParseError`。
+* `run_tests` 与 `rollback_last_checkpoint` 是唯一的无参数工具；即使未来工具已注册但未声明 schema，也会 fail-closed 拒绝。
+* `Action` 防御性复制并冻结 `args`，直接构造也会拒绝不合 schema 的对象。
+* 实际验证：专项 31 passed；Ruff、MyPy 通过；审查修正后全量 183 passed；`git diff --check` 通过。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_action_schema.py -v
-uv run ruff check src/hancode/actions.py tests/test_action_schema.py
-uv run mypy src/hancode/actions.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_action_schema.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/actions.py tests/test_action_schema.py --no-cache
+uv run --no-sync mypy src/hancode/actions.py --no-incremental
+uv run --no-sync pytest -p no:cacheprovider
+git diff --check
 ```
 
 ### 完成判定

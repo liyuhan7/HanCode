@@ -20,6 +20,37 @@
 
 ## 记录条目
 
+### 2026-07-11 — T7 — Action Schema
+
+- 使用的技能：using-superpowers；karpathy-guidelines；brainstorming；using-git-worktrees；executing-plans；test-driven-development。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：
+  - 用户要求先阅读 `AGENTS.md`、Superpowers 工作流与 Karpathy 准则后，在 `feature/M1` 的 `.worktrees/M1` 实施 PLAN 中的 T7。
+  - 已确认 T7 只提供类型化 schema 构造与校验；`parse_action(raw)` 留给 T8，且不实现 tool dispatch、PathClassifier、ToolPolicy、phase-current 比对或真实工具执行。
+  - 四个 action 类型沿用架构文档：`tool_call`、`finish_phase`、`ask_user`、`final`；MVP 工具参数采用固定 schema，`run_tests` 不接收模型给出的 shell command。
+- 摘要：
+  - 新增 `src/hancode/actions.py`，提供冻结、slots 化的 `Action`、`ActionType`、`ParseError` 与 `Action.from_values()`。
+  - 七个注册工具的参数集合被严格固定；写入类工具要求非空 `reason`，控制 action 不得携带工具名，`ask_user` 只接受非空 `question`。
+  - `args` 被防御性复制为只读 mapping；工厂与直接构造共用同一 schema 不变量，避免绕过校验的非法 Action 进入后续机制。
+- 逐项 TDD 证据：
+  - Red/Green-1：新增测试首先因 `hancode.actions` 不存在而出现 `ModuleNotFoundError`；新增枚举、数据结构与最小工厂后 4 passed。
+  - Red/Green-2：写入 action 无 reason、`run_tests` 携带 command、`finish_phase` 携带工具名均错误地返回 Action（3 failed）；补充三项边界校验后 7 passed。
+  - Red/Green-3：缺失/多余工具参数、`target_kind`、`ask_user` 空问题、`final` 参数和直接构造绕过均未被拒绝（10 failed）；集中固定 schema 并让构造器复用校验后 26 passed。
+  - 回归补强：合法控制 action、未知工具结构化错误不回显候选值和 `args` 不可变；专项最终 30 passed。
+  - 审查 Minor 修正：模拟未来工具被注册但未声明参数 schema 时，空参数错误返回 `Action`（1 failed）；显式限制无参数工具为 `run_tests` 与 `rollback_last_checkpoint` 后专项 31 passed。
+- 环境与诊断：
+  - 受限沙箱中的 pytest 仍会因 Windows 临时目录 ACL 失败；本任务按照既有批准方式设置 `PYTHONPATH=src` 与临时 `UV_CACHE_DIR` 后在沙箱外运行，未修改测试或业务语义来规避环境问题。
+- 提交：
+  - 未提交；等待用户后续授权。
+- 验证：
+  - 基线：`uv run --no-sync pytest -p no:cacheprovider`：152 passed。
+  - 专项：`uv run --no-sync pytest tests/test_action_schema.py -v -p no:cacheprovider`：31 passed。
+  - 静态检查：`ruff check src/hancode/actions.py tests/test_action_schema.py --no-cache` 通过；`mypy src/hancode/actions.py --no-incremental` 无问题。
+  - 初始最终：`uv run --no-sync pytest -p no:cacheprovider`：182 passed；`git diff --check` 通过。
+  - 审查修正后最终：`uv run --no-sync pytest -p no:cacheprovider`：183 passed；`git diff --check` 通过。
+- 剩余风险：
+  - T8 尚未实现原始 LLM dict 到 `Action.from_values()` 的字段解析与适配；当前 T7 不执行任何 action，因此工具权限、当前 phase 一致性和路径安全仍由后续任务负责。
+
 ### 2026-07-11 — T6 — WorkspaceRouter
 
 - 使用的技能：using-superpowers；brainstorming；writing-plans；using-git-worktrees；subagent-driven-development；test-driven-development；systematic-debugging；receiving-code-review；requesting-code-review；verification-before-completion；finishing-a-development-branch。
