@@ -19,6 +19,31 @@ def test_missing_plan_routes_to_plan() -> None:
     assert decision == RoutingDecision(Phase.PLAN, "plan_missing")
 
 
+def test_missing_spec_precedes_missing_plan() -> None:
+    decision = select_next_phase(
+        _state(artifacts={"SPEC.md": False, "PLAN.md": False})
+    )
+
+    assert decision == RoutingDecision(Phase.SPEC, "spec_missing")
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "phase", "reason"),
+    [
+        ("SPEC.md", Phase.SPEC, "spec_missing"),
+        ("PLAN.md", Phase.PLAN, "plan_missing"),
+    ],
+)
+def test_missing_spec_or_plan_precedes_unconsumed_failed_test(
+    artifact_name: str, phase: Phase, reason: str
+) -> None:
+    decision = select_next_phase(
+        _state(artifacts={artifact_name: False}, latest_test_status="failed")
+    )
+
+    assert decision == RoutingDecision(phase, reason)
+
+
 @pytest.mark.parametrize(
     ("inconsistent", "status"),
     [(True, TaskStatus.RUNNING), (False, TaskStatus.INCONSISTENT)],
@@ -151,6 +176,18 @@ def test_missing_deliver_artifact_routes_to_deliver(
     )
 
     assert decision == RoutingDecision(Phase.DELIVER, reason)
+
+
+def test_missing_knowledge_precedes_missing_deliverables() -> None:
+    decision = select_next_phase(
+        _state(
+            artifacts={"KNOWLEDGE.md": False, "DELIVERABLES.md": False},
+            latest_test_status="passed",
+            phase_completed={"code": True, "test": True, "review": True},
+        )
+    )
+
+    assert decision == RoutingDecision(Phase.DELIVER, "knowledge_missing")
 
 
 def test_full_completion_returns_completed_deliver_decision() -> None:
