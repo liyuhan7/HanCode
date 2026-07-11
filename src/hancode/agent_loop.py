@@ -9,6 +9,7 @@ from hancode.llm import LLMClient, MockLLMExhausted
 from hancode.models import Phase, Risk, TaskStatus
 from hancode.router import select_next_phase
 from hancode.state import TaskState
+from hancode.tools import ToolResult
 
 
 class StateStore(Protocol):
@@ -35,7 +36,7 @@ class Policy(Protocol):
 
 
 class ToolRegistry(Protocol):
-    def dispatch(self, action: Action) -> object: ...
+    def dispatch(self, action: Action) -> ToolResult: ...
 
 
 class FeedbackBuilder(Protocol):

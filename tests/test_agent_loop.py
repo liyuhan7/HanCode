@@ -10,6 +10,7 @@ from hancode.agent_loop import AgentLoop
 from hancode.llm import MockLLM
 from hancode.models import Phase, TaskStatus
 from hancode.state import TaskState
+from hancode.tools import ToolResult
 
 
 @dataclass(frozen=True)
@@ -60,10 +61,10 @@ class SpyToolRegistry:
         self.events = events
         self.actions: list[Action] = []
 
-    def dispatch(self, action: Action) -> object:
+    def dispatch(self, action: Action) -> ToolResult:
         self.events.append("tool")
         self.actions.append(action)
-        return {"tool": action.tool_name, "ok": True}
+        return ToolResult(success=True, action_name=action.tool_name or "unknown")
 
 
 class SpyFeedbackBuilder:
@@ -186,7 +187,10 @@ def test_tool_observation_is_fed_into_next_context() -> None:
     assert llm.contexts[1] == {
         "task_id": "task-001",
         "phase": "code",
-        "observation": {"kind": "tool_result", "result": {"tool": "read_file", "ok": True}},
+        "observation": {
+            "kind": "tool_result",
+            "result": ToolResult(success=True, action_name="read_file"),
+        },
     }
 
 
