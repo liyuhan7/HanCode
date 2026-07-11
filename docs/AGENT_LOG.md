@@ -20,6 +20,43 @@
 
 ## 记录条目
 
+### 2026-07-11 — T6 — WorkspaceRouter
+
+- 使用的技能：using-superpowers；brainstorming；writing-plans；using-git-worktrees；subagent-driven-development；test-driven-development；systematic-debugging；receiving-code-review；requesting-code-review；verification-before-completion；finishing-a-development-branch。
+- 使用的智能体：OpenAI Codex；T6 Implementer；T6 Task Reviewer；T6 Final Reviewer；T6 Priority-Test Fixer。
+- 关键提示词 / 上下文：
+  - 用户要求在 `feature/M1` 的 `.worktrees/M1` 实现 PLAN 明确列出的 T6；边界仅为确定性 `WorkspaceRouter`，不得实现 AgentLoop、Action Schema、ToolPolicy、checkpoint、trace、文件写入、LLM 调用或 rollback 执行。
+  - 任务卡要求六阶段 `Phase`，但 SPEC 同时要求 completed 路由结果；用户选择保留六阶段枚举，以 `RoutingDecision(phase=Phase.DELIVER, completed=True)` 表示终态。
+  - T4 的 `TaskState` 已严格验证并冻结固定 artifact / phase-completion 键，因此 Router 只读取已验证状态，不做 Markdown 或文件系统反向推断。
+- 摘要：
+  - 新增 `src/hancode/router.py`：冻结、slots 化的 `RoutingDecision` 与纯函数 `select_next_phase()`。
+  - 路由按不一致/终止状态、SPEC、PLAN、未消费失败测试、retry/checkpoint、code/test/review、deliverable、completed 的固定优先级返回决策；无 checkpoint 的 retry 耗尽明确进入阻塞 review，而不是宣称可 rollback。
+  - 新增 `tests/test_router.py` 共 22 项测试，覆盖所有任务卡命名用例、失败状态消费、防止 review 死循环、回滚要求、阶段推进、交付物、终态、无副作用和多条件优先级。
+- 逐项 TDD 证据：
+  - Red/Green-1：`hancode.router` 缺失，首个路由测试出现 `ModuleNotFoundError`；新增最小模块和 SPEC 分支后通过。
+  - Red/Green-2 至 6：依次以缺 PLAN、不一致/blocked/failed、失败测试与 retry、code/test、review/deliver/完成态为 RED，逐段补充最小纯路由；最终初版专项 18 passed。
+  - 终审 Important 修复：新增优先级碰撞测试先在正确实现上 GREEN；随后仅临时倒序 `router.py` 分支，得到 4 failed / 18 passed（SPEC-vs-PLAN、SPEC-vs-failed、PLAN-vs-failed、KNOWLEDGE-vs-DELIVERABLES），立即 `git restore --source=HEAD -- src/hancode/router.py` 恢复生产代码，最终专项 22 passed。
+- 环境与诊断：
+  - 受限沙箱全量 pytest 可稳定复现 `tmp_path` 在 `C:\Users\24125\AppData\Local\Temp\pytest-of-24125\...\.lock` 的 `PermissionError`，造成 33/51 passed 后的大量 setup errors；专项 Router 测试不受影响。
+  - 以 `PYTHONPATH=src`、`UV_CACHE_DIR=$env:TEMP\hancode-uv-cache` 在已批准的沙箱外执行同一全量命令，通过 148 passed；确定为 Windows 临时目录 ACL，不是 T6 断言或实现问题。
+- 评审：
+  - Task Reviewer：初版无 Critical/Important/Minor，确认十条规则和 18 项覆盖。
+  - Final Reviewer：发现 Important——单项分支测试不足以保护有序路由的竞争条件；主控复核后确认有效，未改生产逻辑，只补三组竞争条件测试。
+  - Re-review：无 Critical、Important 或 Minor；确认四种竞争优先级均被断言锁定。
+- 提交：
+  - `2716b9a` — `feat: 完成 T6 WorkspaceRouter`。
+  - `2a495bc` — `test: 补充 T6 路由优先级覆盖`。
+  - 本记录与 PLAN 回写将在独立文档提交中落盘。
+- 验证：
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_router.py -v -p no:cacheprovider`：主控复验 22 passed。
+  - `uv run --no-sync ruff check src/hancode/router.py tests/test_router.py --no-cache`：All checks passed。
+  - `uv run --no-sync mypy src/hancode/router.py --no-incremental`：Success，无问题。
+  - `uv run --no-sync pytest -p no:cacheprovider`：主控在补齐优先级碰撞测试后的沙箱外终验为 152 passed（补测前首次 T6 全量验证为 148 passed）。
+  - `git diff --check 442f2d2..HEAD`：通过。
+- 经验教训：
+  - 有序状态机不能只测试单一条件；每个相邻优先级都应有至少一个同时满足的碰撞测试，才能防止未来重排分支改变控制流。
+  - 遇到 pytest 临时目录 ACL 时，先区分 setup 层环境故障和断言失败，再在批准的环境中复验；不可为了让沙箱绿而修改业务实现或测试语义。
+
 ### 2026-07-11 — T5 — PhaseGate
 
 - 使用的技能：writing-plans；using-git-worktrees；executing-plans；subagent-driven-development；test-driven-development；systematic-debugging；receiving-code-review；requesting-code-review；verification-before-completion。

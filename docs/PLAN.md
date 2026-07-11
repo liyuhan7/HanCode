@@ -743,12 +743,12 @@ $env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache';
 
 | 元信息           | 值                        |
 | ------------- | ------------------------ |
-| 状态            | [ ] 未开始                  |
+| 状态            | [x] 已完成（专项、静态门禁、全量回归与复审通过） |
 | 依赖            | T4, T5                   |
 | 可并行           | 完成后释放 T8-T10 与 T13-T15   |
 | Worktree / PR | `feature/M1`              |
 | 主贡献相关         | 否，控制流基础                  |
-| Commit        | TODO                     |
+| Commit        | `2716b9a` — `feat: 完成 T6 WorkspaceRouter`；`2a495bc` — `test: 补充 T6 路由优先级覆盖` |
 
 ### 目标
 
@@ -777,6 +777,7 @@ class RoutingDecision:
     reason: str
     rollback_required: bool = False
     blocked: bool = False
+    completed: bool = False
 
 def select_next_phase(state: TaskState) -> RoutingDecision: ...
 ```
@@ -784,7 +785,7 @@ def select_next_phase(state: TaskState) -> RoutingDecision: ...
 输入：`TaskState`。
 输出：`RoutingDecision`。
 不变量：router 是纯函数，不直接写 `state.json`、不创建文件、不执行 rollback。
-错误处理：状态为 `inconsistent` 时返回 blocked 或 review 决策，并拒绝高风险动作。
+错误处理：`inconsistent`、`blocked`、`failed` 状态返回保持当前 phase 的阻塞决策；retry 耗尽但没有 checkpoint 时进入 review 并标记阻塞。完成态保持六阶段 `Phase` 枚举，使用 `phase=deliver` 与 `completed=True` 表示。
 
 ### 预期失败测试
 
@@ -802,18 +803,29 @@ def select_next_phase(state: TaskState) -> RoutingDecision: ...
 * retry budget 耗尽时 `rollback_required=True`。
 * 不解析 Markdown 内容。
 
+### 实现结果
+
+* 新增冻结、slots 化的 `RoutingDecision` 与 `select_next_phase()`；函数只读取合法 `TaskState`，不接收路径、不读写 `state.json`、不执行工具、LLM 或 rollback。
+* 路由优先级依次为不一致/终止状态、SPEC、PLAN、未消费测试失败及 retry/checkpoint、code、test、review、deliverable，最后返回 `Phase.DELIVER + completed=True` 的完成决策。
+* retry 耗尽且有 checkpoint 时返回 `review/retry_budget_exhausted` 并要求 rollback；无 checkpoint 时返回 `review/retry_budget_exhausted_no_checkpoint` 且阻塞，避免虚构可恢复路径。
+* 22 项测试覆盖任务卡的 6 个命名用例、终止状态、失败消费防死循环、无 checkpoint 阻塞、完整阶段推进、两个 deliverable、无副作用，以及 SPEC/PLAN/失败测试和两个 deliverable 同时缺失时的确定性优先级。
+
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_router.py -v
-uv run ruff check src/hancode/router.py tests/test_router.py
-uv run mypy src/hancode/router.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_router.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/router.py tests/test_router.py --no-cache
+uv run --no-sync mypy src/hancode/router.py --no-incremental
+uv run --no-sync pytest -p no:cacheprovider
+git diff --check
 ```
 
 ### 完成判定
 
 * Router 只返回决策，不写文件、不改 state。
 * 所有阶段推进依据 `TaskState`，不解析 Markdown 内容。
+* 实际专项验证：22 passed；Ruff 与 MyPy 通过；补齐优先级碰撞测试后的全量回归 152 passed。
+* 最终审查初次发现 Important：缺少多条件优先级碰撞回归测试；补测后复审无 Critical、Important 或 Minor。
 
 ### 非目标 / 边界
 
