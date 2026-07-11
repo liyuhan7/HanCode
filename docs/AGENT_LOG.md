@@ -34,6 +34,11 @@
 - 逐项 TDD 证据：
   - Red：新增测试后执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`，因 `hancode.llm` 不存在在收集阶段以预期 `ModuleNotFoundError` 失败。
   - Green：新增最小标准库实现并以同一命令复跑，8 passed in 0.04s。
+- 审查修复（仅测试，未修改 `src/hancode/llm.py`）：
+  - 新增 malformed raw action 用例：输入缺少正常 action 字段且 `type` 非法的 dict，断言 `next_action()` 原样返回等值但独立的 dict，证明 MockLLM 不提前抛错、填充字段或执行 schema 校验，保留给 ActionParser 处理。
+  - 新增 returned-action 深层隔离用例：两个预设 action 共用同一嵌套 `args`，修改第一次返回值的深层 `path` 后，断言第二次返回值仍为原始 `README.md`，直接覆盖内部队列不受污染的边界。
+  - Red：先以反向观察断言运行专项测试，得到 `2 failed, 8 passed in 0.07s`；malformed action 因缺失 `action` 键出现预期 `KeyError`，第二个 action 与被篡改值不相等，明确说明当前实现既未填充 schema 也未泄漏深层引用。
+  - Green：仅将反向观察断言翻转为上述契约断言，未改生产代码；专项命令通过 `10 passed in 0.04s`，T8+T9 回归通过 `22 passed in 0.05s`，`uv run --no-sync ruff check tests/test_llm.py --no-cache` 输出 `All checks passed!`，`git diff --check` 无输出并通过。
 - 提交：
   - `a86fd44` — `feat: 完成 T9 MockLLM`。
   - 本条与 PLAN 回填提交待定。

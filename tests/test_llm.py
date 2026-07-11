@@ -64,6 +64,19 @@ def test_mock_llm_returns_raw_action_that_action_parser_can_parse() -> None:
     )
 
 
+def test_mock_llm_returns_malformed_raw_actions_without_schema_validation() -> None:
+    malformed_action = {
+        "type": "not-a-registered-action",
+        "args": {"payload": {"id": "raw-value"}},
+    }
+    llm = MockLLM([malformed_action])
+
+    returned = llm.next_action({"phase": "code"})
+
+    assert returned == malformed_action
+    assert returned is not malformed_action
+
+
 def test_mock_llm_exhaustion_has_stable_diagnostic_fields() -> None:
     llm = MockLLM([])
 
@@ -98,6 +111,24 @@ def test_mock_llm_isolates_input_actions_and_returned_actions() -> None:
     assert actions != original
     assert original == [_read_file_action("README.md")]
     assert returned != original[0]
+
+
+def test_mock_llm_keeps_later_action_deeply_isolated_from_earlier_return() -> None:
+    shared_args = {"payload": {"path": "README.md"}}
+    llm = MockLLM(
+        [
+            {"type": "tool_call", "args": shared_args},
+            {"type": "tool_call", "args": shared_args},
+        ]
+    )
+
+    first = llm.next_action({})
+    assert isinstance(first["args"], dict)
+    assert isinstance(first["args"]["payload"], dict)
+    first["args"]["payload"]["path"] = "changed-through-first-return.md"
+    second = llm.next_action({})
+
+    assert second["args"] == {"payload": {"path": "README.md"}}
 
 
 def test_mock_llm_isolates_input_context_and_public_history() -> None:
