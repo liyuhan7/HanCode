@@ -20,6 +20,31 @@
 
 ## 记录条目
 
+### 2026-07-11 — T10 — AgentLoop 最小循环骨架
+
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；test-driven-development；requesting-code-review；receiving-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；独立只读审查智能体；控制代理（沙箱外全量验证）。
+- 关键提示词 / 上下文：
+  - T10 只实现可注入的最小控制流，依赖 T6/T8/T9；不能提前实现真实 ToolRegistry、ToolPolicy、ContextBuilder、FeedbackBuilder、trace、retry 或 rollback。
+  - `finish_phase` / `final` 经 parser 与 policy 后只结束本次 run，返回 `running`；`MockLLMExhausted` 必须由 loop 转成当前 phase 的完整结构化 `blocked` 错误。
+- 摘要：
+  - 新增 `src/hancode/agent_loop.py`：定义 T10 所需的依赖 Protocol、`AgentRunResult` 与 `AgentLoop.run(task_id)`；每轮固定执行 context -> LLM -> parser -> policy -> tool -> feedback，并将工具 observation 注入下一轮 context。
+  - `tool_call` 只有在 parser 成功且 policy allow 后才 dispatch；parse error、policy denial、MockLLM 耗尽、max_steps 和未支持的 `ask_user` 都停止为 `blocked`，不执行工具。
+  - `finish_phase`、`final` 返回 `running`；Router 已完成时以 0 step 返回 `completed`；本任务不保存 state、生成 trace 或解释未来 ToolResult。
+- 逐项 TDD 证据：
+  - Red：新增 `tests/test_agent_loop.py` 后，专项测试在收集阶段因 `hancode.agent_loop` 不存在以预期 `ModuleNotFoundError` 失败。
+  - Green：新增最小 loop 后专项 12 passed；独立审查发现 `final` 缺少独立停止测试，补充该测试后专项 13 passed in 0.04s。
+- 审查：
+  - 只读审查无 Critical/Important；Minor 为 `final` 分支缺少单独测试。确认该分支已由 `ActionType.FINAL` 与 `FINISH_PHASE` 的同一停止分支实现后，仅新增回归测试并验证通过。
+- 提交：
+  - `2f7dc5f` — `feat: 完成 T10 AgentLoop`：新增 loop 与 13 项 T10 测试。
+- 验证：
+  - T8+T9+T10 回归：35 passed in 0.09s；Ruff 通过；MyPy 为 `Success: no issues found in 1 source file`。
+  - 全量受限沙箱因 pytest 临时目录 `.lock` 的 `PermissionError` 得到 120 passed、97 errors；同命令沙箱外复验为 218 passed in 1.75s。
+  - `git diff --check` 通过。
+- 剩余风险：
+  - 真实 ToolResult、ToolPolicy、ContextBuilder、FeedbackBuilder、trace、state 持久化、retry 和 rollback 仍由 T11/T14/T19-T21 实现；T10 的 Protocol 是可替换接缝，不是这些模块的最终接口。
+
 ### 2026-07-11 — T9 — MockLLM
 
 - 使用的技能：test-driven-development；verification-before-completion。

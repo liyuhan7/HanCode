@@ -1120,12 +1120,12 @@ uv run mypy src/hancode/llm.py
 
 | 元信息           | 值                                                |
 | ------------- | ------------------------------------------------ |
-| 状态            | [ ] 未开始                                          |
+| 状态            | [x] 已完成（专项、静态门禁、回归、全量复验与审查通过）                 |
 | 依赖            | T6, T8, T9                                       |
 | 可并行           | 依赖注入 stub policy / stub tool，可先于真实 ToolPolicy 集成 |
 | Worktree / PR | `feature/M2`                                    |
 | 主贡献相关         | 是，主循环基础                                          |
-| Commit        | TODO                                             |
+| Commit        | `2f7dc5f` — `feat: 完成 T10 AgentLoop`             |
 
 ### 目标
 
@@ -1153,7 +1153,7 @@ class AgentLoop:
 输入：task_id、LLM、ContextBuilder stub、Policy stub、ToolRegistry stub、FeedbackBuilder stub、StateStore。
 输出：AgentRunResult，包含 status、steps、tool calls、risks、final observation。
 不变量：所有工具执行前必须经过 parser 与 policy。
-错误处理：T10 的 `AgentLoop` 捕获 `MockLLMExhausted` 后固定映射为 `blocked`，并构造完整结构化错误：`error_code`、`message`、当前 `phase`、`denied_rule=None` 和 `suggested_fix`；parse error、policy denial、超过 max_steps 均返回 `blocked` 或 `failed`，不执行高风险工具。
+错误处理：T10 的 `AgentLoop` 捕获 `MockLLMExhausted` 后固定映射为 `blocked`，并构造完整结构化错误：`error_code`、`message`、当前 `phase`、`denied_rule=None` 和 `suggested_fix`；parse error、policy denial、超过 max_steps 与当前不支持的 `ask_user` 均固定返回 `blocked`，且不执行工具。
 
 ### 预期失败测试
 
@@ -1163,6 +1163,13 @@ class AgentLoop:
 * `test_policy_denial_does_not_execute_tool`
 * `test_max_steps_prevents_infinite_loop`
 * `test_finish_action_stops_loop`
+* `test_final_action_stops_loop`
+* `test_tool_observation_is_fed_into_next_context`
+* `test_parse_error_blocks_without_policy_or_tool`
+* `test_mock_llm_exhaustion_returns_structured_blocked_result`
+* `test_terminal_routing_stops_before_llm`
+* `test_ask_user_blocks_without_tool`
+* `test_agent_loop_rejects_non_positive_max_steps`
 
 ### 实现要点
 
@@ -1170,6 +1177,22 @@ class AgentLoop:
 * `finish` action 只停止循环，不直接判定 completed。
 * 工具调用顺序应可通过 spy 对象测试。
 * 捕获 `MockLLMExhausted` 时使用当前运行 phase 填充结构化错误的 `phase`，不把 T9 异常改造成策略拒绝；`denied_rule` 固定为 `None`。
+
+### 实现结果
+
+* 新增最小的依赖注入 Protocol：StateStore、ContextBuilder、Policy、ToolRegistry 与 FeedbackBuilder；它们只定义 T10 所需端口，不替代后续 T11/T14/T19/T20 的真实实现。
+* 新增冻结、slots 化 `AgentRunResult`，返回 `status`、`steps`、已 dispatch 的工具名、预留 `risks`、最终 observation 与结构化 error。
+* loop 先使用现有 `select_next_phase()` 取得 phase；每步复制 context、调用 LLM、解析 action、执行 policy，仅允许 `tool_call` 进入 `dispatch()`；工具 observation 回灌到下一次 LLM context。
+* `finish_phase` 与 `final` 都在 policy allow 后停止并返回 `running`，不直接标记 completed；路由已完成时才以 0 步返回 `completed`。T10 不持久化 state、不解释 ToolResult、不处理 retry、rollback 或 trace。
+
+### 实际验证
+
+* Red：先新增 `tests/test_agent_loop.py`，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_agent_loop.py -v -p no:cacheprovider`；因 `hancode.agent_loop` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+* Green：新增最小实现后 T10 专项 12 passed；审查补充 `final` 的独立停止语义回归测试后，专项为 13 passed in 0.04s。
+* T8+T9+T10 回归：`uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py tests/test_agent_loop.py -v -p no:cacheprovider`：35 passed in 0.09s。
+* 静态检查：`uv run --no-sync ruff check src/hancode/agent_loop.py tests/test_agent_loop.py --no-cache` 通过；`uv run --no-sync mypy src/hancode/agent_loop.py --no-incremental`：Success: no issues found in 1 source file。
+* 全量：受限沙箱以 `uv run --no-sync pytest -p no:cacheprovider` 执行时，pytest 在 `C:\\Users\\24125\\AppData\\Local\\Temp\\pytest-of-24125\\pytest-*\\.lock` 创建锁文件遭遇 `PermissionError`，结果为 120 passed、97 errors；控制端在沙箱外以同一命令复验：218 passed in 1.75s。
+* 独立只读审查：无 Critical/Important；补充 `final` stop 回归测试后关闭 Minor。`git diff --check` 通过。
 
 ### 验证步骤
 
