@@ -1147,7 +1147,7 @@ class AgentLoop:
 输入：task_id、LLM、ContextBuilder stub、Policy stub、ToolRegistry stub、FeedbackBuilder stub、StateStore。
 输出：AgentRunResult，包含 status、steps、tool calls、risks、final observation。
 不变量：所有工具执行前必须经过 parser 与 policy。
-错误处理：parse error、policy denial、MockLLM 耗尽、超过 max_steps 均返回 blocked 或 failed，不执行高风险工具。
+错误处理：T10 的 `AgentLoop` 捕获 `MockLLMExhausted` 后固定映射为 `blocked`；parse error、policy denial、超过 max_steps 均返回 `blocked` 或 `failed`，不执行高风险工具。
 
 ### 预期失败测试
 
