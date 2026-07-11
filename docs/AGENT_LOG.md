@@ -46,7 +46,13 @@
   - `e9d14ae` — `docs: 纠正 T9 审查验证记录`：纠正审查补测的验证叙述；此提交不新增测试。
   - `a397ccf` — `docs: 修正 T9 提交记录`：修正日志中的 T9 提交元数据；此提交不新增测试。
   - `c9d0adc` — `docs: 对齐 T9 耗尽契约`：在 PLAN 明确 T9 抛出异常、T10 映射 `blocked` 的职责边界。
-- 提交审计修正（2026-07-11）：逐一核验上述六个提交的主题和变更文件后，补齐此前遗漏的 `3bba8cb`、`c9d0adc`，并将 `e9d14ae`、`a397ccf` 明确标注为文档提交，避免误记为测试提交。
+  - 后续跨文档契约同步（审查发现；均为文档提交，不是源码/测试提交）：
+    - `54cc89b` — `docs: 完整回填 T9 提交审计`：完整回填 T9 审计记录。
+    - `0410035` — `docs: 对齐 T10 MockLLM 耗尽状态`：同步 T10 对 `MockLLMExhausted` 的固定 `blocked` 映射。
+    - `45b966e` — `docs: 同步 MockLLM 耗尽上位契约`：同步 SPEC 与系统架构中的耗尽职责边界。
+    - `8b87619` — `docs: 同步 MockLLM 隔离示例`：同步系统架构中的深拷贝与 `contexts` 隔离示例。
+- 提交审计修正（2026-07-11）：逐一核验原有六个提交的主题和变更文件后，补齐此前遗漏的 `3bba8cb`、`c9d0adc`，并将 `e9d14ae`、`a397ccf` 明确标注为文档提交，避免误记为测试提交；审查随后发现的上述四项跨文档契约同步提交亦已完整列入，且均不属于源码或测试提交。
+- 后续契约同步审计验证（2026-07-11）：设置既有 `PYTHONPATH=src` 与临时 `UV_CACHE_DIR` 后，`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider` 退出码 0（10 passed in 0.03s）；`git diff --check` 退出码 0、无输出。
 - 审计验证证据（2026-07-11）：设置既有 `PYTHONPATH=src` 与临时 `UV_CACHE_DIR` 后，`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider` 退出码 0（10 passed in 0.03s）；`git diff --check` 退出码 0、无输出。
 - 验证：
   - 专项：`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`：8 passed in 0.04s。

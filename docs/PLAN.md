@@ -1022,7 +1022,7 @@ git diff --check
 | 可并行           | 可与 T8 并行         |
 | Worktree / PR | `feature/M2`     |
 | 主贡献相关         | 是，确定性测试基础        |
-| Commit        | `a86fd44`（源码/初始测试）；`93ae774`（初始文档回填）；`3bba8cb`（malformed raw action 与深层返回值隔离审查补测）；`e9d14ae`（审查验证记录纠正）；`a397ccf`（提交记录修正）；`c9d0adc`（耗尽契约对齐） |
+| Commit        | `a86fd44`（源码/初始测试）；`93ae774`（初始文档回填）；`3bba8cb`（malformed raw action 与深层返回值隔离审查补测）；`e9d14ae`（审查验证记录纠正）；`a397ccf`（提交记录修正）；`c9d0adc`（耗尽契约对齐）；后续跨文档契约同步（审查发现）：`54cc89b`（T9 审计回填）、`0410035`（T10 耗尽状态对齐）、`45b966e`（MockLLM 耗尽上位契约同步）、`8b87619`（MockLLM 隔离示例同步） |
 
 ### 目标
 
