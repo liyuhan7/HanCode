@@ -1022,7 +1022,7 @@ git diff --check
 | 可并行           | 可与 T8 并行         |
 | Worktree / PR | `feature/M2`     |
 | 主贡献相关         | 是，确定性测试基础        |
-| Commit        | `a86fd44`（源码/测试）；`93ae774`（初始文档回填）；`e9d14ae`、`a397ccf`（审查覆盖与日志修正） |
+| Commit        | `a86fd44`（源码/初始测试）；`93ae774`（初始文档回填）；`3bba8cb`（malformed raw action 与深层返回值隔离审查补测）；`e9d14ae`（审查验证记录纠正）；`a397ccf`（提交记录修正）；`c9d0adc`（耗尽契约对齐） |
 
 ### 目标
 

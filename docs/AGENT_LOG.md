@@ -40,9 +40,14 @@
   - 测试补强证据：本次审查时 `src/hancode/llm.py` 已正确满足这两个契约，因此新增的正式回归测试没有形成新的生产 RED；首次按正式断言运行专项测试即为 `10 passed in 0.04s`。未为制造 RED 而改动生产代码。
   - 验证：T8+T9 回归通过 `22 passed in 0.05s`，`uv run --no-sync ruff check tests/test_llm.py --no-cache` 输出 `All checks passed!`，`git diff --check` 无输出并通过。
 - 提交：
-  - `a86fd44` — `feat: 完成 T9 MockLLM`。
-  - `93ae774` — `docs: 回填 T9 验证记录`。
-  - `e9d14ae` — `docs: 纠正 T9 审查验证记录`，记录审查覆盖补强后的准确测试证据。
+  - `a86fd44` — `feat: 完成 T9 MockLLM`：新增 `llm.py` 与初始 `tests/test_llm.py`。
+  - `93ae774` — `docs: 回填 T9 验证记录`：首次回填 T9 的 PLAN 与日志验证证据。
+  - `3bba8cb` — `test: 补强 T9 MockLLM 审查覆盖`：新增 malformed raw action 透传和深层返回值隔离测试。
+  - `e9d14ae` — `docs: 纠正 T9 审查验证记录`：纠正审查补测的验证叙述；此提交不新增测试。
+  - `a397ccf` — `docs: 修正 T9 提交记录`：修正日志中的 T9 提交元数据；此提交不新增测试。
+  - `c9d0adc` — `docs: 对齐 T9 耗尽契约`：在 PLAN 明确 T9 抛出异常、T10 映射 `blocked` 的职责边界。
+- 提交审计修正（2026-07-11）：逐一核验上述六个提交的主题和变更文件后，补齐此前遗漏的 `3bba8cb`、`c9d0adc`，并将 `e9d14ae`、`a397ccf` 明确标注为文档提交，避免误记为测试提交。
+- 审计验证证据（2026-07-11）：设置既有 `PYTHONPATH=src` 与临时 `UV_CACHE_DIR` 后，`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider` 退出码 0（10 passed in 0.03s）；`git diff --check` 退出码 0、无输出。
 - 验证：
   - 专项：`uv run --no-sync pytest tests/test_llm.py -v -p no:cacheprovider`：8 passed in 0.04s。
   - T8+T9 回归：`uv run --no-sync pytest tests/test_action_parser.py tests/test_llm.py -v -p no:cacheprovider`：20 passed in 0.05s。
