@@ -110,7 +110,7 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
             )
         )
 
-    _validate_project_metadata(workspace / "project.json")
+    load_project_metadata(workspace / "project.json")
     task_workspace = task_path(project_root, task_id)
     task_workspace.mkdir(exist_ok=True)
     (task_workspace / "checkpoints").mkdir(exist_ok=True)
@@ -156,7 +156,7 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
     return task_workspace
 
 
-def _validate_project_metadata(project_file: Path) -> None:
+def load_project_metadata(project_file: Path) -> dict[str, object]:
     try:
         metadata = json.loads(project_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
@@ -181,3 +181,4 @@ def _validate_project_metadata(project_file: Path) -> None:
                 suggested_fix="Repair project.json before creating a task workspace.",
             )
         )
+    return metadata

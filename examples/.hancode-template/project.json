@@ -2,8 +2,8 @@
   "project_id": "hancode-course-demo",
   "course_name": "AI4SE",
   "assignment_name": "Student Grade Statistics CLI",
-  "stack": ["Python 3.11", "pytest"],
+  "project_root": ".",
   "test_command": "python -m pytest",
-  "build_command": "",
+  "build_command": null,
   "workspace_version": 1
 }

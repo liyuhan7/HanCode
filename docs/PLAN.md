@@ -454,12 +454,12 @@ uv run mypy src/hancode/workspace.py
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成（返工后）       |
 | 依赖            | T1, T2                |
 | 可并行           | 可与 T4 并行              |
 | Worktree / PR | `feature/M1`          |
 | 主贡献相关         | 否，支撑维度                |
-| Commit        | TODO                  |
+| Commit        | `e7fcee3` + `e3ddce9` — T3 初版与安全返工 |
 
 ### 目标
 
@@ -472,9 +472,9 @@ uv run mypy src/hancode/workspace.py
 
 ### SPEC 依据
 
-* 配置加载与运行约束。
+* 配置加载与运行约束；T3 只加载共享配置输入，固定 phase 策略由 T5、工具权限决策由 T14 实现。
 * 凭据不得明文写入配置。
-* `max_steps`、`retry_budget`、工具权限、测试命令、保护路径等必须显式配置并校验。
+* `max_steps`、`retry_budget`、测试命令、保护路径和可写根等当前配置字段必须显式校验；phase 规则由 T5、工具权限由 T14 负责。
 
 ### 接口契约
 
@@ -506,17 +506,30 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
   * `max_steps = 30`
   * `retry_budget = 2`
   * `max_checkpoints_per_task = 5`
-  * `max_context_chars = 12000`
-  * `max_trace_events = 20`
-* 默认 protected patterns 包含作业说明、教师测试、评分脚本、样例数据、`.env` 和凭据文件。
+  * `max_context_chars = 24000`
+  * `max_trace_events = 40`
+* 默认 protected patterns 是不可移除基线，包含作业说明、教师测试、评分脚本、样例数据、`.env`、凭据目录和常见密钥文件；项目配置只能追加规则。
 * 不读取真实 secret，只读取 secret source 配置。
+
+* `max_context_chars = 24000`、`max_trace_events = 40` 的权威来源是 2026-07-10 已批准的 T3 开发计划；本任务不再使用旧的 `12000/20` 草案值。
+
+### 实现结果
+
+* 新增冻结且使用 `slots` 的 `HanCodeConfig`；`load_config()` 从 `.hancode/project.json` 合并项目级覆盖与默认值，并可通过现有 `task_path()` 安全派生可选 `task_root`。
+* 结构化拒绝未初始化 workspace、损坏或类型/范围非法配置、未知 provider、明文凭据字段和可写根路径逃逸；错误不回显明文值。
+* 可写根仅接受 project root 内的相对目录，规范化 `src/**` 形式，并同时防御 POSIX/Windows 绝对路径、`..` 与符号链接逃逸。
+* 明确不读取 task `state.json`、环境变量值、`.env` 或真实凭据，也不实现 CredentialProvider、路由或 ContextBuilder。
+* `project.json` 仅接受 T2 元数据与当前 T3 活动字段；`stack`、`interactive`、`confirm_before_write`、`workspace_root` 等未来字段留给后续任务。
+* 远程 provider 必须同时提供非空 `model_name` 与受支持的 `credential_source`；`mock`、`local` 可无凭据来源。
+* `examples/.hancode-template/project.json` 与当前 schema 对齐；脚手架断言不再要求未来的 `stack` 字段。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_config.py -v
-uv run ruff check src/hancode/config.py tests/test_config.py
-uv run mypy src/hancode/config.py
+uv run --no-sync pytest tests/test_config.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/config.py tests/test_config.py --no-cache
+uv run --no-sync mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3-review"
+uv run --no-sync pytest -p no:cacheprovider
 ```
 
 ### 完成判定
@@ -524,6 +537,8 @@ uv run mypy src/hancode/config.py
 * 配置错误会清晰失败。
 * 默认配置足够驱动 MockLLM demo。
 * 配置对象可被 ToolPolicy、ContextBuilder、AgentLoop 复用。
+* 2026-07-10 初版实测：专项 25 passed；全量 72 passed。
+* 2026-07-10 返工后实测：专项 42 passed；Ruff 通过；MyPy 通过；全量 89 passed。
 
 ### 非目标 / 边界
 
@@ -537,12 +552,12 @@ uv run mypy src/hancode/config.py
 
 | 元信息           | 值                   |
 | ------------- | ------------------- |
-| 状态            | [ ] 未开始             |
+| 状态            | [x] 已完成（专项、静态门禁与全量回归通过） |
 | 依赖            | T1, T2              |
 | 可并行           | 可与 T3 并行            |
 | Worktree / PR | `feature/M1`        |
 | 主贡献相关         | 否，控制流基础             |
-| Commit        | TODO                |
+| Commit        | `84ba160` — `feat: 完成 T4 StateStore` |
 
 ### 目标
 
@@ -600,12 +615,21 @@ def reconcile_state(task_root: Path, state: TaskState) -> TaskState: ...
 * `reconcile_state` 只检测漂移，不自动把 Markdown 文件存在转换为 artifact completed。
 * 损坏 JSON 不应导致高风险工具继续执行。
 
+### 实现结果
+
+* 新增冻结、slots 化的 `TaskState`，严格解析 schema v1 的 18 个字段，复用 `Phase`、`TaskStatus`，校验合法状态、阶段、测试状态、非负计数及固定 artifact / phase 键。
+* `load_state()` 只读取 `state.json`，损坏 JSON、缺失字段、未知字段和非法枚举统一返回脱敏的结构化 `state_parse_error`。
+* `save_state()` 使用临时文件 + 原子替换；写失败保留原文件并返回 `state_write_error`。校验 `task_id` 一致性，防止跨 task 串写；`files_changed` 仅允许持久化 code 且目标为 code/test 时更新。
+* `reconcile_state()` 双向检测 artifact 与文件存在性漂移，返回 `inconsistent`，不回写 artifact 标志、不自动修复、也不自动清除既有 inconsistent 状态。
+* `phase_completed` 与 `artifacts` 使用不可变映射，避免绕过运行时校验后写入非法状态。
+* 不涉及 router、trace、Markdown artifact 生成或 T5 以后机制。
+
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_state.py -v
-uv run ruff check src/hancode/state.py tests/test_state.py
-uv run mypy src/hancode/state.py
+uv run --no-sync pytest tests/test_state.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/state.py tests/test_state.py --no-cache
+uv run --no-sync mypy src/hancode/state.py --no-incremental
 ```
 
 ### 完成判定
@@ -613,6 +637,9 @@ uv run mypy src/hancode/state.py
 * `state.json` 读写稳定。
 * artifact drift 被检测为 inconsistent。
 * 不会从文件系统反向自动修复状态。
+* 实际专项验证：23 passed；Ruff 与 MyPy 通过。
+* 两阶段评审：首次评审发现 3 个 Important，修复后 Spec 合规与代码质量复评均 PASS。
+* 全量回归复核已通过：`uv run --no-sync pytest -p no:cacheprovider` 为 112 passed；此前曾受 Windows pytest 临时目录 ACL 影响（27 passed、81 setup errors），该中间失败不代表当前代码失败。
 
 ### 非目标 / 边界
 
@@ -626,12 +653,12 @@ uv run mypy src/hancode/state.py
 
 | 元信息           | 值                  |
 | ------------- | ------------------ |
-| 状态            | [ ] 未开始            |
+| 状态            | [x] 已完成 |
 | 依赖            | T1, T4             |
 | 可并行           | 可与 T6 前置设计并行       |
 | Worktree / PR | `feature/M1`        |
 | 主贡献相关         | 否，控制流基础            |
-| Commit        | TODO               |
+| Commit        | `3c32408` — `feat: 完成 T5 PhaseGate` |
 
 ### 目标
 
@@ -656,7 +683,7 @@ def can_write_source(phase: Phase, state: TaskState) -> bool: ...
 ```
 
 输入：phase、artifact name、TaskState。
-输出：布尔判定或结构化拒绝结果。
+输出：无副作用的布尔判定；结构化拒绝由后续 T14 ToolPolicy 负责。
 不变量：artifact 写入白名单固定；source write 只允许 code phase。
 错误处理：未知 phase 返回拒绝。
 
@@ -681,18 +708,28 @@ def can_write_source(phase: Phase, state: TaskState) -> bool: ...
 * 业务源代码写入必须处于 code phase。
 * 若 state 为 inconsistent，拒绝 source write。
 
+### 实现结果
+
+* 新增 `hancode.phases`，复用既有 `Phase`、`TaskState`、`TaskStatus`，未重复定义枚举或修改 T4 StateStore。
+* `can_write_artifact()` 以大小写敏感的固定白名单限制阶段产物：spec=`SPEC.md`、plan=`PLAN.md`、code=空集、test=`TEST_REPORT.md`、review=`REVIEW.md`、deliver=`KNOWLEDGE.md` 与 `DELIVERABLES.md`。
+* `can_write_source()` 仅在参数 phase 与 `state.current_phase` 都为 code、SPEC/PLAN 均完成、`inconsistent=False` 且 status 非 `INCONSISTENT` 时返回 true；非法运行时 phase、未知 artifact、前置条件缺失与状态不一致均返回 false。
+* 两个接口均为纯函数：不读取文件、不写入 state、不做持久化，不扩展到 router、ToolPolicy、路径分类、checkpoint、trace 或阶段完成门禁。
+
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_phase_gate.py -v
-uv run ruff check src/hancode/phases.py tests/test_phase_gate.py
-uv run mypy src/hancode/phases.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_phase_gate.py -v -p no:cacheprovider
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync ruff check src/hancode/phases.py tests/test_phase_gate.py --no-cache
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync mypy src/hancode/phases.py
 ```
 
 ### 完成判定
 
 * 每个 phase 能写哪些 artifact 有明确规则。
 * 只有 code phase 允许业务代码修改。
+* 实际专项验证：18 passed；Ruff 与 MyPy 通过；全量 pytest：130 passed。
+* 两阶段任务评审和最终代码评审无 Critical/Important；普通未知 artifact 名称未显式断言为 Minor，不影响现有固定集合成员判断。
+* 本次文档回写按用户要求暂不提交。
 
 ### 非目标 / 边界
 
@@ -706,12 +743,12 @@ uv run mypy src/hancode/phases.py
 
 | 元信息           | 值                        |
 | ------------- | ------------------------ |
-| 状态            | [ ] 未开始                  |
+| 状态            | [x] 已完成（专项、静态门禁、全量回归与复审通过） |
 | 依赖            | T4, T5                   |
 | 可并行           | 完成后释放 T8-T10 与 T13-T15   |
 | Worktree / PR | `feature/M1`              |
 | 主贡献相关         | 否，控制流基础                  |
-| Commit        | TODO                     |
+| Commit        | `2716b9a` — `feat: 完成 T6 WorkspaceRouter`；`2a495bc` — `test: 补充 T6 路由优先级覆盖` |
 
 ### 目标
 
@@ -740,6 +777,7 @@ class RoutingDecision:
     reason: str
     rollback_required: bool = False
     blocked: bool = False
+    completed: bool = False
 
 def select_next_phase(state: TaskState) -> RoutingDecision: ...
 ```
@@ -747,7 +785,7 @@ def select_next_phase(state: TaskState) -> RoutingDecision: ...
 输入：`TaskState`。
 输出：`RoutingDecision`。
 不变量：router 是纯函数，不直接写 `state.json`、不创建文件、不执行 rollback。
-错误处理：状态为 `inconsistent` 时返回 blocked 或 review 决策，并拒绝高风险动作。
+错误处理：`inconsistent`、`blocked`、`failed` 状态返回保持当前 phase 的阻塞决策；retry 耗尽但没有 checkpoint 时进入 review 并标记阻塞。完成态保持六阶段 `Phase` 枚举，使用 `phase=deliver` 与 `completed=True` 表示。
 
 ### 预期失败测试
 
@@ -765,18 +803,29 @@ def select_next_phase(state: TaskState) -> RoutingDecision: ...
 * retry budget 耗尽时 `rollback_required=True`。
 * 不解析 Markdown 内容。
 
+### 实现结果
+
+* 新增冻结、slots 化的 `RoutingDecision` 与 `select_next_phase()`；函数只读取合法 `TaskState`，不接收路径、不读写 `state.json`、不执行工具、LLM 或 rollback。
+* 路由优先级依次为不一致/终止状态、SPEC、PLAN、未消费测试失败及 retry/checkpoint、code、test、review、deliverable，最后返回 `Phase.DELIVER + completed=True` 的完成决策。
+* retry 耗尽且有 checkpoint 时返回 `review/retry_budget_exhausted` 并要求 rollback；无 checkpoint 时返回 `review/retry_budget_exhausted_no_checkpoint` 且阻塞，避免虚构可恢复路径。
+* 22 项测试覆盖任务卡的 6 个命名用例、终止状态、失败消费防死循环、无 checkpoint 阻塞、完整阶段推进、两个 deliverable、无副作用，以及 SPEC/PLAN/失败测试和两个 deliverable 同时缺失时的确定性优先级。
+
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_router.py -v
-uv run ruff check src/hancode/router.py tests/test_router.py
-uv run mypy src/hancode/router.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_router.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/router.py tests/test_router.py --no-cache
+uv run --no-sync mypy src/hancode/router.py --no-incremental
+uv run --no-sync pytest -p no:cacheprovider
+git diff --check
 ```
 
 ### 完成判定
 
 * Router 只返回决策，不写文件、不改 state。
 * 所有阶段推进依据 `TaskState`，不解析 Markdown 内容。
+* 实际专项验证：22 passed；Ruff 与 MyPy 通过；补齐优先级碰撞测试后的全量回归 152 passed。
+* 最终审查初次发现 Important：缺少多条件优先级碰撞回归测试；补测后复审无 Critical、Important 或 Minor。
 
 ### 非目标 / 边界
 
@@ -790,12 +839,12 @@ uv run mypy src/hancode/router.py
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成               |
 | 依赖            | T1, T6                |
 | 可并行           | 可与 T11 并行             |
 | Worktree / PR | `feature/M1`           |
 | 主贡献相关         | 是，主循环输入协议             |
-| Commit        | TODO                  |
+| Commit        | `18ce975` — `feat: 完成 T7 Action Schema` |
 
 ### 目标
 
@@ -844,16 +893,28 @@ phase
 
 ### 实现要点
 
-* `finish` action 表示模型请求结束，但是否 completed 由 ResultBuilder / AgentLoop 状态判定。
+* `finish_phase` action 表示模型请求阶段结束，但是否 completed 由 ResultBuilder / AgentLoop 状态判定。
 * write action 包括 `write_file`、`edit_file`。
 * `run_tests` 不允许携带任意 shell command，实际命令来自 config。
+
+### 实现结果
+
+* 新增冻结、slots 化的 `Action`、`ActionType` 和 `ParseError`，并以 `Action.from_values()` 作为类型化候选 action 的确定性校验入口；原始 dict 的字段解析仍由 T8 实现。
+* `ActionType` 固定为 `tool_call`、`finish_phase`、`ask_user`、`final`；action 不含 `target_kind`。
+* 七个 MVP 工具使用固定参数 schema：`read_file(path)`、`list_files()` / `list_files(path)`、`search_text(query)`、`write_file(path, content)`、`edit_file(path, old_string, new_string)`、`run_tests()`、`rollback_last_checkpoint()`。
+* `write_file` 和 `edit_file` 必须有非空 `reason`；`run_tests` 不接收 `command`；非法类型、phase、工具、参数和控制 action 工具名均返回不回显候选值的 `ParseError`。
+* `run_tests` 与 `rollback_last_checkpoint` 是唯一的无参数工具；即使未来工具已注册但未声明 schema，也会 fail-closed 拒绝。
+* `Action` 防御性复制并冻结 `args`，直接构造也会拒绝不合 schema 的对象。
+* 实际验证：专项 31 passed；Ruff、MyPy 通过；审查修正后全量 183 passed；`git diff --check` 通过。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_action_schema.py -v
-uv run ruff check src/hancode/actions.py tests/test_action_schema.py
-uv run mypy src/hancode/actions.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_action_schema.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/actions.py tests/test_action_schema.py --no-cache
+uv run --no-sync mypy src/hancode/actions.py --no-incremental
+uv run --no-sync pytest -p no:cacheprovider
+git diff --check
 ```
 
 ### 完成判定

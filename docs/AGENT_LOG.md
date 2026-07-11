@@ -20,6 +20,238 @@
 
 ## 记录条目
 
+### 2026-07-11 — T7 — Action Schema
+
+- 使用的技能：using-superpowers；karpathy-guidelines；brainstorming；using-git-worktrees；executing-plans；test-driven-development。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：
+  - 用户要求先阅读 `AGENTS.md`、Superpowers 工作流与 Karpathy 准则后，在 `feature/M1` 的 `.worktrees/M1` 实施 PLAN 中的 T7。
+  - 已确认 T7 只提供类型化 schema 构造与校验；`parse_action(raw)` 留给 T8，且不实现 tool dispatch、PathClassifier、ToolPolicy、phase-current 比对或真实工具执行。
+  - 四个 action 类型沿用架构文档：`tool_call`、`finish_phase`、`ask_user`、`final`；MVP 工具参数采用固定 schema，`run_tests` 不接收模型给出的 shell command。
+- 摘要：
+  - 新增 `src/hancode/actions.py`，提供冻结、slots 化的 `Action`、`ActionType`、`ParseError` 与 `Action.from_values()`。
+  - 七个注册工具的参数集合被严格固定；写入类工具要求非空 `reason`，控制 action 不得携带工具名，`ask_user` 只接受非空 `question`。
+  - `args` 被防御性复制为只读 mapping；工厂与直接构造共用同一 schema 不变量，避免绕过校验的非法 Action 进入后续机制。
+- 逐项 TDD 证据：
+  - Red/Green-1：新增测试首先因 `hancode.actions` 不存在而出现 `ModuleNotFoundError`；新增枚举、数据结构与最小工厂后 4 passed。
+  - Red/Green-2：写入 action 无 reason、`run_tests` 携带 command、`finish_phase` 携带工具名均错误地返回 Action（3 failed）；补充三项边界校验后 7 passed。
+  - Red/Green-3：缺失/多余工具参数、`target_kind`、`ask_user` 空问题、`final` 参数和直接构造绕过均未被拒绝（10 failed）；集中固定 schema 并让构造器复用校验后 26 passed。
+  - 回归补强：合法控制 action、未知工具结构化错误不回显候选值和 `args` 不可变；专项最终 30 passed。
+  - 审查 Minor 修正：模拟未来工具被注册但未声明参数 schema 时，空参数错误返回 `Action`（1 failed）；显式限制无参数工具为 `run_tests` 与 `rollback_last_checkpoint` 后专项 31 passed。
+- 环境与诊断：
+  - 受限沙箱中的 pytest 仍会因 Windows 临时目录 ACL 失败；本任务按照既有批准方式设置 `PYTHONPATH=src` 与临时 `UV_CACHE_DIR` 后在沙箱外运行，未修改测试或业务语义来规避环境问题。
+- 提交：
+  - `18ce975` — `feat: 完成 T7 Action Schema`。
+- 验证：
+  - 基线：`uv run --no-sync pytest -p no:cacheprovider`：152 passed。
+  - 专项：`uv run --no-sync pytest tests/test_action_schema.py -v -p no:cacheprovider`：31 passed。
+  - 静态检查：`ruff check src/hancode/actions.py tests/test_action_schema.py --no-cache` 通过；`mypy src/hancode/actions.py --no-incremental` 无问题。
+  - 初始最终：`uv run --no-sync pytest -p no:cacheprovider`：182 passed；`git diff --check` 通过。
+  - 审查修正后最终：`uv run --no-sync pytest -p no:cacheprovider`：183 passed；`git diff --check` 通过。
+- 剩余风险：
+  - T8 尚未实现原始 LLM dict 到 `Action.from_values()` 的字段解析与适配；当前 T7 不执行任何 action，因此工具权限、当前 phase 一致性和路径安全仍由后续任务负责。
+
+### 2026-07-11 — T6 — WorkspaceRouter
+
+- 使用的技能：using-superpowers；brainstorming；writing-plans；using-git-worktrees；subagent-driven-development；test-driven-development；systematic-debugging；receiving-code-review；requesting-code-review；verification-before-completion；finishing-a-development-branch。
+- 使用的智能体：OpenAI Codex；T6 Implementer；T6 Task Reviewer；T6 Final Reviewer；T6 Priority-Test Fixer。
+- 关键提示词 / 上下文：
+  - 用户要求在 `feature/M1` 的 `.worktrees/M1` 实现 PLAN 明确列出的 T6；边界仅为确定性 `WorkspaceRouter`，不得实现 AgentLoop、Action Schema、ToolPolicy、checkpoint、trace、文件写入、LLM 调用或 rollback 执行。
+  - 任务卡要求六阶段 `Phase`，但 SPEC 同时要求 completed 路由结果；用户选择保留六阶段枚举，以 `RoutingDecision(phase=Phase.DELIVER, completed=True)` 表示终态。
+  - T4 的 `TaskState` 已严格验证并冻结固定 artifact / phase-completion 键，因此 Router 只读取已验证状态，不做 Markdown 或文件系统反向推断。
+- 摘要：
+  - 新增 `src/hancode/router.py`：冻结、slots 化的 `RoutingDecision` 与纯函数 `select_next_phase()`。
+  - 路由按不一致/终止状态、SPEC、PLAN、未消费失败测试、retry/checkpoint、code/test/review、deliverable、completed 的固定优先级返回决策；无 checkpoint 的 retry 耗尽明确进入阻塞 review，而不是宣称可 rollback。
+  - 新增 `tests/test_router.py` 共 22 项测试，覆盖所有任务卡命名用例、失败状态消费、防止 review 死循环、回滚要求、阶段推进、交付物、终态、无副作用和多条件优先级。
+- 逐项 TDD 证据：
+  - Red/Green-1：`hancode.router` 缺失，首个路由测试出现 `ModuleNotFoundError`；新增最小模块和 SPEC 分支后通过。
+  - Red/Green-2 至 6：依次以缺 PLAN、不一致/blocked/failed、失败测试与 retry、code/test、review/deliver/完成态为 RED，逐段补充最小纯路由；最终初版专项 18 passed。
+  - 终审 Important 修复：新增优先级碰撞测试先在正确实现上 GREEN；随后仅临时倒序 `router.py` 分支，得到 4 failed / 18 passed（SPEC-vs-PLAN、SPEC-vs-failed、PLAN-vs-failed、KNOWLEDGE-vs-DELIVERABLES），立即 `git restore --source=HEAD -- src/hancode/router.py` 恢复生产代码，最终专项 22 passed。
+- 环境与诊断：
+  - 受限沙箱全量 pytest 可稳定复现 `tmp_path` 在 `C:\Users\24125\AppData\Local\Temp\pytest-of-24125\...\.lock` 的 `PermissionError`，造成 33/51 passed 后的大量 setup errors；专项 Router 测试不受影响。
+  - 以 `PYTHONPATH=src`、`UV_CACHE_DIR=$env:TEMP\hancode-uv-cache` 在已批准的沙箱外执行同一全量命令，通过 148 passed；确定为 Windows 临时目录 ACL，不是 T6 断言或实现问题。
+- 评审：
+  - Task Reviewer：初版无 Critical/Important/Minor，确认十条规则和 18 项覆盖。
+  - Final Reviewer：发现 Important——单项分支测试不足以保护有序路由的竞争条件；主控复核后确认有效，未改生产逻辑，只补三组竞争条件测试。
+  - Re-review：无 Critical、Important 或 Minor；确认四种竞争优先级均被断言锁定。
+- 提交：
+  - `2716b9a` — `feat: 完成 T6 WorkspaceRouter`。
+  - `2a495bc` — `test: 补充 T6 路由优先级覆盖`。
+  - 本记录与 PLAN 回写将在独立文档提交中落盘。
+- 验证：
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_router.py -v -p no:cacheprovider`：主控复验 22 passed。
+  - `uv run --no-sync ruff check src/hancode/router.py tests/test_router.py --no-cache`：All checks passed。
+  - `uv run --no-sync mypy src/hancode/router.py --no-incremental`：Success，无问题。
+  - `uv run --no-sync pytest -p no:cacheprovider`：主控在补齐优先级碰撞测试后的沙箱外终验为 152 passed（补测前首次 T6 全量验证为 148 passed）。
+  - `git diff --check 442f2d2..HEAD`：通过。
+- 经验教训：
+  - 有序状态机不能只测试单一条件；每个相邻优先级都应有至少一个同时满足的碰撞测试，才能防止未来重排分支改变控制流。
+  - 遇到 pytest 临时目录 ACL 时，先区分 setup 层环境故障和断言失败，再在批准的环境中复验；不可为了让沙箱绿而修改业务实现或测试语义。
+
+### 2026-07-11 — T5 — PhaseGate
+
+- 使用的技能：writing-plans；using-git-worktrees；executing-plans；subagent-driven-development；test-driven-development；systematic-debugging；receiving-code-review；requesting-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；T5 Implementer；T5 Finish Implementer；T5 Spec Reviewer；T5 Quality Reviewer；T5 Final Reviewer。
+- 关键提示词 / 上下文：
+  - 用户要求在 `feature/M1` 的 `.worktrees/M1` 中完成 `docs/PLAN.md` 明确列出的 T5，且不得实现 T6/T14 的 router、ToolPolicy、路径分类、checkpoint、trace、文件写入或阶段完成门禁。
+  - T5 复用 T1 的 `Phase` 枚举和 T4 的 `TaskState`；T4 已将 artifacts 映射校验为六个固定键并冻结。
+  - 用户在代码提交后要求先报告成果、暂不创建新的提交；本记录和 PLAN 回写因此保持未提交。
+- 摘要：
+  - 新增 `src/hancode/phases.py` 的 `can_write_artifact()` 和 `can_write_source()` 两个纯布尔函数。
+  - artifact 白名单精确为 spec=`SPEC.md`、plan=`PLAN.md`、code=空集、test=`TEST_REPORT.md`、review=`REVIEW.md`、deliver=`KNOWLEDGE.md` 与 `DELIVERABLES.md`；未知 phase、非字符串或路径形式 artifact 返回 false。
+  - source write 同时要求调用 phase/state phase 均为 code、SPEC/PLAN artifact 标记完成、`inconsistent=False`、status 非 `INCONSISTENT`；不读写文件、不改写 state。
+- 逐项 TDD 证据：
+  - Red/Green-1：`hancode.phases` 不存在导致 artifact allowlist 测试收集失败；新增最小白名单函数后参数化 6 项通过。
+  - Red/Green-2：加入 source gate 测试后因缺少 `can_write_source` 导入失败；实现 code phase 与 SPEC/PLAN 前置条件后，专项阶段性结果为 12 passed。
+  - Red/Green-3：新增安全边界测试后，在沙箱外有效 RED 中 `test_inconsistent_state_rejects_source_write` 与 `test_inconsistent_status_rejects_source_write` 均为 expected false、actual true；加入两个不一致判定后专项 18 passed。
+- 环境与诊断：
+  - 受限沙箱无法初始化默认 `C:\Users\24125\AppData\Local\uv\cache`，pytest 的 `tmp_path` 也会在临时目录 `.lock` 处触发 `PermissionError`；同时设置 `PYTHONPATH=src`、`UV_CACHE_DIR=$env:TEMP\hancode-uv-cache` 并在已批准的沙箱外运行后可稳定执行，确定为环境 ACL 而非代码失败。
+- 两阶段评审与最终审查：
+  - Spec 初评提出 artifacts 缺少 `SPEC.md`/`PLAN.md` 时索引可能 `KeyError`。主控按 `TaskState.__post_init__` 的固定键集合校验和 `MappingProxyType` 冻结复核后判定该前提对合法 `TaskState` 不可达，未为绕过构造器的非法对象增加冗余分支。
+  - Quality 评审：无 Critical/Important；确认 pure gate、phase 对齐、前置产物和双 inconsistent 信号均有真实 workspace 测试。
+  - Final Review：无 Critical/Important；Minor 为未显式断言普通未知 artifact 名称。固定集合成员判断当前已正确拒绝该输入，按用户暂不新增提交的要求记录为非阻断测试补强建议。
+- 提交：
+  - `3c32408` — `feat: 完成 T5 PhaseGate`。
+  - 本次文档回写未提交，等待用户后续授权。
+- 验证：
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_phase_gate.py -v -p no:cacheprovider`：18 passed in 0.31s。
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync ruff check src/hancode/phases.py tests/test_phase_gate.py --no-cache`：All checks passed。
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync mypy src/hancode/phases.py`：Success，无问题。
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest -p no:cacheprovider`：130 passed in 2.43s。
+  - `git diff --check 878b135..HEAD`：通过。
+- 经验教训：
+  - TaskState 的构造不变量是下游 PhaseGate 的一部分接口契约；评审建议必须先与这种已验证不变量核对，避免为不可达非法状态扩大 API。
+  - Windows 上应区分默认 uv/pytest 临时目录 ACL 与实际断言失败；先用隔离缓存和已批准环境复现，才能保留有效 RED/GREEN 证据。
+
+### 2026-07-10 — T4 — StateStore
+
+- 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；verification-before-completion；Superpowers:subagent-driven-development；Superpowers:requesting-code-review
+- 使用的智能体：OpenAI Codex；T4 Spec Reviewer；T4 Quality Reviewer；T4 Fix Agent
+- 关键提示词 / 上下文：
+  - 用户要求完成 `docs/PLAN.md` 中的 T4 StateStore，并在 `feature/M1` 的 `.worktrees/M1` 中继续开发。
+  - T4 只实现 `state.json` 机器状态读写、一致性检查和结构化状态错误；不实现 router、trace、Markdown artifact 生成或 T5 以后机制。
+  - `docs/SPEC.md` 是高优先级契约：state.json 是唯一机器状态源，artifact drift 进入 inconsistent 且不得自动反向修复。
+- 摘要：
+  - 新增冻结、slots 化的 `TaskState` 与 `load_state()`、`save_state()`、`reconcile_state()`。
+  - 严格解析 schema v1 的 18 个字段、合法 phase/status/test status、固定 phase/artifact 键和非负计数；结构化错误不回显原始 JSON 内容。
+  - `save_state()` 使用临时文件 + 原子替换，写失败保留原文件；校验 task_id 隔离；仅允许合法 code→code/test 变更 `files_changed`。
+  - `reconcile_state()` 双向检测 artifact 漂移，返回 inconsistent，不回写 artifact 标志、不自动修复、不清除既有 inconsistent。
+  - 使用 `MappingProxyType` 防止 `phase_completed` 与 `artifacts` 被运行时 mutation 绕过校验。
+- 逐项 TDD 证据：
+  - Red/Green-1：`hancode.state` 不存在导致单一机器状态源测试收集失败；新增最小 loader 后 1 passed。
+  - Red/Green-2：损坏 JSON 首先暴露 `JSONDecodeError`；转换为结构化 `state_parse_error` 后专项 2 passed。
+  - Red/Green-3：reconcile 接口缺失导致导入失败；实现漂移检测后专项 3 passed。
+  - Red/Green-4：`save_state` 导入失败；加入枚举稳定序列化后专项 9 passed。
+  - Red/Green-5：非 code phase 修改 `files_changed` 未被拒绝；加入持久化 phase 权限检查后专项 10 passed。
+  - Red/Green-6：schema version、未知字段、非法 test status 和不完整映射未被拒绝；严格 schema 与 TaskState 自校验后专项 16 passed。
+  - Red/Green-7：原子替换失败未结构化处理；加入临时文件清理和 `state_write_error` 后专项 19 passed。
+  - 两阶段评审首次发现 3 个 Important：code→review/deliver 迟到写入、task_id 串写、冻结对象内部映射可变。修复代理补充回归测试并修复后，专项 23 passed。
+- 两阶段评审：
+  - 第一阶段 Spec 合规初评：FAIL（3 个 Important）；修复后 `SPEC RE-VERDICT: PASS`，无 Critical/Important。
+  - 第二阶段代码质量初评：FAIL（同 3 个 Important）；修复后 `QUALITY RE-VERDICT: PASS`，无新的 Critical/Important/Minor。
+- 提交：
+  - `84ba160` — `feat: 完成 T4 StateStore`
+  - 文档回写提交：本记录所在的文档提交。
+- 验证：
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_state.py -v -p no:cacheprovider`：23 passed。
+  - `uv run --no-sync ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed。
+  - `uv run --no-sync mypy src/hancode/state.py --no-incremental`：Success，无问题。
+  - 两阶段复评代理独立确认上述 3 项修复；全量 pytest 首次受 Windows 临时目录 ACL 影响，曾出现 27 passed、81 setup errors。
+  - 之后在 worktree 外重新执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest -p no:cacheprovider`：112 passed in 1.51s。
+  - 同步复核 `ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed；`mypy src/hancode/state.py`：Success；`git diff --check HEAD~2..HEAD`：通过。
+- 人工干预：
+  - 用户明确要求使用 Superpowers 子代理进行两阶段评审，并随后授权代码提交和文档回写。
+  - 评审结论中关于 code→review/deliver 的 target phase 语义按 SPEC 的“test/review 只能读取”收紧实现。
+- 经验教训：
+  - `frozen` dataclass 不会自动冻结内部 dict；机器状态映射必须在构造时深层转为不可变映射。
+  - StateStore 保存前必须同时校验持久化 task_id 和 phase 所有权，不能只依赖调用方传入对象。
+  - Windows pytest 临时目录 ACL 可能造成 setup 错误；应在批准的沙箱外重跑并区分环境失败和代码失败，最终以新鲜全量结果为准。
+
+### 2026-07-10 返工 — T3 — ConfigLoader 安全与契约加固
+
+- 使用的技能：receiving-code-review；executing-plans；test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 两阶段评审判定 T3 初版不通过，要求修复默认保护可删除、敏感字段绕过、项目根可写、T2 元数据未复用、远程 provider 凭据来源缺失和字段诊断不足。
+  - 已确认 T3 不承载工具权限和 phase 策略：固定 phase 规则留在 T5，工具权限决策留在 T14。
+  - `max_context_chars=24000`、`max_trace_events=40` 来自 2026-07-10 已批准的 T3 开发计划，而非返工阶段临时调整。
+- 摘要：
+  - `workspace.py` 提供共享 `load_project_metadata()`；T2 与 T3 现在使用同一 workspace metadata 契约。
+  - `ConfigLoader` 只接受 T2 元数据与当前活动配置字段，拒绝未知顶层字段和嵌套配置。
+  - protected patterns 改为不可移除基线并支持项目规则追加；补充 `secrets/**`、密钥文件模式和项目根可写拒绝。
+  - 敏感字段扫描覆盖 `credentials`、`private_key`、`api_key_value` 等绕过形式；远程 provider 要求 credential source；错误消息只含字段名，不回显值。
+- 逐项 TDD 证据：
+  - Red-1 / Green-1（元数据）：`test_config_reuses_project_workspace_metadata_validation` 首次运行出现 3 个 `Failed: DID NOT RAISE HanCodeError`；共享校验后该组用例进入返工后专项通过。
+  - Red-2 / Green-2（schema）：评审复现初版对未知顶层字段和嵌套对象直接返回配置；新增 `test_config_rejects_unknown_or_nested_configuration` 锁定该行为，严格字段集合实现后通过。该 Red 为评审复现，未在本次续接会话中重新回放。
+  - Red-3 / Green-3（保护基线）：评审复现 `protected_patterns=[]` 会清空默认规则；`test_config_keeps_mandatory_protected_patterns` 验证基线保留与追加去重，返工后通过。该 Red 依据初版代码路径和评审报告记录。
+  - Red-4 / Green-4（凭据）：评审复现 `credentials.value`、`private_key`、`api_key_value` 可绕过初版后缀扫描；新增三类回归用例，返工后 42 项专项测试通过且异常文本不含测试值。该 Red 未单独在本次续接会话回放。
+  - Red-5 / Green-5（路径与诊断）：评审复现 `writable_roots` 为 `""`、`.` 或 `/**` 可解析到项目根，且错误不带字段名；新增边界与字段诊断用例后通过。
+  - Red-6 / Green-6（provider 与回归）：评审复现远程 provider 缺少 credential source 仍可加载；新增远程必填、local 例外和既有路径/task ID 回归用例后，专项 42 passed、全量 89 passed。
+  - 说明：返工提交 `e3ddce9` 已包含完整测试增量；除 Red-1 外，其余初版失败依据评审报告与初版代码行为记录，不冒充本次续接会话重新执行的命令输出。
+- 两阶段评审：
+  - 第一阶段 Spec 合规：确认 T2 元数据复用、不可移除课程保护、严格 schema、24000/40 来源、远程凭据来源和 T5/T14 边界已写入任务契约。
+  - 第二阶段代码质量：确认 `Path.resolve()` / `PureWindowsPath`、字段级错误、敏感值不回显、local provider 例外与无副作用加载；Ruff 与 MyPy 通过。
+- 提交：
+  - `e3ddce9` — `fix: 加固 T3 ConfigLoader`
+  - 文档回填提交：本记录所在的 `docs: 回填 T3 返工验证记录` 提交。
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_config.py -v -p no:cacheprovider`：42 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/config.py tests/test_config.py --no-cache`：All checks passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3-review"`：Success，无问题。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider`：89 passed。
+- 人工干预：
+  - 用户确认采用“仅远程 provider 必须 credential_source，local 可为 None”。
+  - 用户确认 T3 仅支持当前活动字段，未来字段由后续任务加入。
+- 经验教训：
+  - 默认保护规则必须是安全基线，不能把用户配置当作可替换的 deny-list。
+  - 配置 schema 需要先拒绝未知/嵌套数据，再谈字段名敏感扫描；字段名扫描只能作为错误分类和防御纵深。
+
+### 2026-07-10 返工后续 — T3 文档与模板契约对齐
+
+- 触发原因：两阶段评审发现 `docs/PLAN.md`、`docs/系统架构.md` 和 `examples/.hancode-template/project.json` 仍保留 T3 当前不接受的工具/phase/交互字段或旧模板字段。
+- 修改：
+  - 收窄架构文档的 ConfigLoader 当前职责，明确 task state、phase、tool policy 和交互开关属于后续任务。
+  - 将架构中的 `project.json` 示例与 T3 严格 schema 对齐，移除 `stack`、`interactive`、`confirm_before_write`，补齐保护规则和 `project_root`。
+  - 修正模板 `project.json`，并更新脚手架断言验证 `project_root="."` 且不包含未来 `stack`。
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_course_project_scaffold.py -v -p no:cacheprovider`：18 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider`：89 passed。
+  - `git diff --check`：通过；模板 JSON 解析成功，`project_root` 为 `.`，无 `stack` 字段。
+
+### 2026-07-10 __:__ +08:00 — T3 — ConfigLoader
+
+- 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；karpathy-guidelines；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求在 `feature/M1` 的 `.worktrees/M1` 中执行已批准的 T3 计划，沿用 M1 单 worktree / 单 PR 策略，不启用子代理。
+  - T3 只实现项目级 `project.json` 配置加载；不读取 task state、环境变量、`.env` 或真实凭据。
+- 摘要：
+  - 新增 `HanCodeConfig` 与 `load_config()`，提供不可变的项目级配置、默认限制、provider / 凭据来源元数据、可写根和可选 task root。
+  - `max_context_chars` 与 `max_trace_events` 的批准默认值同步为 24000 / 40。
+  - 对损坏配置、非法限制、未知 provider、明文敏感字段、跨平台绝对路径、`..` 与符号链接逃逸返回结构化错误；错误仅含字段名，不回显非法值。
+  - `task_id` 仅复用 T2 的 `task_path()` 派生路径，未创建 Task Workspace 或读取 `state.json`。
+- TDD 证据：
+  - Red/Green-1：默认配置测试先因 `ModuleNotFoundError: hancode.config` 失败，新增最小 dataclass / loader 后通过。
+  - Red/Green-2：项目覆盖测试先仍得到 `mock`，加入 JSON 合并后通过。
+  - Red/Green-3 至 8：依次验证 workspace 前置条件、损坏 JSON 与字段类型、数值边界/布尔值、provider/credential source、递归明文凭据扫描、可写根及 task 路径逃逸；每项先出现预期失败，再以最小实现转绿。
+  - 链接逃逸 fixture 首次将目标放在项目根内，按边界定义不构成逃逸；修正为项目根外的同级临时目录后通过。
+- 两阶段评审：
+  - Spec 合规：核对 FR-9 与 §10.4，确认项目级加载、默认值、凭据不落盘、结构化错误和路径边界均有测试覆盖；未扩展到 CredentialProvider、StateStore、路由或 ContextBuilder。
+  - 代码质量：确认 `Path.resolve()` 与 `PureWindowsPath` 联合处理跨平台路径，敏感错误不包含输入值，静态类型与 lint 均通过；未发现阻塞项。
+- 工作流偏离：
+  - 无子代理；用户已批准 inline 执行，且当前约束不允许未经明确授权的 delegation。
+  - `uv run --extra dev` 首次建立本地开发环境时生成未跟踪 `uv.lock`；该文件不在 T3 范围内，已移除且未提交。
+- 提交：
+  - `e7fcee3` — `feat: 完成 T3 ConfigLoader`
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run pytest tests/test_config.py -v -p no:cacheprovider` 通过，25 passed。
+  - `$env:PYTHONPATH='src'; uv run ruff check src/hancode/config.py tests/test_config.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; uv run mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3"` 通过，no issues found in 1 source file。
+  - `$env:PYTHONPATH='src'; uv run pytest -p no:cacheprovider` 通过，72 passed。
+- 经验教训：
+  - 配置路径的安全判定既要检查字面路径（绝对路径与 `..`），也要检查 `resolve()` 后的真实位置，才能覆盖跨平台字符串与目录链接两类逃逸。
+  - 明文凭据防护必须递归扫描字段名，并把错误输出限制为字段名，不能把解析到的值带入异常或日志。
+
 ### 2026-07-10 __:__ +08:00 — T2 — Linux CI 路径判定回归修复
 
 - 使用的技能：systematic-debugging；verification-before-completion

@@ -54,3 +54,4 @@ D:\agent-leanring\HanCode
    - 验证结果；
    - 剩余风险或未完成项。
 3. 没有新鲜验证证据时，不得声称“已完成”“已修复”“测试通过”。
+4. 任务完成后必须清除所有临时文件、缓存（如 .pyc、.pyo、.pytest_cache、.superpowers等）
