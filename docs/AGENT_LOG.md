@@ -20,6 +20,41 @@
 
 ## 记录条目
 
+### 2026-07-11 — T5 — PhaseGate
+
+- 使用的技能：writing-plans；using-git-worktrees；executing-plans；subagent-driven-development；test-driven-development；systematic-debugging；receiving-code-review；requesting-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；T5 Implementer；T5 Finish Implementer；T5 Spec Reviewer；T5 Quality Reviewer；T5 Final Reviewer。
+- 关键提示词 / 上下文：
+  - 用户要求在 `feature/M1` 的 `.worktrees/M1` 中完成 `docs/PLAN.md` 明确列出的 T5，且不得实现 T6/T14 的 router、ToolPolicy、路径分类、checkpoint、trace、文件写入或阶段完成门禁。
+  - T5 复用 T1 的 `Phase` 枚举和 T4 的 `TaskState`；T4 已将 artifacts 映射校验为六个固定键并冻结。
+  - 用户在代码提交后要求先报告成果、暂不创建新的提交；本记录和 PLAN 回写因此保持未提交。
+- 摘要：
+  - 新增 `src/hancode/phases.py` 的 `can_write_artifact()` 和 `can_write_source()` 两个纯布尔函数。
+  - artifact 白名单精确为 spec=`SPEC.md`、plan=`PLAN.md`、code=空集、test=`TEST_REPORT.md`、review=`REVIEW.md`、deliver=`KNOWLEDGE.md` 与 `DELIVERABLES.md`；未知 phase、非字符串或路径形式 artifact 返回 false。
+  - source write 同时要求调用 phase/state phase 均为 code、SPEC/PLAN artifact 标记完成、`inconsistent=False`、status 非 `INCONSISTENT`；不读写文件、不改写 state。
+- 逐项 TDD 证据：
+  - Red/Green-1：`hancode.phases` 不存在导致 artifact allowlist 测试收集失败；新增最小白名单函数后参数化 6 项通过。
+  - Red/Green-2：加入 source gate 测试后因缺少 `can_write_source` 导入失败；实现 code phase 与 SPEC/PLAN 前置条件后，专项阶段性结果为 12 passed。
+  - Red/Green-3：新增安全边界测试后，在沙箱外有效 RED 中 `test_inconsistent_state_rejects_source_write` 与 `test_inconsistent_status_rejects_source_write` 均为 expected false、actual true；加入两个不一致判定后专项 18 passed。
+- 环境与诊断：
+  - 受限沙箱无法初始化默认 `C:\Users\24125\AppData\Local\uv\cache`，pytest 的 `tmp_path` 也会在临时目录 `.lock` 处触发 `PermissionError`；同时设置 `PYTHONPATH=src`、`UV_CACHE_DIR=$env:TEMP\hancode-uv-cache` 并在已批准的沙箱外运行后可稳定执行，确定为环境 ACL 而非代码失败。
+- 两阶段评审与最终审查：
+  - Spec 初评提出 artifacts 缺少 `SPEC.md`/`PLAN.md` 时索引可能 `KeyError`。主控按 `TaskState.__post_init__` 的固定键集合校验和 `MappingProxyType` 冻结复核后判定该前提对合法 `TaskState` 不可达，未为绕过构造器的非法对象增加冗余分支。
+  - Quality 评审：无 Critical/Important；确认 pure gate、phase 对齐、前置产物和双 inconsistent 信号均有真实 workspace 测试。
+  - Final Review：无 Critical/Important；Minor 为未显式断言普通未知 artifact 名称。固定集合成员判断当前已正确拒绝该输入，按用户暂不新增提交的要求记录为非阻断测试补强建议。
+- 提交：
+  - `3c32408` — `feat: 完成 T5 PhaseGate`。
+  - 本次文档回写未提交，等待用户后续授权。
+- 验证：
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_phase_gate.py -v -p no:cacheprovider`：18 passed in 0.31s。
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync ruff check src/hancode/phases.py tests/test_phase_gate.py --no-cache`：All checks passed。
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync mypy src/hancode/phases.py`：Success，无问题。
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest -p no:cacheprovider`：130 passed in 2.43s。
+  - `git diff --check 878b135..HEAD`：通过。
+- 经验教训：
+  - TaskState 的构造不变量是下游 PhaseGate 的一部分接口契约；评审建议必须先与这种已验证不变量核对，避免为不可达非法状态扩大 API。
+  - Windows 上应区分默认 uv/pytest 临时目录 ACL 与实际断言失败；先用隔离缓存和已批准环境复现，才能保留有效 RED/GREEN 证据。
+
 ### 2026-07-10 — T4 — StateStore
 
 - 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；verification-before-completion；Superpowers:subagent-driven-development；Superpowers:requesting-code-review

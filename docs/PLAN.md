@@ -653,12 +653,12 @@ uv run --no-sync mypy src/hancode/state.py --no-incremental
 
 | 元信息           | 值                  |
 | ------------- | ------------------ |
-| 状态            | [ ] 未开始            |
+| 状态            | [x] 已完成（文档回写待提交） |
 | 依赖            | T1, T4             |
 | 可并行           | 可与 T6 前置设计并行       |
 | Worktree / PR | `feature/M1`        |
 | 主贡献相关         | 否，控制流基础            |
-| Commit        | TODO               |
+| Commit        | `3c32408` — `feat: 完成 T5 PhaseGate` |
 
 ### 目标
 
@@ -683,7 +683,7 @@ def can_write_source(phase: Phase, state: TaskState) -> bool: ...
 ```
 
 输入：phase、artifact name、TaskState。
-输出：布尔判定或结构化拒绝结果。
+输出：无副作用的布尔判定；结构化拒绝由后续 T14 ToolPolicy 负责。
 不变量：artifact 写入白名单固定；source write 只允许 code phase。
 错误处理：未知 phase 返回拒绝。
 
@@ -708,18 +708,28 @@ def can_write_source(phase: Phase, state: TaskState) -> bool: ...
 * 业务源代码写入必须处于 code phase。
 * 若 state 为 inconsistent，拒绝 source write。
 
+### 实现结果
+
+* 新增 `hancode.phases`，复用既有 `Phase`、`TaskState`、`TaskStatus`，未重复定义枚举或修改 T4 StateStore。
+* `can_write_artifact()` 以大小写敏感的固定白名单限制阶段产物：spec=`SPEC.md`、plan=`PLAN.md`、code=空集、test=`TEST_REPORT.md`、review=`REVIEW.md`、deliver=`KNOWLEDGE.md` 与 `DELIVERABLES.md`。
+* `can_write_source()` 仅在参数 phase 与 `state.current_phase` 都为 code、SPEC/PLAN 均完成、`inconsistent=False` 且 status 非 `INCONSISTENT` 时返回 true；非法运行时 phase、未知 artifact、前置条件缺失与状态不一致均返回 false。
+* 两个接口均为纯函数：不读取文件、不写入 state、不做持久化，不扩展到 router、ToolPolicy、路径分类、checkpoint、trace 或阶段完成门禁。
+
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_phase_gate.py -v
-uv run ruff check src/hancode/phases.py tests/test_phase_gate.py
-uv run mypy src/hancode/phases.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_phase_gate.py -v -p no:cacheprovider
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync ruff check src/hancode/phases.py tests/test_phase_gate.py --no-cache
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync mypy src/hancode/phases.py
 ```
 
 ### 完成判定
 
 * 每个 phase 能写哪些 artifact 有明确规则。
 * 只有 code phase 允许业务代码修改。
+* 实际专项验证：18 passed；Ruff 与 MyPy 通过；全量 pytest：130 passed。
+* 两阶段任务评审和最终代码评审无 Critical/Important；普通未知 artifact 名称未显式断言为 Minor，不影响现有固定集合成员判断。
+* 本次文档回写按用户要求暂不提交。
 
 ### 非目标 / 边界
 
