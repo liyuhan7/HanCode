@@ -41,7 +41,7 @@
 - 环境与诊断：
   - 受限沙箱中的 pytest 仍会因 Windows 临时目录 ACL 失败；本任务按照既有批准方式设置 `PYTHONPATH=src` 与临时 `UV_CACHE_DIR` 后在沙箱外运行，未修改测试或业务语义来规避环境问题。
 - 提交：
-  - 未提交；等待用户后续授权。
+  - `18ce975` — `feat: 完成 T7 Action Schema`。
 - 验证：
   - 基线：`uv run --no-sync pytest -p no:cacheprovider`：152 passed。
   - 专项：`uv run --no-sync pytest tests/test_action_schema.py -v -p no:cacheprovider`：31 passed。

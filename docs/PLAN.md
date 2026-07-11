@@ -552,7 +552,7 @@ uv run --no-sync pytest -p no:cacheprovider
 
 | 元信息           | 值                   |
 | ------------- | ------------------- |
-| 状态            | [x] 已完成（专项与静态门禁通过；全量回归受环境 ACL 阻断） |
+| 状态            | [x] 已完成（专项、静态门禁与全量回归通过） |
 | 依赖            | T1, T2              |
 | 可并行           | 可与 T3 并行            |
 | Worktree / PR | `feature/M1`        |
@@ -653,7 +653,7 @@ uv run --no-sync mypy src/hancode/state.py --no-incremental
 
 | 元信息           | 值                  |
 | ------------- | ------------------ |
-| 状态            | [x] 已完成（文档回写待提交） |
+| 状态            | [x] 已完成 |
 | 依赖            | T1, T4             |
 | 可并行           | 可与 T6 前置设计并行       |
 | Worktree / PR | `feature/M1`        |
@@ -844,7 +844,7 @@ git diff --check
 | 可并行           | 可与 T11 并行             |
 | Worktree / PR | `feature/M1`           |
 | 主贡献相关         | 是，主循环输入协议             |
-| Commit        | 待提交                 |
+| Commit        | `18ce975` — `feat: 完成 T7 Action Schema` |
 
 ### 目标
 
