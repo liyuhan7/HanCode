@@ -20,6 +20,30 @@
 
 ## 记录条目
 
+### 2026-07-12 — T14 — ToolPolicy 基础规则
+
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
+- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全独立复核。
+- 关键提示词 / 上下文：
+  - T14 只实现 `ToolPolicy(config).evaluate()` 与 `PolicyDecision`；不执行工具、checkpoint、trace 或状态写入，也不修改 Action、AgentLoop、PathClassifier 的生产代码。
+  - T13 PathClassifier 是唯一写入路径分区来源；T14 对 protected/out-of-scope 写入 fail-closed，T15 继续负责课程保护规则扩展。
+- 摘要：
+  - 新增 `src/hancode/tool_policy.py`：以静态阶段工具矩阵、T5 artifact gate、T13 PathClassifier 和 TaskState 判定工具调用。
+  - source write 仅在一致的 code phase 且 SPEC/PLAN 完成时允许，并返回 `requires_checkpoint=True`；不在本任务创建 checkpoint。
+  - `finish_phase` 对六阶段使用 artifact、source edit、测试状态和 rollback 状态门禁；`ask_user`、`final` 不触发工具执行。
+- 逐项 TDD 证据：
+  - Red：新增 `tests/test_tool_policy.py` 后，因 `hancode.tool_policy` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+  - Green：最小实现后 ToolPolicy 专项 22 passed；补齐审查回归后 T14 + AgentLoop 专项 43 passed。
+- 两阶段评审：
+  - 阶段一发现 3 项 Important：PLAN 仍为旧自由函数接口、拒绝序列化断言不完整、四个 finish gate 拒绝分支缺测；均已在 T14 范围内修复并复验。
+  - 阶段二复核 fail-closed 分区、phase/state 优先级、结构化错误、AgentLoop 无 dispatch 集成与范围控制；补充 state current phase 不一致回归后无剩余 Critical/Important。
+- 提交：
+  - `0c898e8` — `feat: 完成 T14 基础工具策略`：新增 ToolPolicy、结构化决策和完整 T14 测试。
+- 验证：
+  - T5+T10+T13+T14：82 passed、2 skipped；全量沙箱外：317 passed、4 skipped in 3.45s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 15 source files`；`git diff --check` 通过。
+- 剩余风险：
+  - 两个 T13 symlink 场景在当前 Windows 权限下跳过；T14 对 PathClassifier 的既有 fail-closed 返回值进行策略拒绝，仍应在可创建 symlink 的 CI/主机复验。
+
 ### 2026-07-12 — T13 — PathClassifier
 
 - 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review；verification-before-completion。

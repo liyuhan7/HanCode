@@ -1503,12 +1503,12 @@ uv run --no-sync mypy src/hancode/path_policy.py --no-incremental
 
 | 元信息           | 值                         |
 | ------------- | ------------------------- |
-| 状态            | [ ] 未开始                   |
+| 状态            | [x] 已完成（专项、静态门禁、全量回归与两阶段评审通过） |
 | 依赖            | T3, T5, T6, T7, T13       |
 | 可并行           | 可与 T15 紧密衔接               |
 | Worktree / PR | `feature/M3`               |
 | 主贡献相关         | 是，治理护栏核心                  |
-| Commit        | TODO                      |
+| Commit        | `0c898e8` — `feat: 完成 T14 基础工具策略` |
 
 ### 目标
 
@@ -1518,6 +1518,7 @@ uv run --no-sync mypy src/hancode/path_policy.py --no-incremental
 
 * `src/hancode/tool_policy.py`
 * `tests/test_tool_policy.py`
+* `tests/test_agent_loop.py`
 
 ### SPEC 依据
 
@@ -1529,37 +1530,57 @@ uv run --no-sync mypy src/hancode/path_policy.py --no-incremental
 ### 接口契约
 
 ```python
-class PolicyDecision: ...
+@dataclass(frozen=True, slots=True)
+class PolicyDecision:
+    allowed: bool
+    reason: str
+    phase: Phase
+    requires_checkpoint: bool = False
+    denied_rule: str | None = None
+    suggested_fix: str = ""
 
-def evaluate_policy(action: Action, phase: Phase, state: TaskState, config: HanCodeConfig) -> PolicyDecision: ...
+class ToolPolicy:
+    def __init__(self, config: HanCodeConfig) -> None: ...
+    def evaluate(
+        self, *, action: Action, phase: Phase, state: TaskState
+    ) -> PolicyDecision: ...
 ```
 
-输入：Action、phase、TaskState、HanCodeConfig。
-输出：PolicyDecision，包含 `allowed`、`reason`、`requires_checkpoint`、`denied_rule`、`suggested_fix`。
+输入：构造时传入 `HanCodeConfig`；调用时传入 Action、phase、TaskState。
+输出：PolicyDecision，包含 `allowed`、`reason`、`requires_checkpoint`、`denied_rule`、`suggested_fix`；`to_dict()` 使用 `error_code`、`message`、`phase`、`denied_rule`、`suggested_fix` 对齐结构化拒绝契约。
 不变量：policy decision 必须由代码完成，不能依赖提示词。
 错误处理：拒绝时不得执行工具，并把拒绝原因交给 FeedbackBuilder。
 
 ### 预期失败测试
 
-* `test_disabled_tool_is_denied`
-* `test_edit_file_requires_reason`
-* `test_non_code_phase_source_write_is_denied`
-* `test_spec_and_plan_required_before_source_write`
-* `test_code_phase_source_write_requires_checkpoint`
-* `test_policy_denial_contains_denied_rule_and_suggested_fix`
+* `test_denies_tool_not_allowed_in_phase`
+* `test_defensively_denies_write_without_reason`
+* `test_denies_protected_or_out_of_scope_write`
+* `test_denies_source_write_when_prerequisite_is_missing`
+* `test_edit_file_source_write_requires_checkpoint`
+* `test_finish_phase_uses_deterministic_state_gate`
+* `test_real_tool_policy_denial_does_not_execute_tool`
 
 ### 实现要点
 
-* policy 先检查工具是否允许，再检查 phase，再检查 path zone，再检查 checkpoint requirement。
+* policy 先检查 Action phase、工具阶段权限和 reason，再检查 write path zone；未知/越界路径 fail-closed。
 * 合法 source write 在 code phase 中返回 `requires_checkpoint=True`。
 * denial 必须包含 `denied_rule` 和可执行的 `suggested_fix`。
+* `finish_phase` 根据 TaskState 对 spec、plan、code、test、review、deliver 进行确定性完成门禁；不读取或写入状态文件。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_tool_policy.py -v
-uv run ruff check src/hancode/tool_policy.py tests/test_tool_policy.py
-uv run mypy src/hancode/tool_policy.py
+$env:PYTHONPATH='src'
+$env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'
+uv run --no-sync pytest tests/test_tool_policy.py tests/test_agent_loop.py -v -p no:cacheprovider
+uv run --no-sync pytest tests/test_phase_gate.py tests/test_path_classifier.py tests/test_tool_policy.py tests/test_agent_loop.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/tool_policy.py tests/test_tool_policy.py tests/test_agent_loop.py --no-cache
+uv run --no-sync mypy src/hancode/tool_policy.py --no-incremental
+uv run --no-sync pytest -p no:cacheprovider
+uv run --no-sync ruff check src tests --no-cache
+uv run --no-sync mypy src --no-incremental
+git diff --check
 ```
 
 ### 完成判定
@@ -1567,6 +1588,14 @@ uv run mypy src/hancode/tool_policy.py
 * policy 可以被 AgentLoop 在 tool 前调用。
 * policy denial 可以转成 observation。
 * source write 前能明确要求 checkpoint。
+* `finish_phase` 不能绕过对应阶段的完成条件。
+
+### 实际验证
+
+* Red：新增 `tests/test_tool_policy.py` 后，专项在收集阶段因 `hancode.tool_policy` 不存在得到预期 `ModuleNotFoundError`。
+* Green：最小实现后专项为 22 passed；审查补齐拒绝序列化、六阶段失败门禁、`edit_file` checkpoint 与真实 AgentLoop 拒绝回归后，T14 + AgentLoop 专项为 43 passed。
+* 联合回归：T5、T10、T13、T14 为 82 passed、2 skipped；skip 均因当前 Windows 环境不允许创建文件 symlink。
+* 全量：沙箱外 `uv run --no-sync pytest -p no:cacheprovider` 为 317 passed、4 skipped in 3.45s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 15 source files`；`git diff --check` 通过。
 
 ### 非目标 / 边界
 
