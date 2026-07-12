@@ -1410,12 +1410,12 @@ uv run mypy src/hancode/file_tools.py
 
 | 元信息           | 值                       |
 | ------------- | ----------------------- |
-| 状态            | [ ] 未开始                 |
+| 状态            | [x] 已完成（专项、静态门禁、全量复验与两阶段评审通过） |
 | 依赖            | T2, T3                  |
 | 可并行           | 可与 T12 并行               |
 | Worktree / PR | `feature/M3`            |
 | 主贡献相关         | 是，治理护栏基础                |
-| Commit        | TODO                    |
+| Commit        | `2e2d5a5` — `feat: implement T13 path classifier` |
 
 ### 目标
 
@@ -1436,47 +1436,60 @@ uv run mypy src/hancode/file_tools.py
 
 ```python
 class PathZone(str, Enum):
+    PROTECTED = "protected"
     ARTIFACT = "artifact"
     SOURCE = "source"
-    PROTECTED = "protected"
-    OUTSIDE = "outside"
+    OUT_OF_SCOPE = "out_of_scope"
 
-def classify_path(project_root: Path, target: str, protected_patterns: list[str]) -> PathZone: ...
+class PathClassifier:
+    def __init__(self, config: HanCodeConfig) -> None: ...
+    def classify(self, target: str) -> PathZone: ...
 ```
 
-输入：project root、目标相对路径、protected patterns。
+输入：已验证的 `HanCodeConfig`、目标相对路径。
 输出：PathZone。
-不变量：不信任 LLM 自报路径类型。
-错误处理：无法 resolve、路径逃逸、symlink 逃逸返回 OUTSIDE 或 PROTECTED。
+不变量：不信任 LLM 自报路径类型；路径仅能归入 `protected`、`artifact`、`source` 或 `out_of_scope`；受保护规则优先于 artifact/source。
+错误处理：空路径、绝对路径、`..`、无法 resolve 或 symlink 逃逸一律 `OUT_OF_SCOPE`；相对路径以词法和 canonical 两种 project-relative 表示匹配受保护模式。
 
 ### 预期失败测试
 
 * `test_classifies_task_artifact`
-* `test_classifies_source_file`
+* `test_classifies_source_file_under_configured_writable_root`
 * `test_classifies_assignment_file_as_protected`
 * `test_classifies_teacher_test_as_protected`
 * `test_classifies_grading_script_as_protected`
-* `test_rejects_dotdot_path_escape`
+* `test_rejects_path_escape_or_absolute_path`
 * `test_rejects_symlink_escape`
 
 ### 实现要点
 
-* allow-list 优先识别 artifact zone。
-* protected patterns 保护作业说明、教师测试、评分脚本、样例数据、`.env`、凭据文件。
-* Windows 路径使用 resolve 和大小写归一化比较。
+* task root 仅允许直系 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md` 归入 artifact；其他 task 文件默认 out of scope。
+* `state.json`、`history.jsonl`、`trace.jsonl` 与 `checkpoints/**` 始终归入 protected。
+* protected patterns 覆盖作业说明、教师测试、评分脚本、样例数据、`.env`、凭据文件，且优先于 artifact/source。
+* Windows 路径使用 resolve、POSIX 分隔符和大小写归一化比较；source 只来自配置的 `writable_roots`。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_path_classifier.py -v
-uv run ruff check src/hancode/path_policy.py tests/test_path_classifier.py
-uv run mypy src/hancode/path_policy.py
+$env:PYTHONPATH='src'
+$env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'
+uv run --no-sync pytest tests/test_path_classifier.py -v -p no:cacheprovider
+uv run --no-sync pytest tests/test_config.py tests/test_path_classifier.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/path_policy.py tests/test_path_classifier.py --no-cache
+uv run --no-sync mypy src/hancode/path_policy.py --no-incremental
 ```
 
 ### 完成判定
 
 * 目标路径分类稳定。
 * 路径逃逸和 protected 文件可被确定性识别。
+
+### 实际验证
+
+* Red：新增 `tests/test_path_classifier.py` 后，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_path_classifier.py -v -p no:cacheprovider`；因 `hancode.path_policy` 不存在，收集阶段得到预期 `ModuleNotFoundError`。
+* Green：新增 `src/hancode/path_policy.py` 后，同一专项为 29 passed、2 skipped；skip 均因当前 Windows 环境不允许创建文件 symlink。
+* T3+T13 联合回归：68 passed、2 skipped；Ruff 通过；MyPy 为 `Success: no issues found in 1 source file`。
+* 两阶段评审、全量回归、全量静态检查和 `git diff --check` 的最终记录见 `docs/AGENT_LOG.md`。
 
 ### 非目标 / 边界
 

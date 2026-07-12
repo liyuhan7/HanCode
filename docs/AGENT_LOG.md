@@ -20,6 +20,31 @@
 
 ## 记录条目
 
+### 2026-07-12 — T13 — PathClassifier
+
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全审查。
+- 关键提示词 / 上下文：
+  - T13 只实现四区 `PathClassifier(HanCodeConfig)`；不实现 ToolPolicy、phase、checkpoint、trace 或 FileTools 改造。
+  - 相对路径先 canonical resolve 并限制在 `allowed_workspace_root`；受保护模式对词法与 canonical 路径均匹配且优先。
+- 摘要：
+  - 新增 `src/hancode/path_policy.py`，公开 `PathZone`（`protected`、`artifact`、`source`、`out_of_scope`）和 `PathClassifier.classify()`。
+  - task root 仅六个精确大小写的直系产物可归入 artifact；任务状态、历史、trace 与 checkpoints 为 protected，其他 task 内文件即使 `.hancode` 被配置成可写根也为 out of scope。
+  - source 仅来自配置 `writable_roots`；绝对路径、`..`、resolve 故障和 symlink 逃逸均 fail-closed 为 `OUT_OF_SCOPE`。
+- 逐项 TDD 证据：
+  - Red：新增 `tests/test_path_classifier.py` 后，专项在收集阶段因 `hancode.path_policy` 不存在得到预期 `ModuleNotFoundError`。
+  - Green：最小实现后专项为 26 passed、2 skipped；后续审查补充 artifact 大小写、绝对 workspace 内路径和 task-root/write-root 重叠测试，最终专项为 29 passed、2 skipped。
+- 两阶段评审：
+  - 阶段一发现 2 项 Important：artifact 白名单错误地 casefold，以及对越界结果的命名质疑。前者已改为精确文件名并有反例测试；后者核对四区契约后保留 `OUT_OF_SCOPE`，因为它是已批准的越界/非法路径唯一返回值。
+  - 阶段二发现 1 项 Important：当 `.hancode` 被列为 writable root 时，未知 task 文件会误落入 source；已在 artifact 后封住其余 task 文件并复验。未实现 T14/T15 的策略机制。
+- 提交：
+  - `2e2d5a5` — `feat: implement T13 path classifier`：新增 PathClassifier 与完整 T13 测试。
+- 验证：
+  - T3+T13：68 passed、2 skipped；最终 T13 专项：29 passed、2 skipped；跳过均因当前 Windows 环境不允许创建文件 symlink。
+  - 全量沙箱外：286 passed、4 skipped in 2.55s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 14 source files`；`git diff --check` 通过。
+- 剩余风险：
+  - Windows 符号链接权限受限，两个 T13 symlink 回归在本机跳过；逻辑仍以 canonical resolve fail-closed，需在具备创建 symlink 权限的 CI/主机复验。
+
 ### 2026-07-11 — T12 — FileTools 最小读写
 
 - 使用的技能：using-superpowers；karpathy-guidelines；brainstorming；writing-plans；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
