@@ -38,7 +38,7 @@
   - 阶段一发现 2 项 Important：artifact 白名单错误地 casefold，以及对越界结果的命名质疑。前者已改为精确文件名并有反例测试；后者核对四区契约后保留 `OUT_OF_SCOPE`，因为它是已批准的越界/非法路径唯一返回值。
   - 阶段二发现 1 项 Important：当 `.hancode` 被列为 writable root 时，未知 task 文件会误落入 source；已在 artifact 后封住其余 task 文件并复验。未实现 T14/T15 的策略机制。
 - 提交：
-  - `2e2d5a5` — `feat: implement T13 path classifier`：新增 PathClassifier 与完整 T13 测试。
+  - `6727894` — `feat: 完成 T13 路径分类器`：新增 PathClassifier 与完整 T13 测试。
 - 验证：
   - T3+T13：68 passed、2 skipped；最终 T13 专项：29 passed、2 skipped；跳过均因当前 Windows 环境不允许创建文件 symlink。
   - 全量沙箱外：286 passed、4 skipped in 2.55s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 14 source files`；`git diff --check` 通过。
@@ -63,7 +63,7 @@
   - 阶段一发现 1 项 Important：带引号 assignment、JSON password 与 query 原样泄漏；已修复并验证。
   - 阶段二发现 1 项 Critical 与 4 项 Important：symlink alias 绕过 `.env`、resolve 异常外泄、Windows 落盘字节不一致等。批准范围内问题均已修复；通用凭据扫描和并发 TOCTOU 明确留作后续风险。复审无剩余 Critical/Important。
 - 提交：
-  - `41b831d` — `feat: implement T12 file tools`：新增 FileTools 与完整 T12 测试。
+  - `0538bed` — `feat: 完成 T12 文件工具`：新增 FileTools 与完整 T12 测试。
 - 验证：
   - T11+T12：40 passed、2 skipped；全量沙箱外：258 passed、2 skipped in 2.58s；两个 skip 均为 Windows 文件 symlink 权限限制。
   - Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 13 source files`；`git diff --check` 通过。
@@ -87,7 +87,7 @@
 - 审查：
   - 独立只读审查发现 1 项 Important：ToolRegistry Protocol 收紧后测试 spy 仍返回 `object`，使 `mypy src tests` 失败。已修复并复验；另补齐 2 项 Minor 测试覆盖（注册参数、未知工具无副作用）。
 - 提交：
-  - `fdc987b` — `feat: implement T11 tool registry`：新增 ToolResult/ToolRegistry、T11 测试，并对齐 AgentLoop 测试接缝。
+  - `a2309db` — `feat: 完成 T11 工具注册与分发`：新增 ToolResult/ToolRegistry、T11 测试，并对齐 AgentLoop 测试接缝。
 - 验证：
   - T7-T11 回归：74 passed in 0.12s；T11+T10 专项：24 passed in 0.09s；Ruff 通过；MyPy `src` 为 `Success: no issues found in 12 source files`。
   - 受限沙箱全量 pytest 得到 129 passed、97 个临时目录 `.lock` 权限错误；沙箱外同命令复验为 226 passed in 6.07s。

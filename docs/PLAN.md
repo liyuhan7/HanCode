@@ -1230,7 +1230,7 @@ uv run mypy src/hancode/agent_loop.py
 | 可并行           | 可与 T8/T9 并行           |
 | Worktree / PR | `feature/M3`          |
 | 主贡献相关         | 是，工具调度基础              |
-| Commit        | `fdc987b` — `feat: implement T11 tool registry` |
+| Commit        | `a2309db` — `feat: 完成 T11 工具注册与分发` |
 
 ### 目标
 
@@ -1325,7 +1325,7 @@ uv run mypy src/hancode/tools.py
 | 可并行           | 可与 T13 并行          |
 | Worktree / PR | `feature/M3`       |
 | 主贡献相关         | 是，工具能力基础           |
-| Commit        | `41b831d` — `feat: implement T12 file tools` |
+| Commit        | `0538bed` — `feat: 完成 T12 文件工具` |
 
 ### 目标
 
@@ -1415,7 +1415,7 @@ uv run mypy src/hancode/file_tools.py
 | 可并行           | 可与 T12 并行               |
 | Worktree / PR | `feature/M3`            |
 | 主贡献相关         | 是，治理护栏基础                |
-| Commit        | `2e2d5a5` — `feat: implement T13 path classifier` |
+| Commit        | `6727894` — `feat: 完成 T13 路径分类器` |
 
 ### 目标
 
