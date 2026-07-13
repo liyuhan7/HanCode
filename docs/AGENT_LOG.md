@@ -75,6 +75,27 @@
 - `docs/系统架构.md`：移除与当前实现不一致的 `schema_version` / `LAST_ERROR` / 旧事件示例，统一为 `seq`、`evt-{seq:06d}`、内容摘要、项目 metadata 校验和结构化错误契约。
 - 文档核验：检查 T16 引用、过时事件格式、占位接口和明显笔误；本轮按用户要求未运行测试。
 
+### 2026-07-13 — T17 — CheckpointManager
+
+- 使用的技能：karpathy-guidelines；test-driven-development；systematic-debugging；requesting-code-review；receiving-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；第一阶段新鲜契约审查子代理；第二阶段新鲜安全/持久化审查子代理。
+- 已实现：
+  - 新增函数式 `CheckpointFile` / `CheckpointManifest`、`create_checkpoint()` 与 `commit_checkpoint()`；通过 state 序列生成 `ckpt-NNN`，支持既有 SOURCE 文件与新建 SOURCE 目标的 before/after hash 生命周期。
+  - 创建使用临时 checkpoint 目录后 rename；state 或 trace 失败时恢复 state、删除 checkpoint，无法补偿时返回 `checkpoint_compensation_failed`。
+  - manifest、快照、checkpoint 根/临时目录均验证 task 边界；拒绝外链 symlink/junction、篡改 ID/project/schema、非法状态、快照缺失/逃逸/哈希不匹配、非法 after hash 和 PROTECTED 路径。
+  - manifest reason 与 trace reason 均脱敏敏感赋值和 Bearer token；创建/提交分别写 `checkpoint_created` / `checkpoint_committed`。
+- TDD 与审查：
+  - Red：最初因 `hancode.checkpoints` 不存在得到 `ModuleNotFoundError`；审查后新增 state/trace 补偿、manifest 篡改、before snapshot 完整性、symlink 边界和 reason 脱敏回归。
+  - 第一阶段审查曾发现失败补偿、初始原子发布、manifest 信任边界和 before snapshot 可恢复性缺口；逐项补测试与修复后通过。
+  - 第二阶段审查曾发现 `files/`、manifest 链接边界、reason secret 落盘和 after hash 格式缺口；逐项静态复审后无 Critical/Important，结论可合入。
+- 验证：
+  - 沙箱外专项 `tests/test_checkpoints.py` 为 `40 passed, 4 skipped in 1.93s`；4 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
+  - 沙箱外全量 pytest 为 `415 passed, 8 skipped in 5.10s`。
+  - Ruff 输出 `All checks passed!`；MyPy `src/hancode/checkpoints.py` 为 `Success: no issues found in 1 source file`；`git diff --check` 通过。
+  - 首次全量复验暴露 `tests/test_course_project_scaffold.py` 仍要求 PLAN 保留 `test_edit_file_creates_checkpoint`；已在 T17 测试清单中补回该兼容名称，修复后全量通过。
+- 提交：未提交；T17 已完成验证，是否提交由用户决定。
+- 剩余风险：T18 rollback、T21 自动调度、跨进程锁/TOCTOU、pending crash reconcile 与 pruning 均不在 T17 范围。
+
 ### 2026-07-12 — T15 — 课程文件保护
 
 - 使用的技能：test-driven-development；systematic-debugging。

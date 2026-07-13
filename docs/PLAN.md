@@ -1836,12 +1836,12 @@ uv run mypy src/hancode/trace.py
 
 | 元信息           | 值                          |
 | ------------- | -------------------------- |
-| 状态            | [ ] 未开始                    |
+| 状态            | [x] 已实现并完成动态回归验证         |
 | 依赖            | T13, T15, T16              |
 | 可并行           | 不并行；依赖路径和保护规则              |
 | Worktree / PR | `feature/M4`                |
 | 主贡献相关         | 是，可回退编码状态核心                |
-| Commit        | TODO                       |
+| Commit        | TODO（动态验证完成后提交）          |
 
 ### 目标
 
@@ -1863,21 +1863,38 @@ uv run mypy src/hancode/trace.py
 ```python
 class CheckpointManifest: ...
 
-def create_checkpoint(task_root: Path, files: list[Path], reason: str) -> CheckpointManifest: ...
+def create_checkpoint(
+    task_root: Path,
+    files: list[Path],
+    reason: str,
+    *,
+    created_at: datetime | None = None,
+) -> CheckpointManifest: ...
+
+def commit_checkpoint(task_root: Path, checkpoint_id: str) -> CheckpointManifest: ...
 ```
 
-输入：task root、即将修改的 source files、reason。
-输出：CheckpointManifest、文件快照。
-不变量：checkpoint 只保存业务代码修改前的必要快照。
-错误处理：空文件集、文件不存在、protected 文件进入快照请求时返回结构化错误。
+输入：task root、即将修改的 source files、reason；提交时传入 checkpoint ID。
+输出：不可变 CheckpointManifest、文件快照。
+不变量：`create_checkpoint()` 只创建 `pending` 的 before 快照；`commit_checkpoint()` 仅将同 task 的 pending manifest 原子转为 `committed` 并记录 after hash。缺失 SOURCE 目标表示新建文件，rollback 时应删除它。
+错误处理：空文件集、空 reason、非 SOURCE、受保护文件、目录、损坏/篡改 manifest、快照/hash 不一致、路径或 symlink 越界均返回结构化错误；reason、trace 和 manifest 不记录 secret。
 
 ### 预期失败测试
 
-* `test_edit_file_creates_checkpoint`
-* `test_checkpoint_manifest_contains_before_hash`
-* `test_checkpoint_excludes_env_and_protected_files`
-* `test_checkpoint_rejects_empty_file_set`
-* `test_checkpoint_id_is_stable_format`
+* `test_edit_file_creates_checkpoint`（保留既有课程脚手架文档契约名称）
+* `test_create_checkpoint_snapshots_existing_source_file`
+* `test_create_checkpoint_supports_missing_source_target`
+* `test_checkpoint_normalizes_deduplicates_and_sorts_paths`
+* `test_create_checkpoint_updates_state_and_trace`
+* `test_create_checkpoint_rejects_invalid_request`
+* `test_create_checkpoint_removes_snapshot_when_state_update_fails`
+* `test_create_checkpoint_compensates_state_when_trace_write_fails`
+* `test_commit_checkpoint_records_after_hash_and_marks_committed`
+* `test_commit_checkpoint_restores_pending_manifest_when_trace_write_fails`
+* `test_commit_checkpoint_rejects_unrecoverable_before_snapshot`
+* `test_commit_checkpoint_rejects_untrusted_manifest_data`
+* `test_commit_checkpoint_rejects_checkpoint_directory_symlink_outside_task`
+* `test_commit_checkpoint_rejects_external_checkpoint_contents_symlink`
 
 ### 实现要点
 
@@ -1891,8 +1908,10 @@ def create_checkpoint(task_root: Path, files: list[Path], reason: str) -> Checkp
   * `before_sha256`
   * `created_at`
   * `status`
-* 快照文件保存在 `checkpoints/<checkpoint_id>/files/`。
-* 创建 checkpoint 后写 trace event。
+* 快照与 initial manifest 先在 `.{checkpoint_id}.tmp` 写入，再 rename 为 `checkpoints/<checkpoint_id>/`；state 或 trace 失败时补偿删除并恢复 state，补偿失败显式报错。
+* `checkpoint_id` 只由 `state.checkpoint_seq + 1` 分配，格式为 `ckpt-NNN`；manifest 记录 before/after hash、pending/committed 状态和 rollback 可用性。
+* 创建和提交分别写 `checkpoint_created`、`checkpoint_committed` trace；trace 失败不得报告成功。
+* manifest、`files/`、checkpoint 根和临时目录均需保持在 task workspace 内，拒绝 symlink/junction 外链；before snapshot 和 hash 必须可验证。
 
 ### 验证步骤
 
@@ -1902,17 +1921,27 @@ uv run ruff check src/hancode/checkpoints.py tests/test_checkpoints.py
 uv run mypy src/hancode/checkpoints.py
 ```
 
+### 实际验证（截至 2026-07-13）
+
+* 专项：`\.venv\Scripts\python.exe -m pytest tests/test_checkpoints.py -q -p no:cacheprovider --basetemp <isolated-dir>` 为 `40 passed, 4 skipped in 1.93s`；4 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
+* 全量：`\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp <isolated-dir>` 为 `415 passed, 8 skipped in 5.10s`。
+* 静态检查：Ruff 输出 `All checks passed!`；MyPy `src/hancode/checkpoints.py` 输出 `Success: no issues found in 1 source file`；`git diff --check` 通过。
+* 两阶段新鲜子代理审查均无 Critical/Important；第二阶段静态安全复审结论为可合入。
+* 文档契约修复：保留 `test_edit_file_creates_checkpoint` 这一既有脚手架断言名称，并在测试清单中同时列出 T17 当前实际测试。
+
 ### 完成判定
 
 * source write 前可创建 checkpoint。
 * checkpoint 不包含 `.env`、凭据、教师测试、评分脚本、样例数据。
 * manifest 可被 rollback 使用。
+* 最新 `tests/test_checkpoints.py`、全量 pytest、Ruff、MyPy 已取得新鲜通过证据；本卡可标记为 `[x]`。提交仍待用户决定。
 
 ### 非目标 / 边界
 
 * 不实现 rollback。
 * 不实现 checkpoint pruning。
 * 不使用 git 作为 checkpoint 机制。
+* 不实现跨进程锁、TOCTOU 消除或 pending crash reconcile；保留给后续并发/恢复增强。
 
 ---
 
