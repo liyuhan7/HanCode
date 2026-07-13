@@ -105,9 +105,9 @@ class ToolPolicy:
         if zone is PathZone.PROTECTED:
             return _denied(
                 phase,
-                "Target path is protected.",
+                "Target path is a protected course or credential file.",
                 "protected_path",
-                "Choose an allowed artifact or source path.",
+                "Modify allowed source code instead; do not change course evaluation or credential files.",
             )
         if zone is PathZone.OUT_OF_SCOPE:
             return _denied(

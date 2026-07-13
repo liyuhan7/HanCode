@@ -176,10 +176,10 @@ def test_real_tool_policy_denial_does_not_execute_tool(tmp_path: Path) -> None:
     assert result.error is not None
     assert result.error.to_dict() == {
         "error_code": "policy_denied",
-        "message": "Target path is protected.",
+        "message": "Target path is a protected course or credential file.",
         "phase": "code",
         "denied_rule": "protected_path",
-        "suggested_fix": "Choose an allowed artifact or source path.",
+        "suggested_fix": "Modify allowed source code instead; do not change course evaluation or credential files.",
     }
     assert not tools.actions
     assert len(feedback.policy_denials) == 1

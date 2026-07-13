@@ -1609,12 +1609,12 @@ git diff --check
 
 | 元信息           | 值                              |
 | ------------- | ------------------------------ |
-| 状态            | [ ] 未开始                        |
+| 状态            | [x] 已完成（TDD、聚焦回归、Ruff、MyPy 通过）      |
 | 依赖            | T13, T14                       |
 | 可并行           | 不并行；属于治理护栏加固                   |
 | Worktree / PR | `feature/M3`                      |
 | 主贡献相关         | 是，学生课程项目特定化治理                  |
-| Commit        | TODO                           |
+| Commit        | 未提交；建议 `feat: 完成 T15 课程文件保护` |
 
 ### 目标
 
@@ -1622,8 +1622,11 @@ git diff --check
 
 ### 涉及文件
 
+* `src/hancode/config.py`
 * `src/hancode/tool_policy.py`
-* `src/hancode/path_policy.py`
+* `tests/test_config.py`
+* `tests/test_tool_policy.py`
+* `tests/test_agent_loop.py`
 * `tests/test_course_file_protection.py`
 
 ### SPEC 依据
@@ -1653,7 +1656,7 @@ git diff --check
 
 * protected patterns 包含：
 
-  * assignment / requirements / rubric 类文件。
+  * assignment、requirements、rubric、course_constraints 四类文件：精确基名、任意扩展名及对应目录；`requirements.*` 覆盖 `requirements.txt`，但不匹配 `requirements-lock.txt` 等前缀变体。
   * teacher tests。
   * grading scripts。
   * sample data。
@@ -1663,10 +1666,19 @@ git diff --check
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_course_file_protection.py -v
-uv run ruff check src/hancode/tool_policy.py src/hancode/path_policy.py tests/test_course_file_protection.py
-uv run mypy src/hancode/tool_policy.py src/hancode/path_policy.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_config.py tests/test_path_classifier.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py -v -p no:cacheprovider
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync ruff check src/hancode/config.py src/hancode/tool_policy.py tests/test_config.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync mypy src/hancode/config.py src/hancode/tool_policy.py tests/test_course_file_protection.py --cache-dir (Join-Path $env:TEMP 'hancode-mypy-cache-t15')
 ```
+
+### 实际验证（2026-07-12）
+
+* Red：新增/更新测试后，在沙箱外运行上述 pytest 聚焦命令，得到 `23 failed, 109 passed, 2 skipped in 5.76s`；失败为新增默认保护模式、嵌套模式和新的 protected-path 反馈尚未实现。
+* Green：补充最小默认模式与固定反馈后，同一聚焦命令得到 `132 passed, 2 skipped in 1.25s`。
+* 静态检查：Ruff 输出 `All checks passed!`；MyPy 输出 `Success: no issues found in 3 source files`；`git diff --check` 通过。
+* 环境说明：首次在受限沙箱执行 pytest 时，`tmp_path` 创建受 `PermissionError` 阻断；使用同一命令在沙箱外复验后获得上述 Red/Green 证据。
+* 范围扩展（2026-07-13）：第二阶段审查发现同名无扩展名或非 Markdown 课程文件在可写根下可归为 source；经人工确认后，将四类课程文件规则扩展为精确基名、`基名.*` 与目录模式。新增回归先得到 `10 failed, 6 passed`，最小规则扩展后 `tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed`。
+* 精确边界：`requirements.*` 不匹配 `requirements-lock.txt`。第二阶段复审补充该嵌套/非嵌套负向回归后，专项为 `2 passed`。
 
 ### 完成判定
 

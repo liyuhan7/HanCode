@@ -20,6 +20,34 @@
 
 ## 记录条目
 
+### 2026-07-12 — T15 — 课程文件保护
+
+- 使用的技能：test-driven-development；systematic-debugging。
+- 使用的智能体：OpenAI Codex（T15 实现代理）；控制代理负责后续提交。
+- 关键提示词 / 上下文：
+  - T15 只扩展默认保护模式与受保护写入的结构化反馈；PathClassifier 仍是唯一分类来源，ToolPolicy 仍是唯一写策略评估器。
+  - 不新增策略类、HITL 覆盖、删除工具、trace/checkpoint 机制或启发式文件名扫描；不变更 `PathClassifier.classify()` 与 `ToolPolicy.evaluate()` 的公开签名。
+- 摘要：
+  - `src/hancode/config.py` 为 assignment、requirements、rubric、course_constraints、教师测试、评分脚本、样例、`.env`、credentials 与 secrets 保留基线模式，并补充对应 `**/` 嵌套路径模式；未使用宽泛的 `requirements*`。
+  - `src/hancode/tool_policy.py` 保持 `denied_rule="protected_path"`，并将 protected write 的 message 与 suggested_fix 收敛为课程/凭据保护的固定反馈。
+  - 新增 `tests/test_course_file_protection.py`，以真实 ToolPolicy 加类型安全测试适配器验证各课程文档、嵌套路径、大小写/反斜杠、protected 优先于 writable root，以及空内容 `write_file` 与 `edit_file` 在 AgentLoop 中均不触发 registry dispatch。
+- 逐项 TDD 证据：
+  - Red：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_config.py tests/test_path_classifier.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py -v -p no:cacheprovider` 在沙箱外得到 `23 failed, 109 passed, 2 skipped in 5.76s`，失败原因是新默认保护模式和反馈尚未实现。
+  - Green：最小实现后同一命令得到 `132 passed, 2 skipped in 1.25s`。
+  - MyPy 修正：首次静态检查发现 frozen `PolicyDecision` 不满足 AgentLoop 需要可写字段的 `PolicyDecisionLike` Protocol；测试改用真实 ToolPolicy 的字段复制适配器，没有放宽生产类型。随后 `uv run --no-sync mypy src/hancode/config.py src/hancode/tool_policy.py tests/test_course_file_protection.py --cache-dir (Join-Path $env:TEMP 'hancode-mypy-cache-t15')` 输出 `Success: no issues found in 3 source files`。
+- 评审与范围：
+  - 自审确认仅修改默认模式、既有 protected-path 文案与对应测试；没有修改 PathClassifier、ToolPolicy 的公开签名或引入非目标机制。
+  - `uv run --no-sync ruff check src/hancode/config.py src/hancode/tool_policy.py tests/test_config.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py` 输出 `All checks passed!`，`git diff --check` 通过。
+  - 全量回归随后发现 `tests/test_course_project_scaffold.py` 仍断言已被 T14 计划替换的 `test_edit_file_requires_reason` 与 `test_disabled_tool_is_denied`。该后续修复仅将断言更新为当前计划中的 `test_defensively_denies_write_without_reason` 与 `test_denies_tool_not_allowed_in_phase`，并保留既有的 SPEC 语义检查；这不是全量回归通过的声明。
+  - 该回归修复验证：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_course_project_scaffold.py::test_edit_file_requires_reason tests/test_course_project_scaffold.py::test_tool_not_allowed_in_workspace_is_denied -p no:cacheprovider` 输出 `2 passed in 0.05s`；同环境下 `uv run --no-sync pytest tests/test_course_project_scaffold.py -p no:cacheprovider` 输出 `18 passed in 0.06s`。
+  - 第二阶段审查发现 assignment、requirements、rubric、course_constraints 的无扩展名或非 Markdown 变体在可写根下仍会归为 source。人工选择扩展保护范围后，规则改为精确基名、`基名.*` 与目录模式：`requirements.txt` 受保护，`requirements-lock.txt` 等前缀变体不因该规则受保护。
+  - 该范围扩展 TDD：先将无扩展名、`.pdf` 与 `requirements.txt` 加入真实 PathClassifier 测试，得到 `10 failed, 6 passed in 0.45s`；最小模式扩展后，`tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed in 1.39s`。
+  - 第二阶段复审确认扩展规则关闭绕过面；按其 Minor 建议补充 `requirements-lock.txt` 与嵌套同类路径的负向分类回归，专项为 `2 passed in 0.10s`，固化“精确基名而非前缀匹配”的边界。
+- 提交：
+  - 未提交；建议控制代理使用 `feat: 完成 T15 课程文件保护`。
+- 剩余风险：
+  - 当前 Windows 环境的两个既有 symlink 场景仍跳过；T15 的嵌套保护已通过字符串路径确定性覆盖，仍建议在允许创建 symlink 的 CI/主机复验既有 canonical-path 分支。
+
 ### 2026-07-12 — T14 — ToolPolicy 基础规则
 
 - 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。

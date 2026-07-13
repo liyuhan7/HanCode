@@ -88,10 +88,10 @@ def test_denial_serializes_structured_policy_error(tmp_path: Path) -> None:
         "allowed": False,
         "requires_checkpoint": False,
         "error_code": "policy_denied",
-        "message": "Target path is protected.",
+        "message": "Target path is a protected course or credential file.",
         "phase": "code",
         "denied_rule": "protected_path",
-        "suggested_fix": "Choose an allowed artifact or source path.",
+        "suggested_fix": "Modify allowed source code instead; do not change course evaluation or credential files.",
     }
 
 
