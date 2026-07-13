@@ -1679,6 +1679,7 @@ $env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache';
 * 环境说明：首次在受限沙箱执行 pytest 时，`tmp_path` 创建受 `PermissionError` 阻断；使用同一命令在沙箱外复验后获得上述 Red/Green 证据。
 * 范围扩展（2026-07-13）：第二阶段审查发现同名无扩展名或非 Markdown 课程文件在可写根下可归为 source；经人工确认后，将四类课程文件规则扩展为精确基名、`基名.*` 与目录模式。新增回归先得到 `10 failed, 6 passed`，最小规则扩展后 `tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed`。
 * 精确边界：`requirements.*` 不匹配 `requirements-lock.txt`。第二阶段复审补充该嵌套/非嵌套负向回归后，专项为 `2 passed`。
+* 最终全量：`uv run --no-sync pytest -p no:cacheprovider` 为 `346 passed, 4 skipped`；Ruff 与 MyPy 全量通过，`git diff --cached --check` 通过。4 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
 
 ### 完成判定
 

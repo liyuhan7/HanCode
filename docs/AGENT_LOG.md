@@ -43,10 +43,12 @@
   - 第二阶段审查发现 assignment、requirements、rubric、course_constraints 的无扩展名或非 Markdown 变体在可写根下仍会归为 source。人工选择扩展保护范围后，规则改为精确基名、`基名.*` 与目录模式：`requirements.txt` 受保护，`requirements-lock.txt` 等前缀变体不因该规则受保护。
   - 该范围扩展 TDD：先将无扩展名、`.pdf` 与 `requirements.txt` 加入真实 PathClassifier 测试，得到 `10 failed, 6 passed in 0.45s`；最小模式扩展后，`tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed in 1.39s`。
   - 第二阶段复审确认扩展规则关闭绕过面；按其 Minor 建议补充 `requirements-lock.txt` 与嵌套同类路径的负向分类回归，专项为 `2 passed in 0.10s`，固化“精确基名而非前缀匹配”的边界。
+  - 最终验证：`uv run --no-sync pytest -p no:cacheprovider` 为 `346 passed, 4 skipped in 3.35s`；Ruff 全量输出 `All checks passed!`；MyPy 全量输出 `Success: no issues found in 15 source files`；`git diff --cached --check` 通过。4 个 skip 均为当前 Windows 环境不允许创建文件 symlink。
 - 提交：
   - `cfac049 feat: 完成 T15 课程文件保护`。
 - 剩余风险：
   - 当前 Windows 环境的两个既有 symlink 场景仍跳过；T15 的嵌套保护已通过字符串路径确定性覆盖，仍建议在允许创建 symlink 的 CI/主机复验既有 canonical-path 分支。
+  - 已清理 `src`/`tests` 下的 `__pycache__`、`.pyc`/`.pyo`、根目录 `.pytest_cache` 与 `.superpowers`；保留 `.venv`。
 
 ### 2026-07-12 — T14 — ToolPolicy 基础规则
 
