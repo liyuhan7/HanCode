@@ -24,6 +24,17 @@ _ALLOWED_TOOL_PHASES = {
 _WRITE_TOOLS = frozenset({"write_file", "edit_file"})
 
 
+def allowed_tools_for_phase(phase: Phase) -> tuple[str, ...]:
+    """Return the phase-eligible tool names from the policy's single rule table."""
+    return tuple(
+        sorted(
+            tool_name
+            for tool_name, allowed_phases in _ALLOWED_TOOL_PHASES.items()
+            if phase in allowed_phases
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PolicyDecision:
     """The deterministic outcome of evaluating an action."""

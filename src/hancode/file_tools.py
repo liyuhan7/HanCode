@@ -46,7 +46,7 @@ def read_file(project_root: Path, path: str) -> ToolResult:
     except OSError as exc:
         return _failed("read_file", f"File operation failed: {type(exc).__name__}.")
 
-    redacted_content = _redact_text(content)
+    redacted_content = redact_text(content)
     return ToolResult(
         success=True,
         action_name="read_file",
@@ -159,7 +159,7 @@ def search_text(project_root: Path, query: str) -> ToolResult:
                         {
                             "path": safe_relative,
                             "line": line_number,
-                            "text": _redact_text(line),
+                            "text": redact_text(line),
                         }
                     )
     except OSError as exc:
@@ -175,7 +175,7 @@ def search_text(project_root: Path, query: str) -> ToolResult:
         success=True,
         action_name="search_text",
         output={
-            "query": _redact_text(query),
+            "query": redact_text(query),
             "matches": matches,
             "skipped_files": sorted(set(skipped_files)),
         },
@@ -223,7 +223,7 @@ def _is_credential_path(path: str) -> bool:
     )
 
 
-def _redact_text(text: str) -> str:
+def redact_text(text: str) -> str:
     redacted = _QUOTED_ASSIGNMENT_SECRET.sub(r"\1\2\3[REDACTED]\3", text)
     redacted = _ASSIGNMENT_SECRET.sub(r"\1\2[REDACTED]", redacted)
     redacted = _BEARER_SECRET.sub(r"\1[REDACTED]", redacted)

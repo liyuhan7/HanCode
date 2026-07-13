@@ -993,3 +993,17 @@
   - TODO
 - 经验教训：
   - TODO
+### 2026-07-13 — T19 ContextBuilder
+
+- 使用的技能：`karpathy-guidelines`、`executing-plans`、`test-driven-development`、`subagent-driven-development`。
+- 摘要：
+  - 新增纯函数 `build_context()` 与 AgentLoop 适配器 `ContextBuilder`，按 phase 组装最小上下文。
+  - 新增 `allowed_tools_for_phase()`，从 ToolPolicy 的单一规则矩阵确定性导出 CODE 可用工具。
+  - 对 required artifact、course context、checkpoint、trace、task/config 身份和链接路径 fail-closed；可选项目记忆失败写入风险。
+  - context 文本、source snippets 和 trace 摘要沿用统一脱敏；预算按确定性顺序省略或截断低优先级段。
+  - 新鲜子代理完成两阶段评审，修复 trace 脱敏、CODE writable roots、TEST command 与 checkpoint manifest schema 复用问题。
+- 验证：
+  - `uv run --no-sync pytest tests/test_context_builder.py -q -p no:cacheprovider`：14 passed。
+  - 全量 `pytest -q -p no:cacheprovider`：454 passed、9 skipped；全量 `ruff check src tests` 与 `mypy src` 通过。
+- 提交：
+  - TODO（等待用户决定提交）。

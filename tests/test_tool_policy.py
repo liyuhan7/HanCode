@@ -8,7 +8,44 @@ from hancode.actions import Action, ActionType
 from hancode.config import HanCodeConfig
 from hancode.models import Phase, TaskStatus
 from hancode.state import TaskState
-from hancode.tool_policy import PolicyDecision, ToolPolicy
+from hancode.tool_policy import PolicyDecision, ToolPolicy, allowed_tools_for_phase
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [
+        (
+            Phase.SPEC,
+            ("list_files", "read_file", "search_text", "write_file"),
+        ),
+        (
+            Phase.CODE,
+            (
+                "edit_file",
+                "list_files",
+                "read_file",
+                "run_tests",
+                "search_text",
+                "write_file",
+            ),
+        ),
+        (
+            Phase.REVIEW,
+            (
+                "list_files",
+                "read_file",
+                "rollback_last_checkpoint",
+                "run_tests",
+                "search_text",
+                "write_file",
+            ),
+        ),
+    ],
+)
+def test_allowed_tools_for_phase_returns_sorted_policy_matrix(
+    phase: Phase, expected: tuple[str, ...]
+) -> None:
+    assert allowed_tools_for_phase(phase) == expected
 
 
 def test_allows_code_source_write_and_requires_checkpoint(tmp_path: Path) -> None:

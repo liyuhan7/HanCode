@@ -2075,7 +2075,7 @@ git diff --check
 
 | 元信息           | 值                       |
 | ------------- | ----------------------- |
-| 状态            | [ ] 未开始                 |
+| 状态            | [x] 已完成                 |
 | 依赖            | T2, T3, T4, T5, T16     |
 | 可并行           | 可与 T20 并行               |
 | Worktree / PR | `feature/M5`             |
@@ -2089,7 +2089,12 @@ git diff --check
 ### 涉及文件
 
 * `src/hancode/context.py`
+* `src/hancode/tool_policy.py`
+* `src/hancode/file_tools.py`
 * `tests/test_context_builder.py`
+* `tests/test_tool_policy.py`
+* `docs/系统架构.md`
+* `docs/AGENT_LOG.md`
 
 ### SPEC 依据
 
@@ -2101,13 +2106,28 @@ git diff --check
 ### 接口契约
 
 ```python
-def build_context(project_root: Path, task_id: str, phase: Phase, config: HanCodeConfig) -> dict[str, str]: ...
+def allowed_tools_for_phase(phase: Phase) -> tuple[str, ...]: ...
+
+def build_context(
+    project_root: Path,
+    task_id: str,
+    phase: Phase,
+    config: HanCodeConfig,
+    *,
+    state: TaskState | None = None,
+) -> dict[str, object]: ...
+
+class ContextBuilder:
+    def __init__(self, project_root: Path, config: HanCodeConfig) -> None: ...
+    def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]: ...
 ```
 
 输入：project root、task ID、phase、config。
 输出：结构化 context 字典。
 不变量：不得无条件加载全部历史；不得混入其他 task 的 trace、history、checkpoint。
-错误处理：code phase 缺 SPEC/PLAN 时返回 blocked context 或明确风险；context 超预算时按规则截断。
+错误处理：必需产物、checkpoint、trace 或 task/config 身份不合法时抛出结构化
+`HanCodeError`；可选上下文缺失时写入 `context_risks`；context 超预算时按规则省略或截断，
+无法容纳必需骨架时返回 `context_budget_too_small`。
 
 ### 预期失败测试
 
@@ -2117,13 +2137,16 @@ def build_context(project_root: Path, task_id: str, phase: Phase, config: HanCod
 * `test_deliver_phase_includes_required_artifacts`
 * `test_context_builder_does_not_mix_other_task_trace`
 * `test_context_builder_respects_max_context_chars`
+* `test_required_artifact_link_is_rejected`
 
 ### 实现要点
 
 * 优先加载课程要求和当前 phase 必需产物。
-* 其次加载 project memory / experience。
+* 其次加载 project memory / experience；plan 只暴露配置的 writable roots，不扫描全仓库。
 * trace 摘要最多取 `max_trace_events` 条。
-* 截断时保留课程规则、当前 phase 必需产物和最近失败信息。
+* 截断时保留课程规则、当前 phase 必需产物和最近失败信息；project memory / experience /
+  source snippets 等低优先级段先省略。
+* 读取的文本沿用文件工具脱敏规则；不得跟随可选文档、必需产物、checkpoint 或 trace 的链接。
 
 ### 验证步骤
 
