@@ -23,7 +23,7 @@
 ### 2026-07-12 — T15 — 课程文件保护
 
 - 使用的技能：test-driven-development；systematic-debugging。
-- 使用的智能体：OpenAI Codex（T15 实现代理）；控制代理负责后续提交。
+- 使用的智能体：OpenAI Codex（T15 实现代理）；控制代理负责提交与最终验证。
 - 关键提示词 / 上下文：
   - T15 只扩展默认保护模式与受保护写入的结构化反馈；PathClassifier 仍是唯一分类来源，ToolPolicy 仍是唯一写策略评估器。
   - 不新增策略类、HITL 覆盖、删除工具、trace/checkpoint 机制或启发式文件名扫描；不变更 `PathClassifier.classify()` 与 `ToolPolicy.evaluate()` 的公开签名。
@@ -44,7 +44,7 @@
   - 该范围扩展 TDD：先将无扩展名、`.pdf` 与 `requirements.txt` 加入真实 PathClassifier 测试，得到 `10 failed, 6 passed in 0.45s`；最小模式扩展后，`tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed in 1.39s`。
   - 第二阶段复审确认扩展规则关闭绕过面；按其 Minor 建议补充 `requirements-lock.txt` 与嵌套同类路径的负向分类回归，专项为 `2 passed in 0.10s`，固化“精确基名而非前缀匹配”的边界。
 - 提交：
-  - 未提交；建议控制代理使用 `feat: 完成 T15 课程文件保护`。
+  - `cfac049 feat: 完成 T15 课程文件保护`。
 - 剩余风险：
   - 当前 Windows 环境的两个既有 symlink 场景仍跳过；T15 的嵌套保护已通过字符串路径确定性覆盖，仍建议在允许创建 symlink 的 CI/主机复验既有 canonical-path 分支。
 

@@ -1614,7 +1614,7 @@ git diff --check
 | 可并行           | 不并行；属于治理护栏加固                   |
 | Worktree / PR | `feature/M3`                      |
 | 主贡献相关         | 是，学生课程项目特定化治理                  |
-| Commit        | 未提交；建议 `feat: 完成 T15 课程文件保护` |
+| Commit        | `cfac049 feat: 完成 T15 课程文件保护` |
 
 ### 目标
 
