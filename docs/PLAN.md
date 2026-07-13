@@ -1225,12 +1225,12 @@ uv run mypy src/hancode/agent_loop.py
 
 | 元信息           | 值                     |
 | ------------- | --------------------- |
-| 状态            | [ ] 未开始               |
+| 状态            | [x] 已完成（专项、静态门禁、回归、全量复验与审查通过） |
 | 依赖            | T1, T7                |
 | 可并行           | 可与 T8/T9 并行           |
 | Worktree / PR | `feature/M3`          |
 | 主贡献相关         | 是，工具调度基础              |
-| Commit        | TODO                  |
+| Commit        | `a2309db` — `feat: 完成 T11 工具注册与分发` |
 
 ### 目标
 
@@ -1294,6 +1294,20 @@ uv run mypy src/hancode/tools.py
 * 所有工具结果格式统一。
 * 工具异常不会静默失败。
 
+### 实际验证
+
+* Red：新增 `tests/test_tool_registry.py` 后，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_tool_registry.py -v -p no:cacheprovider`；因 `hancode.tools` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+* Green：新增 `src/hancode/tools.py` 后，专项 8 passed；审查后补齐注册参数与未知工具无副作用覆盖，最终 T11+T10 专项 24 passed in 0.09s。
+* 回归：T7-T11 的 Action/LLM/AgentLoop/ToolRegistry 测试 74 passed in 0.12s。
+* 静态检查：`uv run --no-sync ruff check src tests --no-cache` 通过；`uv run --no-sync mypy src --no-incremental` 为 `Success: no issues found in 12 source files`。
+* 全量：受限沙箱因 pytest 临时目录 `.lock` 的 `PermissionError` 得到 129 passed、97 errors；沙箱外复验 `uv run --no-sync pytest -p no:cacheprovider` 为 226 passed in 6.07s。
+* `git diff --check` 通过。
+
+### 审查与剩余风险
+
+* 独立只读审查发现 AgentLoop 测试 spy 未随 `ToolRegistry.dispatch() -> ToolResult` 契约更新，已将其返回类型和 observation 断言对齐；同时补齐重复注册参数和 unknown-tool 无副作用测试。
+* `mypy src tests --no-incremental` 仍有 6 项既有错误：`tests/test_llm.py` 的 5 项 `dict` 不变性问题和 `tests/test_agent_loop.py` 的 1 项 Policy Protocol 协变性问题；T11 引入的 ToolRegistry Protocol 错误已消除，剩余问题不在本任务范围。
+
 ### 非目标 / 边界
 
 * 不实现具体文件工具。
@@ -1306,12 +1320,12 @@ uv run mypy src/hancode/tools.py
 
 | 元信息           | 值                  |
 | ------------- | ------------------ |
-| 状态            | [ ] 未开始            |
+| 状态            | [x] 已完成（专项、静态门禁、全量复验与两阶段评审通过） |
 | 依赖            | T2, T11            |
 | 可并行           | 可与 T13 并行          |
 | Worktree / PR | `feature/M3`       |
 | 主贡献相关         | 是，工具能力基础           |
-| Commit        | TODO               |
+| Commit        | `0538bed` — `feat: 完成 T12 文件工具` |
 
 ### 目标
 
@@ -1369,6 +1383,21 @@ uv run mypy src/hancode/file_tools.py
 * FileTools 返回 ToolResult。
 * 文件读取、写入、列出、搜索在 tmp workspace 中可测试。
 
+### 实际验证
+
+* Red：先新增 `tests/test_file_tools.py`，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_file_tools.py -v -p no:cacheprovider`；因 `hancode.file_tools` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+* Green：新增 `src/hancode/file_tools.py` 后，沙箱外专项为 23 passed、1 skipped；评审新增的脱敏测试和安全边界测试均先观察到预期失败，再以最小修复转绿。
+* T11+T12 回归：40 passed、2 skipped；skip 均因当前 Windows 环境不允许创建文件 symlink。
+* 静态检查：`uv run --no-sync ruff check src tests --no-cache` 通过；`uv run --no-sync mypy src --no-incremental` 为 `Success: no issues found in 13 source files`。
+* 全量：沙箱外 `uv run --no-sync pytest -q -p no:cacheprovider` 为 258 passed、2 skipped in 2.58s；受限沙箱的 tmp_path 测试仍会在 pytest 临时目录 `.lock` 处触发既有 `PermissionError`。
+* `git diff --check` 通过。
+
+### 两阶段评审与剩余风险
+
+* 第一阶段契约审查发现带引号赋值、JSON password 和 search query 的脱敏缺口；补失败测试后统一使用 `[REDACTED]` 修复，且未越界实现 T13-T15/T17。
+* 第二阶段质量审查发现 search 可经 symlink alias 读取 `.env`，并指出 resolve 异常、Windows 换行与 UTF-8 编码、空 query 边界；均补回归测试并修复。复审确认 T12 范围内无剩余 Critical/Important。
+* 非阻断风险：通用 `.npmrc`/YAML/ghp/AKIA 脱敏、恶意并发替换 symlink/junction 的 TOCTOU，以及极端 symlink loop 的统一处理留给后续安全机制；T12 只承诺已批准的最小 secret fixture 与基础 root containment。
+
 ### 非目标 / 边界
 
 * 不实现复杂 patch edit。
@@ -1381,12 +1410,12 @@ uv run mypy src/hancode/file_tools.py
 
 | 元信息           | 值                       |
 | ------------- | ----------------------- |
-| 状态            | [ ] 未开始                 |
+| 状态            | [x] 已完成（专项、静态门禁、全量复验与两阶段评审通过） |
 | 依赖            | T2, T3                  |
 | 可并行           | 可与 T12 并行               |
 | Worktree / PR | `feature/M3`            |
 | 主贡献相关         | 是，治理护栏基础                |
-| Commit        | TODO                    |
+| Commit        | `6727894` — `feat: 完成 T13 路径分类器` |
 
 ### 目标
 
@@ -1407,47 +1436,60 @@ uv run mypy src/hancode/file_tools.py
 
 ```python
 class PathZone(str, Enum):
+    PROTECTED = "protected"
     ARTIFACT = "artifact"
     SOURCE = "source"
-    PROTECTED = "protected"
-    OUTSIDE = "outside"
+    OUT_OF_SCOPE = "out_of_scope"
 
-def classify_path(project_root: Path, target: str, protected_patterns: list[str]) -> PathZone: ...
+class PathClassifier:
+    def __init__(self, config: HanCodeConfig) -> None: ...
+    def classify(self, target: str) -> PathZone: ...
 ```
 
-输入：project root、目标相对路径、protected patterns。
+输入：已验证的 `HanCodeConfig`、目标相对路径。
 输出：PathZone。
-不变量：不信任 LLM 自报路径类型。
-错误处理：无法 resolve、路径逃逸、symlink 逃逸返回 OUTSIDE 或 PROTECTED。
+不变量：不信任 LLM 自报路径类型；路径仅能归入 `protected`、`artifact`、`source` 或 `out_of_scope`；受保护规则优先于 artifact/source。
+错误处理：空路径、绝对路径、`..`、无法 resolve 或 symlink 逃逸一律 `OUT_OF_SCOPE`；相对路径以词法和 canonical 两种 project-relative 表示匹配受保护模式。
 
 ### 预期失败测试
 
 * `test_classifies_task_artifact`
-* `test_classifies_source_file`
+* `test_classifies_source_file_under_configured_writable_root`
 * `test_classifies_assignment_file_as_protected`
 * `test_classifies_teacher_test_as_protected`
 * `test_classifies_grading_script_as_protected`
-* `test_rejects_dotdot_path_escape`
+* `test_rejects_path_escape_or_absolute_path`
 * `test_rejects_symlink_escape`
 
 ### 实现要点
 
-* allow-list 优先识别 artifact zone。
-* protected patterns 保护作业说明、教师测试、评分脚本、样例数据、`.env`、凭据文件。
-* Windows 路径使用 resolve 和大小写归一化比较。
+* task root 仅允许直系 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md` 归入 artifact；其他 task 文件默认 out of scope。
+* `state.json`、`history.jsonl`、`trace.jsonl` 与 `checkpoints/**` 始终归入 protected。
+* protected patterns 覆盖作业说明、教师测试、评分脚本、样例数据、`.env`、凭据文件，且优先于 artifact/source。
+* Windows 路径使用 resolve、POSIX 分隔符和大小写归一化比较；source 只来自配置的 `writable_roots`。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_path_classifier.py -v
-uv run ruff check src/hancode/path_policy.py tests/test_path_classifier.py
-uv run mypy src/hancode/path_policy.py
+$env:PYTHONPATH='src'
+$env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'
+uv run --no-sync pytest tests/test_path_classifier.py -v -p no:cacheprovider
+uv run --no-sync pytest tests/test_config.py tests/test_path_classifier.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/path_policy.py tests/test_path_classifier.py --no-cache
+uv run --no-sync mypy src/hancode/path_policy.py --no-incremental
 ```
 
 ### 完成判定
 
 * 目标路径分类稳定。
 * 路径逃逸和 protected 文件可被确定性识别。
+
+### 实际验证
+
+* Red：新增 `tests/test_path_classifier.py` 后，执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_path_classifier.py -v -p no:cacheprovider`；因 `hancode.path_policy` 不存在，收集阶段得到预期 `ModuleNotFoundError`。
+* Green：新增 `src/hancode/path_policy.py` 后，同一专项为 29 passed、2 skipped；skip 均因当前 Windows 环境不允许创建文件 symlink。
+* T3+T13 联合回归：68 passed、2 skipped；Ruff 通过；MyPy 为 `Success: no issues found in 1 source file`。
+* 两阶段评审、全量回归、全量静态检查和 `git diff --check` 的最终记录见 `docs/AGENT_LOG.md`。
 
 ### 非目标 / 边界
 
@@ -1461,12 +1503,12 @@ uv run mypy src/hancode/path_policy.py
 
 | 元信息           | 值                         |
 | ------------- | ------------------------- |
-| 状态            | [ ] 未开始                   |
+| 状态            | [x] 已完成（专项、静态门禁、全量回归与两阶段评审通过） |
 | 依赖            | T3, T5, T6, T7, T13       |
 | 可并行           | 可与 T15 紧密衔接               |
 | Worktree / PR | `feature/M3`               |
 | 主贡献相关         | 是，治理护栏核心                  |
-| Commit        | TODO                      |
+| Commit        | `0c898e8` — `feat: 完成 T14 基础工具策略` |
 
 ### 目标
 
@@ -1476,6 +1518,7 @@ uv run mypy src/hancode/path_policy.py
 
 * `src/hancode/tool_policy.py`
 * `tests/test_tool_policy.py`
+* `tests/test_agent_loop.py`
 
 ### SPEC 依据
 
@@ -1487,37 +1530,57 @@ uv run mypy src/hancode/path_policy.py
 ### 接口契约
 
 ```python
-class PolicyDecision: ...
+@dataclass(frozen=True, slots=True)
+class PolicyDecision:
+    allowed: bool
+    reason: str
+    phase: Phase
+    requires_checkpoint: bool = False
+    denied_rule: str | None = None
+    suggested_fix: str = ""
 
-def evaluate_policy(action: Action, phase: Phase, state: TaskState, config: HanCodeConfig) -> PolicyDecision: ...
+class ToolPolicy:
+    def __init__(self, config: HanCodeConfig) -> None: ...
+    def evaluate(
+        self, *, action: Action, phase: Phase, state: TaskState
+    ) -> PolicyDecision: ...
 ```
 
-输入：Action、phase、TaskState、HanCodeConfig。
-输出：PolicyDecision，包含 `allowed`、`reason`、`requires_checkpoint`、`denied_rule`、`suggested_fix`。
+输入：构造时传入 `HanCodeConfig`；调用时传入 Action、phase、TaskState。
+输出：PolicyDecision，包含 `allowed`、`reason`、`requires_checkpoint`、`denied_rule`、`suggested_fix`；`to_dict()` 使用 `error_code`、`message`、`phase`、`denied_rule`、`suggested_fix` 对齐结构化拒绝契约。
 不变量：policy decision 必须由代码完成，不能依赖提示词。
 错误处理：拒绝时不得执行工具，并把拒绝原因交给 FeedbackBuilder。
 
 ### 预期失败测试
 
-* `test_disabled_tool_is_denied`
-* `test_edit_file_requires_reason`
-* `test_non_code_phase_source_write_is_denied`
-* `test_spec_and_plan_required_before_source_write`
-* `test_code_phase_source_write_requires_checkpoint`
-* `test_policy_denial_contains_denied_rule_and_suggested_fix`
+* `test_denies_tool_not_allowed_in_phase`
+* `test_defensively_denies_write_without_reason`
+* `test_denies_protected_or_out_of_scope_write`
+* `test_denies_source_write_when_prerequisite_is_missing`
+* `test_edit_file_source_write_requires_checkpoint`
+* `test_finish_phase_uses_deterministic_state_gate`
+* `test_real_tool_policy_denial_does_not_execute_tool`
 
 ### 实现要点
 
-* policy 先检查工具是否允许，再检查 phase，再检查 path zone，再检查 checkpoint requirement。
+* policy 先检查 Action phase、工具阶段权限和 reason，再检查 write path zone；未知/越界路径 fail-closed。
 * 合法 source write 在 code phase 中返回 `requires_checkpoint=True`。
 * denial 必须包含 `denied_rule` 和可执行的 `suggested_fix`。
+* `finish_phase` 根据 TaskState 对 spec、plan、code、test、review、deliver 进行确定性完成门禁；不读取或写入状态文件。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_tool_policy.py -v
-uv run ruff check src/hancode/tool_policy.py tests/test_tool_policy.py
-uv run mypy src/hancode/tool_policy.py
+$env:PYTHONPATH='src'
+$env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'
+uv run --no-sync pytest tests/test_tool_policy.py tests/test_agent_loop.py -v -p no:cacheprovider
+uv run --no-sync pytest tests/test_phase_gate.py tests/test_path_classifier.py tests/test_tool_policy.py tests/test_agent_loop.py -v -p no:cacheprovider
+uv run --no-sync ruff check src/hancode/tool_policy.py tests/test_tool_policy.py tests/test_agent_loop.py --no-cache
+uv run --no-sync mypy src/hancode/tool_policy.py --no-incremental
+uv run --no-sync pytest -p no:cacheprovider
+uv run --no-sync ruff check src tests --no-cache
+uv run --no-sync mypy src --no-incremental
+git diff --check
 ```
 
 ### 完成判定
@@ -1525,6 +1588,14 @@ uv run mypy src/hancode/tool_policy.py
 * policy 可以被 AgentLoop 在 tool 前调用。
 * policy denial 可以转成 observation。
 * source write 前能明确要求 checkpoint。
+* `finish_phase` 不能绕过对应阶段的完成条件。
+
+### 实际验证
+
+* Red：新增 `tests/test_tool_policy.py` 后，专项在收集阶段因 `hancode.tool_policy` 不存在得到预期 `ModuleNotFoundError`。
+* Green：最小实现后专项为 22 passed；审查补齐拒绝序列化、六阶段失败门禁、`edit_file` checkpoint 与真实 AgentLoop 拒绝回归后，T14 + AgentLoop 专项为 43 passed。
+* 联合回归：T5、T10、T13、T14 为 82 passed、2 skipped；skip 均因当前 Windows 环境不允许创建文件 symlink。
+* 全量：沙箱外 `uv run --no-sync pytest -p no:cacheprovider` 为 317 passed、4 skipped in 3.45s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 15 source files`；`git diff --check` 通过。
 
 ### 非目标 / 边界
 
@@ -1538,12 +1609,12 @@ uv run mypy src/hancode/tool_policy.py
 
 | 元信息           | 值                              |
 | ------------- | ------------------------------ |
-| 状态            | [ ] 未开始                        |
+| 状态            | [x] 已完成（TDD、聚焦回归、Ruff、MyPy 通过）      |
 | 依赖            | T13, T14                       |
 | 可并行           | 不并行；属于治理护栏加固                   |
 | Worktree / PR | `feature/M3`                      |
 | 主贡献相关         | 是，学生课程项目特定化治理                  |
-| Commit        | TODO                           |
+| Commit        | `cfac049 feat: 完成 T15 课程文件保护` |
 
 ### 目标
 
@@ -1551,8 +1622,11 @@ uv run mypy src/hancode/tool_policy.py
 
 ### 涉及文件
 
+* `src/hancode/config.py`
 * `src/hancode/tool_policy.py`
-* `src/hancode/path_policy.py`
+* `tests/test_config.py`
+* `tests/test_tool_policy.py`
+* `tests/test_agent_loop.py`
 * `tests/test_course_file_protection.py`
 
 ### SPEC 依据
@@ -1582,7 +1656,7 @@ uv run mypy src/hancode/tool_policy.py
 
 * protected patterns 包含：
 
-  * assignment / requirements / rubric 类文件。
+  * assignment、requirements、rubric、course_constraints 四类文件：精确基名、任意扩展名及对应目录；`requirements.*` 覆盖 `requirements.txt`，但不匹配 `requirements-lock.txt` 等前缀变体。
   * teacher tests。
   * grading scripts。
   * sample data。
@@ -1592,10 +1666,20 @@ uv run mypy src/hancode/tool_policy.py
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_course_file_protection.py -v
-uv run ruff check src/hancode/tool_policy.py src/hancode/path_policy.py tests/test_course_file_protection.py
-uv run mypy src/hancode/tool_policy.py src/hancode/path_policy.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_config.py tests/test_path_classifier.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py -v -p no:cacheprovider
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync ruff check src/hancode/config.py src/hancode/tool_policy.py tests/test_config.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py
+$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync mypy src/hancode/config.py src/hancode/tool_policy.py tests/test_course_file_protection.py --cache-dir (Join-Path $env:TEMP 'hancode-mypy-cache-t15')
 ```
+
+### 实际验证（2026-07-12）
+
+* Red：新增/更新测试后，在沙箱外运行上述 pytest 聚焦命令，得到 `23 failed, 109 passed, 2 skipped in 5.76s`；失败为新增默认保护模式、嵌套模式和新的 protected-path 反馈尚未实现。
+* Green：补充最小默认模式与固定反馈后，同一聚焦命令得到 `132 passed, 2 skipped in 1.25s`。
+* 静态检查：Ruff 输出 `All checks passed!`；MyPy 输出 `Success: no issues found in 3 source files`；`git diff --check` 通过。
+* 环境说明：首次在受限沙箱执行 pytest 时，`tmp_path` 创建受 `PermissionError` 阻断；使用同一命令在沙箱外复验后获得上述 Red/Green 证据。
+* 范围扩展（2026-07-13）：第二阶段审查发现同名无扩展名或非 Markdown 课程文件在可写根下可归为 source；经人工确认后，将四类课程文件规则扩展为精确基名、`基名.*` 与目录模式。新增回归先得到 `10 failed, 6 passed`，最小规则扩展后 `tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed`。
+* 精确边界：`requirements.*` 不匹配 `requirements-lock.txt`。第二阶段复审补充该嵌套/非嵌套负向回归后，专项为 `2 passed`。
+* 最终全量：`uv run --no-sync pytest -p no:cacheprovider` 为 `346 passed, 4 skipped`；Ruff 与 MyPy 全量通过，`git diff --cached --check` 通过。4 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
 
 ### 完成判定
 

@@ -93,7 +93,7 @@ def test_edit_file_requires_reason() -> None:
     plan = read_text("docs/PLAN.md")
 
     assert "`edit_file` / `write_file` 必须提供 reason" in spec
-    assert "test_edit_file_requires_reason" in plan
+    assert "test_defensively_denies_write_without_reason" in plan
 
 
 def test_edit_file_creates_checkpoint() -> None:
@@ -128,7 +128,7 @@ def test_tool_not_allowed_in_workspace_is_denied() -> None:
 
     assert "ToolPolicy" in spec
     assert "策略拒绝时不得执行工具" in spec
-    assert "test_disabled_tool_is_denied" in plan
+    assert "test_denies_tool_not_allowed_in_phase" in plan
     assert "未注册工具" in plan or "disabled tool" in plan or "工具是否允许" in plan
 
 def test_code_change_requires_test_or_risk_note() -> None:

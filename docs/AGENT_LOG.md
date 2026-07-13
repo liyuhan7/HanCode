@@ -18,7 +18,145 @@
 
 ---
 
+### 2026-07-13 — M3 CI 回归 — search_text 凭据 symlink alias
+
+- 问题：Linux CI 的 symlink 场景中，`search_text` 同时报告真实 `.env` 和指向它的 alias；预期只报告 alias。
+- 根因：遍历 canonical 路径时，真实凭据文件和 alias 都进入 `skipped_files`，缺少按 canonical 目标去重。
+- 修复：在 `src/hancode/file_tools.py` 中记录凭据文件的 canonical 路径；存在非凭据 alias 时隐藏真实凭据路径，没有 alias 时保留原有凭据跳过记录。
+- 验证：FileTools 专项 `29 passed, 2 skipped`；Windows 本机因 symlink 权限跳过 alias 用例，需由 Linux CI 复验。
+
+---
+
 ## 记录条目
+
+### 2026-07-12 — T15 — 课程文件保护
+
+- 使用的技能：test-driven-development；systematic-debugging。
+- 使用的智能体：OpenAI Codex（T15 实现代理）；控制代理负责提交与最终验证。
+- 关键提示词 / 上下文：
+  - T15 只扩展默认保护模式与受保护写入的结构化反馈；PathClassifier 仍是唯一分类来源，ToolPolicy 仍是唯一写策略评估器。
+  - 不新增策略类、HITL 覆盖、删除工具、trace/checkpoint 机制或启发式文件名扫描；不变更 `PathClassifier.classify()` 与 `ToolPolicy.evaluate()` 的公开签名。
+- 摘要：
+  - `src/hancode/config.py` 为 assignment、requirements、rubric、course_constraints、教师测试、评分脚本、样例、`.env`、credentials 与 secrets 保留基线模式，并补充对应 `**/` 嵌套路径模式；未使用宽泛的 `requirements*`。
+  - `src/hancode/tool_policy.py` 保持 `denied_rule="protected_path"`，并将 protected write 的 message 与 suggested_fix 收敛为课程/凭据保护的固定反馈。
+  - 新增 `tests/test_course_file_protection.py`，以真实 ToolPolicy 加类型安全测试适配器验证各课程文档、嵌套路径、大小写/反斜杠、protected 优先于 writable root，以及空内容 `write_file` 与 `edit_file` 在 AgentLoop 中均不触发 registry dispatch。
+- 逐项 TDD 证据：
+  - Red：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_config.py tests/test_path_classifier.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py -v -p no:cacheprovider` 在沙箱外得到 `23 failed, 109 passed, 2 skipped in 5.76s`，失败原因是新默认保护模式和反馈尚未实现。
+  - Green：最小实现后同一命令得到 `132 passed, 2 skipped in 1.25s`。
+  - MyPy 修正：首次静态检查发现 frozen `PolicyDecision` 不满足 AgentLoop 需要可写字段的 `PolicyDecisionLike` Protocol；测试改用真实 ToolPolicy 的字段复制适配器，没有放宽生产类型。随后 `uv run --no-sync mypy src/hancode/config.py src/hancode/tool_policy.py tests/test_course_file_protection.py --cache-dir (Join-Path $env:TEMP 'hancode-mypy-cache-t15')` 输出 `Success: no issues found in 3 source files`。
+- 评审与范围：
+  - 自审确认仅修改默认模式、既有 protected-path 文案与对应测试；没有修改 PathClassifier、ToolPolicy 的公开签名或引入非目标机制。
+  - `uv run --no-sync ruff check src/hancode/config.py src/hancode/tool_policy.py tests/test_config.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py` 输出 `All checks passed!`，`git diff --check` 通过。
+  - 全量回归随后发现 `tests/test_course_project_scaffold.py` 仍断言已被 T14 计划替换的 `test_edit_file_requires_reason` 与 `test_disabled_tool_is_denied`。该后续修复仅将断言更新为当前计划中的 `test_defensively_denies_write_without_reason` 与 `test_denies_tool_not_allowed_in_phase`，并保留既有的 SPEC 语义检查；这不是全量回归通过的声明。
+  - 该回归修复验证：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_course_project_scaffold.py::test_edit_file_requires_reason tests/test_course_project_scaffold.py::test_tool_not_allowed_in_workspace_is_denied -p no:cacheprovider` 输出 `2 passed in 0.05s`；同环境下 `uv run --no-sync pytest tests/test_course_project_scaffold.py -p no:cacheprovider` 输出 `18 passed in 0.06s`。
+  - 第二阶段审查发现 assignment、requirements、rubric、course_constraints 的无扩展名或非 Markdown 变体在可写根下仍会归为 source。人工选择扩展保护范围后，规则改为精确基名、`基名.*` 与目录模式：`requirements.txt` 受保护，`requirements-lock.txt` 等前缀变体不因该规则受保护。
+  - 该范围扩展 TDD：先将无扩展名、`.pdf` 与 `requirements.txt` 加入真实 PathClassifier 测试，得到 `10 failed, 6 passed in 0.45s`；最小模式扩展后，`tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed in 1.39s`。
+  - 第二阶段复审确认扩展规则关闭绕过面；按其 Minor 建议补充 `requirements-lock.txt` 与嵌套同类路径的负向分类回归，专项为 `2 passed in 0.10s`，固化“精确基名而非前缀匹配”的边界。
+  - 最终验证：`uv run --no-sync pytest -p no:cacheprovider` 为 `346 passed, 4 skipped in 3.35s`；Ruff 全量输出 `All checks passed!`；MyPy 全量输出 `Success: no issues found in 15 source files`；`git diff --cached --check` 通过。4 个 skip 均为当前 Windows 环境不允许创建文件 symlink。
+- 提交：
+  - `cfac049 feat: 完成 T15 课程文件保护`。
+- 剩余风险：
+  - 当前 Windows 环境的两个既有 symlink 场景仍跳过；T15 的嵌套保护已通过字符串路径确定性覆盖，仍建议在允许创建 symlink 的 CI/主机复验既有 canonical-path 分支。
+  - 已清理 `src`/`tests` 下的 `__pycache__`、`.pyc`/`.pyo`、根目录 `.pytest_cache` 与 `.superpowers`；保留 `.venv`。
+
+### 2026-07-12 — T14 — ToolPolicy 基础规则
+
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
+- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全独立复核。
+- 关键提示词 / 上下文：
+  - T14 只实现 `ToolPolicy(config).evaluate()` 与 `PolicyDecision`；不执行工具、checkpoint、trace 或状态写入，也不修改 Action、AgentLoop、PathClassifier 的生产代码。
+  - T13 PathClassifier 是唯一写入路径分区来源；T14 对 protected/out-of-scope 写入 fail-closed，T15 继续负责课程保护规则扩展。
+- 摘要：
+  - 新增 `src/hancode/tool_policy.py`：以静态阶段工具矩阵、T5 artifact gate、T13 PathClassifier 和 TaskState 判定工具调用。
+  - source write 仅在一致的 code phase 且 SPEC/PLAN 完成时允许，并返回 `requires_checkpoint=True`；不在本任务创建 checkpoint。
+  - `finish_phase` 对六阶段使用 artifact、source edit、测试状态和 rollback 状态门禁；`ask_user`、`final` 不触发工具执行。
+- 逐项 TDD 证据：
+  - Red：新增 `tests/test_tool_policy.py` 后，因 `hancode.tool_policy` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+  - Green：最小实现后 ToolPolicy 专项 22 passed；补齐审查回归后 T14 + AgentLoop 专项 43 passed。
+- 两阶段评审：
+  - 阶段一发现 3 项 Important：PLAN 仍为旧自由函数接口、拒绝序列化断言不完整、四个 finish gate 拒绝分支缺测；均已在 T14 范围内修复并复验。
+  - 阶段二复核 fail-closed 分区、phase/state 优先级、结构化错误、AgentLoop 无 dispatch 集成与范围控制；补充 state current phase 不一致回归后无剩余 Critical/Important。
+- 提交：
+  - `0c898e8` — `feat: 完成 T14 基础工具策略`：新增 ToolPolicy、结构化决策和完整 T14 测试。
+- 验证：
+  - T5+T10+T13+T14：82 passed、2 skipped；全量沙箱外：317 passed、4 skipped in 3.45s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 15 source files`；`git diff --check` 通过。
+- 剩余风险：
+  - 两个 T13 symlink 场景在当前 Windows 权限下跳过；T14 对 PathClassifier 的既有 fail-closed 返回值进行策略拒绝，仍应在可创建 symlink 的 CI/主机复验。
+
+### 2026-07-12 — T13 — PathClassifier
+
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全审查。
+- 关键提示词 / 上下文：
+  - T13 只实现四区 `PathClassifier(HanCodeConfig)`；不实现 ToolPolicy、phase、checkpoint、trace 或 FileTools 改造。
+  - 相对路径先 canonical resolve 并限制在 `allowed_workspace_root`；受保护模式对词法与 canonical 路径均匹配且优先。
+- 摘要：
+  - 新增 `src/hancode/path_policy.py`，公开 `PathZone`（`protected`、`artifact`、`source`、`out_of_scope`）和 `PathClassifier.classify()`。
+  - task root 仅六个精确大小写的直系产物可归入 artifact；任务状态、历史、trace 与 checkpoints 为 protected，其他 task 内文件即使 `.hancode` 被配置成可写根也为 out of scope。
+  - source 仅来自配置 `writable_roots`；绝对路径、`..`、resolve 故障和 symlink 逃逸均 fail-closed 为 `OUT_OF_SCOPE`。
+- 逐项 TDD 证据：
+  - Red：新增 `tests/test_path_classifier.py` 后，专项在收集阶段因 `hancode.path_policy` 不存在得到预期 `ModuleNotFoundError`。
+  - Green：最小实现后专项为 26 passed、2 skipped；后续审查补充 artifact 大小写、绝对 workspace 内路径和 task-root/write-root 重叠测试，最终专项为 29 passed、2 skipped。
+- 两阶段评审：
+  - 阶段一发现 2 项 Important：artifact 白名单错误地 casefold，以及对越界结果的命名质疑。前者已改为精确文件名并有反例测试；后者核对四区契约后保留 `OUT_OF_SCOPE`，因为它是已批准的越界/非法路径唯一返回值。
+  - 阶段二发现 1 项 Important：当 `.hancode` 被列为 writable root 时，未知 task 文件会误落入 source；已在 artifact 后封住其余 task 文件并复验。未实现 T14/T15 的策略机制。
+- 提交：
+  - `6727894` — `feat: 完成 T13 路径分类器`：新增 PathClassifier 与完整 T13 测试。
+- 验证：
+  - T3+T13：68 passed、2 skipped；最终 T13 专项：29 passed、2 skipped；跳过均因当前 Windows 环境不允许创建文件 symlink。
+  - 全量沙箱外：286 passed、4 skipped in 2.55s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 14 source files`；`git diff --check` 通过。
+- 剩余风险：
+  - Windows 符号链接权限受限，两个 T13 symlink 回归在本机跳过；逻辑仍以 canonical resolve fail-closed，需在具备创建 symlink 权限的 CI/主机复验。
+
+### 2026-07-11 — T12 — FileTools 最小读写
+
+- 使用的技能：using-superpowers；karpathy-guidelines；brainstorming；writing-plans；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
+- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全审查智能体；控制代理（沙箱外 pytest 验证）。
+- 关键提示词 / 上下文：
+  - T12 只实现 `read_file`、`write_file`、`list_files`、`search_text` 与基础 root containment；不得提前实现 PathClassifier、ToolPolicy、checkpoint、trace、run_tests 或精确 edit_file。
+  - 所有结果使用 T11 `ToolResult`；`.env`/`.env.*` 是 T12 的最小硬安全底线；read/search 输出覆盖 SPEC 最小 secret fixture 脱敏。
+- 摘要：
+  - 新增 `src/hancode/file_tools.py`：四个函数均返回结构化输出和安全错误摘要，路径 resolve 后必须留在 project root 内，拒绝绝对路径、父级和 symlink 逃逸。
+  - 读取和搜索使用 UTF-8；搜索按相对 POSIX 路径和行号稳定排序，并报告不可读、非 UTF-8 和凭据文件；写入预编码后按字节落盘，`bytes_written` 与实际内容一致。
+  - `.env`、引号/非引号赋值、Bearer、sk-token 和 JSON secret fixture 均不会完整进入 read/search ToolResult。
+- 逐项 TDD 证据：
+  - Red：新增测试后因 `hancode.file_tools` 不存在，以预期 `ModuleNotFoundError` 在收集阶段失败。
+  - Green：最小实现后沙箱外专项 23 passed、1 skipped；第一阶段新增 2 项脱敏测试先 2 failed 后 2 passed；第二阶段新增安全/编码测试先 5 failed、1 skipped 后 5 passed、1 skipped。
+- 两阶段评审：
+  - 阶段一发现 1 项 Important：带引号 assignment、JSON password 与 query 原样泄漏；已修复并验证。
+  - 阶段二发现 1 项 Critical 与 4 项 Important：symlink alias 绕过 `.env`、resolve 异常外泄、Windows 落盘字节不一致等。批准范围内问题均已修复；通用凭据扫描和并发 TOCTOU 明确留作后续风险。复审无剩余 Critical/Important。
+- 提交：
+  - `0538bed` — `feat: 完成 T12 文件工具`：新增 FileTools 与完整 T12 测试。
+- 验证：
+  - T11+T12：40 passed、2 skipped；全量沙箱外：258 passed、2 skipped in 2.58s；两个 skip 均为 Windows 文件 symlink 权限限制。
+  - Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 13 source files`；`git diff --check` 通过。
+- 剩余风险：
+  - `.npmrc`/YAML/ghp/AKIA 等通用凭据扫描、恶意并发 symlink/junction TOCTOU 和极端 symlink loop 不属于 T12 最小 fixture/basic containment，后续安全机制必须统一处理。
+
+### 2026-07-11 — T11 — ToolResult 与 ToolRegistry
+
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
+- 使用的智能体：OpenAI Codex；独立只读审查智能体；控制代理（沙箱外全量验证）。
+- 关键提示词 / 上下文：
+  - T11 只实现统一 `ToolResult`、工具注册与确定性分发；不提前实现 FileTools、ToolPolicy、trace、shell 执行或 FeedbackBuilder。
+  - 工具异常的 `error_summary` 只暴露异常类型；重复工具名明确拒绝，避免泄露原始异常内容或静默覆盖。
+- 摘要：
+  - 新增 `src/hancode/tools.py`，其中 `ToolResult` 统一承载成功、输出、错误摘要、退出码和 stdout/stderr；`ToolRegistry` 仅以 `Action.args` 调用已注册 callable。
+  - 未注册工具、非工具 Action、异常、错误返回类型和 action-name 不一致均返回结构化失败结果；异常消息不回显。
+  - `AgentLoop` 的 ToolRegistry Protocol 返回类型收紧为 `ToolResult`，T10 的测试 spy 同步对齐。
+- 逐项 TDD 证据：
+  - Red：首次新增专项测试后，因 `hancode.tools` 不存在，以预期 `ModuleNotFoundError` 在收集阶段失败。
+  - Green：最小实现后专项 8 passed；审查补充边界覆盖后 ToolRegistry + AgentLoop 专项 24 passed in 0.09s。
+- 审查：
+  - 独立只读审查发现 1 项 Important：ToolRegistry Protocol 收紧后测试 spy 仍返回 `object`，使 `mypy src tests` 失败。已修复并复验；另补齐 2 项 Minor 测试覆盖（注册参数、未知工具无副作用）。
+- 提交：
+  - `a2309db` — `feat: 完成 T11 工具注册与分发`：新增 ToolResult/ToolRegistry、T11 测试，并对齐 AgentLoop 测试接缝。
+- 验证：
+  - T7-T11 回归：74 passed in 0.12s；T11+T10 专项：24 passed in 0.09s；Ruff 通过；MyPy `src` 为 `Success: no issues found in 12 source files`。
+  - 受限沙箱全量 pytest 得到 129 passed、97 个临时目录 `.lock` 权限错误；沙箱外同命令复验为 226 passed in 6.07s。
+  - `git diff --check` 通过。
+- 剩余风险：
+  - `mypy src tests` 尚有 6 项既有错误（LLM context 的 dict 不变性与 Policy Protocol 协变性）；T11 引入的 ToolRegistry Protocol 错误已修复。具体文件工具、策略、trace 与反馈集成继续由 T12-T21 实现。
 
 ### 2026-07-11 — T10 — AgentLoop 最小循环骨架
 

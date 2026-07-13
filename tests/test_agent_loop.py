@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping
 
 import pytest
 
 from hancode.actions import Action
 from hancode.agent_loop import AgentLoop
+from hancode.config import HanCodeConfig
 from hancode.llm import MockLLM
 from hancode.models import Phase, TaskStatus
 from hancode.state import TaskState
+from hancode.tool_policy import PolicyDecision, ToolPolicy
+from hancode.tools import ToolResult
 
 
 @dataclass(frozen=True)
@@ -60,10 +64,10 @@ class SpyToolRegistry:
         self.events = events
         self.actions: list[Action] = []
 
-    def dispatch(self, action: Action) -> object:
+    def dispatch(self, action: Action) -> ToolResult:
         self.events.append("tool")
         self.actions.append(action)
-        return {"tool": action.tool_name, "ok": True}
+        return ToolResult(success=True, action_name=action.tool_name or "unknown")
 
 
 class SpyFeedbackBuilder:
@@ -141,6 +145,49 @@ def test_policy_denial_does_not_execute_tool() -> None:
     assert feedback.policy_denials == [policy.decision]
 
 
+def test_real_tool_policy_denial_does_not_execute_tool(tmp_path: Path) -> None:
+    events: list[str] = []
+    llm = MockLLM(
+        [
+            {
+                "type": "tool_call",
+                "phase": "code",
+                "tool_name": "write_file",
+                "args": {"path": "assignment.md", "content": "changed\n"},
+                "reason": "Change assignment.",
+            }
+        ]
+    )
+    tools = SpyToolRegistry(events)
+    feedback = SpyFeedbackBuilder()
+    loop = AgentLoop(
+        llm=llm,
+        context_builder=SpyContextBuilder(),
+        policy=ToolPolicy(_policy_config(tmp_path)),
+        tool_registry=tools,
+        feedback_builder=feedback,
+        state_store=StubStateStore(_task_state()),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.to_dict() == {
+        "error_code": "policy_denied",
+        "message": "Target path is a protected course or credential file.",
+        "phase": "code",
+        "denied_rule": "protected_path",
+        "suggested_fix": "Modify allowed source code instead; do not change course evaluation or credential files.",
+    }
+    assert not tools.actions
+    assert len(feedback.policy_denials) == 1
+    decision = feedback.policy_denials[0]
+    assert isinstance(decision, PolicyDecision)
+    assert decision.denied_rule == "protected_path"
+
+
 def test_max_steps_prevents_infinite_loop() -> None:
     loop, llm, _, _, tools, _ = _build_loop(
         [_read_file_action(), _read_file_action(), _read_file_action()], max_steps=2
@@ -186,7 +233,10 @@ def test_tool_observation_is_fed_into_next_context() -> None:
     assert llm.contexts[1] == {
         "task_id": "task-001",
         "phase": "code",
-        "observation": {"kind": "tool_result", "result": {"tool": "read_file", "ok": True}},
+        "observation": {
+            "kind": "tool_result",
+            "result": ToolResult(success=True, action_name="read_file"),
+        },
     }
 
 
@@ -329,6 +379,28 @@ def _task_state(
             "KNOWLEDGE.md": False,
             "DELIVERABLES.md": False,
         },
+    )
+
+
+def _policy_config(project_root: Path) -> HanCodeConfig:
+    return HanCodeConfig(
+        project_root=project_root,
+        hancode_root=project_root / ".hancode",
+        allowed_workspace_root=project_root,
+        task_root=project_root / ".hancode" / "tasks" / "task-001",
+        llm_provider="mock",
+        model_name=None,
+        credential_source=None,
+        test_command=None,
+        build_command=None,
+        max_steps=30,
+        retry_budget=2,
+        max_checkpoints_per_task=5,
+        max_observation_bytes=8192,
+        max_context_chars=24000,
+        max_trace_events=40,
+        protected_patterns=("assignment.md",),
+        writable_roots=(project_root / "src",),
     )
 
 
