@@ -1702,12 +1702,12 @@ $env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache';
 
 | 元信息           | 值                    |
 | ------------- | -------------------- |
-| 状态            | [ ] 未开始              |
+| 状态            | [x] 已完成              |
 | 依赖            | T1, T4               |
 | 可并行           | 可与 T13/T14 并行        |
 | Worktree / PR | `feature/M4`         |
 | 主贡献相关         | 是，可观测性核心             |
-| Commit        | TODO                 |
+| Commit        | `df39f8c` |
 
 ### 目标
 
@@ -1727,30 +1727,78 @@ $env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache';
 ### 接口契约
 
 ```python
-class TraceEvent: ...
+class TraceEvent:
+    event_id: str
+    seq: int
+    event_type: str
+    task_id: str
+    phase: Phase
+    timestamp: datetime
+    status: str
+    action: Mapping[str, object] | None
+    observation: Mapping[str, object] | None
+    error_summary: str | None
+    state_transition: Mapping[str, object] | None
 
-def append_trace(task_root: Path, event: TraceEvent) -> None: ...
+def append_trace(
+    task_root: Path,
+    *,
+    event_type: str,
+    task_id: str,
+    phase: Phase,
+    status: str,
+    action: Mapping[str, object] | None = None,
+    observation: Mapping[str, object] | None = None,
+    error_summary: str | None = None,
+    state_transition: Mapping[str, object] | None = None,
+    timestamp: datetime | None = None,
+) -> TraceEvent: ...
 ```
 
-输入：task root、TraceEvent。
-输出：追加写入 `trace.jsonl`。
-不变量：trace 只追加，不修改；event_id / seq 在 task 内可排序。
+输入：task root、事件字段；TraceLogger 生成 event ID 和序号。
+输出：追加写入 `trace.jsonl` 后的 `TraceEvent`。
+不变量：trace 只追加，不修改；`event_id=evt-{seq:06d}`，seq 在 task 内单调递增。
 错误处理：trace 写入失败时阻止继续执行高风险工具。
 
 ### 预期失败测试
 
 * `test_trace_appends_jsonl_event_with_event_id`
 * `test_trace_event_has_monotonic_seq`
-* `test_trace_redacts_secret_like_values`
-* `test_trace_does_not_store_large_file_content`
+* `test_trace_redacts_nested_secret_like_values`
+* `test_trace_truncates_large_content`
+* `test_trace_rejects_malformed_existing_jsonl`
+* `test_trace_rejects_invalid_existing_sequence`
 * `test_trace_write_failure_blocks_high_risk_action`
+* `test_trace_rejects_invalid_history_before_append`
+* `test_trace_serialization_failure_returns_structured_error`
+* `test_trace_redacts_secret_like_text_values`
+* `test_trace_rejects_tool_event_without_auditable_action`
+* `test_trace_rejects_failed_tool_event_without_error_summary`
+* `test_trace_rejects_task_id_outside_task_root`
+* `test_trace_redacts_cookie_aws_and_bearer_values`
+* `test_trace_rejects_history_for_another_task`
+* `test_trace_rejects_tool_event_without_complete_decision_or_status`
+* `test_trace_normalizes_non_string_payload_keys`
+* `test_trace_rejects_non_string_error_summary`
+* `test_trace_rejects_task_root_outside_workspace_layout`
+* `test_trace_rejects_task_root_without_valid_project_metadata`
+* `test_trace_rejects_non_mapping_payloads`
+* `test_trace_rejects_inconsistent_tool_event_details`
+* `test_trace_omits_content_values_from_observations`
+* `test_trace_omits_content_field_aliases_recursively`
 
 ### 实现要点
 
-* `event_id` 格式可采用 `evt-000001`。
+* `event_id` 使用 `evt-{seq:06d}` 格式，例如 `evt-000001`。
 * 每行 JSONL 必须是合法 JSON。
 * 脱敏字段包括 Authorization、api_key、token、secret、password。
 * trace 不记录完整大文件内容。
+* 规范化名称以 `content`、`output`、`stdout`、`stderr`、`body`、`text` 开头或结尾的字段只写入 `[CONTENT_OMITTED]` 摘要与字符串长度，不记录原文，覆盖 `file_content`、`tool_output`、`response_body` 等别名，避免受保护文件或工具输出进入 trace。
+* 写入或既有 trace 解析失败时，返回不泄露底层异常的 `HanCodeError`；T16 不改 AgentLoop / ToolPolicy，后续调用方捕获此错误后阻断高风险动作。
+* 追加前必须验证全量既有 JSONL：每行都是 JSON object，`seq` 从 1 连续递增，且 `event_id=evt-{seq:06d}`；中间损坏、重复或倒退编号拒绝追加。
+* 文本内容也必须扫描并脱敏 `Authorization: ...`、`API_KEY=...` 等键值形式；JSON 编码失败同样转换为 `trace_write_error`。
+* tool 事件要求 action 中包含 `tool_name`、`args`、`reason`、`policy_decision`；`tool_failed` 还要求错误摘要。传入 task ID 必须与 task root 目录名一致。
+* task root 必须位于 `.hancode/tasks/<task_id>` 布局；历史事件的 task ID 必须与当前任务一致。工具 policy decision 至少记录 `allowed`、`message`、`phase`、`denied_rule` 和 `suggested_fix`，工具状态受限为 `running`、`succeeded`、`failed`、`blocked`。
 
 ### 验证步骤
 
@@ -1766,11 +1814,21 @@ uv run mypy src/hancode/trace.py
 * secret fixture 不出现在 trace 中。
 * trace 写失败有明确错误路径。
 
+### 实际验证
+
+* Red：新增基础测试后，`uv run --no-project --with pytest pytest tests/test_trace.py::test_trace_appends_jsonl_event_with_event_id -v -p no:cacheprovider --basetemp .pytest-tmp` 因 `ModuleNotFoundError: No module named 'hancode.trace'` 失败；编号、安全和错误路径测试均在对应最小实现前得到预期断言失败。
+* Green：`$env:PYTHONPATH='src'; uv run --no-project --with pytest pytest tests/test_trace.py -v -p no:cacheprovider --basetemp .pytest-tmp` 通过，8 passed。
+* 定向质量：`ruff check src/hancode/trace.py tests/test_trace.py --no-cache` 通过；`mypy src/hancode/trace.py` 通过，no issues found in 1 source file。
+* 全量回归：`pytest -p no:cacheprovider --basetemp .pytest-tmp` 通过，354 passed、4 skipped；`ruff check src tests --no-cache` 通过；`mypy src` 通过，no issues found in 16 source files。
+* 第一阶段评审修正：新增全量历史完整性、字符串凭据、JSON 编码失败、工具审计字段和 task ID 绑定测试后，专项通过，15 passed；全量回归通过，361 passed、4 skipped；ruff 与 mypy `src` 均通过。
+* 第二阶段安全/质量审查修正：先补齐 cookie、AWS access key、裸 Bearer token、历史 task ID、完整 policy decision、状态、非字符串 payload key / error summary 和 task-root 布局；re-verdict 继续发现受保护短内容、伪造项目元数据、非 Mapping payload、工具事件状态一致性及内容字段别名缺口，已统一改为内容摘要并收紧项目 metadata / payload / policy 契约。最终专项通过，29 passed；全量回归通过，375 passed、4 skipped；ruff 与 mypy `src` 均通过。
+
 ### 非目标 / 边界
 
 * 不实现 history summary。
 * 不实现 demo 完整事件序列。
 * 不实现 checkpoint。
+* 不实现并发 writer lock、进程崩溃后的半行恢复或 `fsync` 耐久化保证；这些属于全局 post-MVP 单 task 单活跃 runner 与持久化增强，不得在 T16 提前扩展。
 
 ---
 
@@ -1778,12 +1836,12 @@ uv run mypy src/hancode/trace.py
 
 | 元信息           | 值                          |
 | ------------- | -------------------------- |
-| 状态            | [ ] 未开始                    |
+| 状态            | [x] 已实现并完成动态回归验证         |
 | 依赖            | T13, T15, T16              |
 | 可并行           | 不并行；依赖路径和保护规则              |
 | Worktree / PR | `feature/M4`                |
 | 主贡献相关         | 是，可回退编码状态核心                |
-| Commit        | TODO                       |
+| Commit        | `dcfd3fe feat: 完成 T17 CheckpointManager` |
 
 ### 目标
 
@@ -1805,21 +1863,38 @@ uv run mypy src/hancode/trace.py
 ```python
 class CheckpointManifest: ...
 
-def create_checkpoint(task_root: Path, files: list[Path], reason: str) -> CheckpointManifest: ...
+def create_checkpoint(
+    task_root: Path,
+    files: list[Path],
+    reason: str,
+    *,
+    created_at: datetime | None = None,
+) -> CheckpointManifest: ...
+
+def commit_checkpoint(task_root: Path, checkpoint_id: str) -> CheckpointManifest: ...
 ```
 
-输入：task root、即将修改的 source files、reason。
-输出：CheckpointManifest、文件快照。
-不变量：checkpoint 只保存业务代码修改前的必要快照。
-错误处理：空文件集、文件不存在、protected 文件进入快照请求时返回结构化错误。
+输入：task root、即将修改的 source files、reason；提交时传入 checkpoint ID。
+输出：不可变 CheckpointManifest、文件快照。
+不变量：`create_checkpoint()` 只创建 `pending` 的 before 快照；`commit_checkpoint()` 仅将同 task 的 pending manifest 原子转为 `committed` 并记录 after hash。缺失 SOURCE 目标表示新建文件，rollback 时应删除它。
+错误处理：空文件集、空 reason、非 SOURCE、受保护文件、目录、损坏/篡改 manifest、快照/hash 不一致、路径或 symlink 越界均返回结构化错误；reason、trace 和 manifest 不记录 secret。
 
 ### 预期失败测试
 
-* `test_edit_file_creates_checkpoint`
-* `test_checkpoint_manifest_contains_before_hash`
-* `test_checkpoint_excludes_env_and_protected_files`
-* `test_checkpoint_rejects_empty_file_set`
-* `test_checkpoint_id_is_stable_format`
+* `test_edit_file_creates_checkpoint`（保留既有课程脚手架文档契约名称）
+* `test_create_checkpoint_snapshots_existing_source_file`
+* `test_create_checkpoint_supports_missing_source_target`
+* `test_checkpoint_normalizes_deduplicates_and_sorts_paths`
+* `test_create_checkpoint_updates_state_and_trace`
+* `test_create_checkpoint_rejects_invalid_request`
+* `test_create_checkpoint_removes_snapshot_when_state_update_fails`
+* `test_create_checkpoint_compensates_state_when_trace_write_fails`
+* `test_commit_checkpoint_records_after_hash_and_marks_committed`
+* `test_commit_checkpoint_restores_pending_manifest_when_trace_write_fails`
+* `test_commit_checkpoint_rejects_unrecoverable_before_snapshot`
+* `test_commit_checkpoint_rejects_untrusted_manifest_data`
+* `test_commit_checkpoint_rejects_checkpoint_directory_symlink_outside_task`
+* `test_commit_checkpoint_rejects_external_checkpoint_contents_symlink`
 
 ### 实现要点
 
@@ -1833,8 +1908,10 @@ def create_checkpoint(task_root: Path, files: list[Path], reason: str) -> Checkp
   * `before_sha256`
   * `created_at`
   * `status`
-* 快照文件保存在 `checkpoints/<checkpoint_id>/files/`。
-* 创建 checkpoint 后写 trace event。
+* 快照与 initial manifest 先在 `.{checkpoint_id}.tmp` 写入，再 rename 为 `checkpoints/<checkpoint_id>/`；state 或 trace 失败时补偿删除并恢复 state，补偿失败显式报错。
+* `checkpoint_id` 只由 `state.checkpoint_seq + 1` 分配，格式为 `ckpt-NNN`；manifest 记录 before/after hash、pending/committed 状态和 rollback 可用性。
+* 创建和提交分别写 `checkpoint_created`、`checkpoint_committed` trace；trace 失败不得报告成功。
+* manifest、`files/`、checkpoint 根和临时目录均需保持在 task workspace 内，拒绝 symlink/junction 外链；before snapshot 和 hash 必须可验证。
 
 ### 验证步骤
 
@@ -1844,17 +1921,27 @@ uv run ruff check src/hancode/checkpoints.py tests/test_checkpoints.py
 uv run mypy src/hancode/checkpoints.py
 ```
 
+### 实际验证（截至 2026-07-13）
+
+* 专项：`\.venv\Scripts\python.exe -m pytest tests/test_checkpoints.py -q -p no:cacheprovider --basetemp <isolated-dir>` 为 `40 passed, 4 skipped in 1.93s`；4 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
+* 全量：`\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp <isolated-dir>` 为 `415 passed, 8 skipped in 5.10s`。
+* 静态检查：Ruff 输出 `All checks passed!`；MyPy `src/hancode/checkpoints.py` 输出 `Success: no issues found in 1 source file`；`git diff --check` 通过。
+* 两阶段新鲜子代理审查均无 Critical/Important；第二阶段静态安全复审结论为可合入。
+* 文档契约修复：保留 `test_edit_file_creates_checkpoint` 这一既有脚手架断言名称，并在测试清单中同时列出 T17 当前实际测试。
+
 ### 完成判定
 
 * source write 前可创建 checkpoint。
 * checkpoint 不包含 `.env`、凭据、教师测试、评分脚本、样例数据。
 * manifest 可被 rollback 使用。
+* 最新 `tests/test_checkpoints.py`、全量 pytest、Ruff、MyPy 已取得新鲜通过证据；本卡可标记为 `[x]`。提交仍待用户决定。
 
 ### 非目标 / 边界
 
 * 不实现 rollback。
 * 不实现 checkpoint pruning。
 * 不使用 git 作为 checkpoint 机制。
+* 不实现跨进程锁、TOCTOU 消除或 pending crash reconcile；保留给后续并发/恢复增强。
 
 ---
 
@@ -1862,12 +1949,12 @@ uv run mypy src/hancode/checkpoints.py
 
 | 元信息           | 值                        |
 | ------------- | ------------------------ |
-| 状态            | [ ] 未开始                  |
+| 状态            | [x] 已实现并完成全量验证              |
 | 依赖            | T17                      |
 | 可并行           | 不并行                      |
 | Worktree / PR | `feature/M4`              |
 | 主贡献相关         | 是，可回退编码状态核心              |
-| Commit        | TODO                     |
+| Commit        | TODO（待用户决定）             |
 
 ### 目标
 
@@ -1877,6 +1964,10 @@ uv run mypy src/hancode/checkpoints.py
 
 * `src/hancode/checkpoints.py`
 * `tests/test_rollback.py`
+* `docs/PLAN.md`
+* `docs/AGENT_LOG.md`
+* `docs/系统架构.md`
+* `src/hancode/README.md`
 
 ### SPEC 依据
 
@@ -1887,49 +1978,92 @@ uv run mypy src/hancode/checkpoints.py
 ### 接口契约
 
 ```python
-class RollbackResult: ...
+@dataclass(frozen=True, slots=True)
+class RollbackResult:
+    status: OperationStatus
+    checkpoint_id: str | None
+    restored_files: tuple[str, ...]
+    failed_files: tuple[str, ...]
+    error: StructuredError | None
+
+    @property
+    def error_summary(self) -> str | None: ...
+
+    def to_dict(self) -> dict[str, object]: ...
 
 def rollback_last_checkpoint(task_root: Path) -> RollbackResult: ...
 ```
 
 输入：task root。
-输出：RollbackResult，包含 restored files、failed files、error summary。
-不变量：只恢复 manifest 中允许恢复的业务文件。
-错误处理：manifest 损坏、快照缺失、恢复失败时返回 failed / blocked，不盲目恢复。
+输出：结构化 `RollbackResult`，可由后续 FeedbackBuilder 直接序列化为 observation。
+不变量：仅在 `review` phase 恢复 `state.latest_checkpoint` 指向的同 task、同 project、`code` phase、`committed` 且 `rollback_available=true` manifest；只恢复其中经 `PathClassifier` 重新确认的 SOURCE 文件。
+冲突策略：当前业务文件的 SHA-256 必须等于 manifest 的 `after_sha256`；不一致时以 `rollback_conflict` 阻断，零文件写入，不提供 force / confirm。
+状态机：checkpoint manifest 生命周期为 `pending -> committed -> rolled_back`；成功后 `rolled_back` 且 `rollback_available=false`，重复恢复返回 `rollback_not_available`。
+错误处理：phase、state、manifest、快照、路径、symlink/junction、hash 或工作区身份任一校验失败均返回 `blocked`；恢复、manifest/state/trace 持久化失败返回 `failed`，不盲目恢复。
 
 ### 预期失败测试
 
 * `test_rollback_last_checkpoint_restores_file`
-* `test_rollback_records_restored_files`
+* `test_rollback_removes_file_created_after_checkpoint`
+* `test_rollback_records_restored_files_and_serializes_result`
+* `test_rollback_resets_review_state_and_marks_manifest_rolled_back`
+* `test_rollback_requires_review_phase_and_latest_checkpoint`
 * `test_damaged_manifest_blocks_rollback`
 * `test_rollback_does_not_restore_protected_files`
+* `test_rollback_blocks_external_content_conflict_without_writes`
+* `test_rollback_blocks_when_current_file_cannot_be_verified`
+* `test_rollback_blocks_inconsistent_task_state`
+* `test_rollback_blocks_repeated_restore`
+* `test_rollback_blocks_snapshot_escape_before_writing_source`
+* `test_rollback_blocks_external_source_symlink_before_writing`
+* `test_rollback_does_not_reuse_preexisting_restore_temporary_path`
+* `test_rollback_compensates_files_when_multi_file_restore_fails`
+* `test_rollback_compensates_when_manifest_state_or_trace_write_fails`
+* `test_rollback_marks_state_inconsistent_when_compensation_fails`
 * `test_rollback_writes_trace_event`
 
 ### 实现要点
 
-* rollback 成功后写 trace。
-* rollback 结果应可被 FeedbackBuilder 转成 observation。
-* 恢复后更新 state 中 latest checkpoint / rollback 信息。
+* 预检先完成所有读取与校验：task/project/manifest identity、`committed` 状态、before snapshots、SOURCE 分类、路径和链接边界、after hash；任一失败前不得写业务文件。
+* `modify` 从 before snapshot 以同目录临时文件 + replace 恢复；`create` 删除当前目标。恢复前保留所有当前 bytes，用于补偿。
+* 多文件恢复是全有或全无：任一恢复失败，或后续 manifest、state、trace 失败时，补偿全部已改业务文件、manifest 与 state；补偿无法完成时尽力标记 `TaskStatus.INCONSISTENT` / `inconsistent=true`，并返回 `rollback_compensation_failed`。
+* 成功状态保留 `current_phase=review`、`latest_checkpoint`、checkpoint seq 和 retry budget；设置 `rollback_done=true`、`rollback_required=false`、`latest_test_status="none"`、`test_status_consumed=false`、`source_edits_this_phase=0`，并将 code/test/review 的 `phase_completed` 复位为 `false`。
+* 记录 `rollback_started`（`running`）及最终 `rollback_performed`（`succeeded` / `blocked` / `failed`）trace；若 trace 无法持久化，不得报告恢复成功。
+* 错误码至少包括：`rollback_requires_review_phase`、`rollback_checkpoint_required`、`rollback_inconsistent_state`、`rollback_not_available`、`rollback_conflict`、`rollback_restore_failed`、`rollback_manifest_update_failed`、`rollback_state_update_failed`、`rollback_trace_failed`、`rollback_compensation_failed`；沿用 checkpoint 身份、路径与 manifest 错误码。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_rollback.py -v
-uv run ruff check src/hancode/checkpoints.py tests/test_rollback.py
-uv run mypy src/hancode/checkpoints.py
+$env:PYTHONPATH='src'
+uv run --no-sync pytest tests/test_rollback.py tests/test_checkpoints.py -v -p no:cacheprovider --basetemp .t18-pytest-tmp
+uv run --no-sync pytest -q -p no:cacheprovider --basetemp .t18-pytest-tmp
+uv run --no-sync ruff check src tests --no-cache
+uv run --no-sync mypy src --no-incremental
+git diff --check
 ```
+
+### 实际验证（2026-07-13）
+
+* TDD：从缺少 `rollback_last_checkpoint` 的导入 RED 开始；随后依次观察 manifest 生命周期、review state、trace、文件/manifest/state/trace 补偿、after-hash 预检读取、预置临时路径与 inconsistent 门禁的 RED，再以最小实现转绿。
+* 最新联合回归：`tests/test_rollback.py tests/test_checkpoints.py` 为 `62 passed, 5 skipped`；5 个 skip 均为当前 Windows 环境不允许创建文件 symlink。
+* 两阶段新鲜审查：第一阶段发现并修复 after-hash 预检读取错误应为 `blocked`；第二阶段发现并修复临时文件链接绕过、inconsistent 高风险门禁与补偿结果虚报。两阶段复核后均无 Critical/Important。
+* 最终全量：`uv run --no-sync pytest -q -p no:cacheprovider --basetemp .t18-pytest-tmp` 为 `437 passed, 9 skipped in 8.33s`；9 个 skip 均为当前 Windows 环境不允许创建文件 symlink。
+* 静态检查：Ruff 输出 `All checks passed!`；MyPy 输出 `Success: no issues found in 17 source files`；`git diff --check` 通过。
 
 ### 完成判定
 
-* rollback 能恢复业务文件到 checkpoint 状态。
-* manifest 损坏时不盲目恢复。
-* rollback 结果结构化返回。
+* rollback 能将修改文件和新建文件恢复到 checkpoint 前状态。
+* manifest、快照、路径或 hash 损坏时不发生业务文件写入。
+* 任一文件或持久化阶段失败后不留下部分恢复；无法补偿显式进入 inconsistent。
+* `RollbackResult` 结构化返回，state / manifest / trace 三者一致且可审计。
 
 ### 非目标 / 边界
 
 * 不实现 git rollback。
 * 不实现多 checkpoint pruning。
-* 不恢复 protected files。
+* 不恢复 protected files，也不提供 force / confirm 覆盖 hash 冲突。
+* 不实现 pending crash reconcile、跨进程锁或 TOCTOU 消除。
+* 不在本任务接入 AgentLoop / FileTools、不递减 retry budget、不写 REVIEW.md；这些由 T20-T22 消费恢复结果和 trace。
 
 ---
 
@@ -2697,7 +2831,7 @@ git status --short
 | FR-5 ToolPolicy 治理护栏                     | T13, T14, T15                | [ ] |
 | FR-6 ContextBuilder 与记忆选择                | T19                          | [ ] |
 | FR-7 反馈回灌机制                              | T20, T21                     | [ ] |
-| FR-8 TraceLogger                         | T16                          | [ ] |
+| FR-8 TraceLogger                         | T16                          | [x] |
 | FR-9 配置加载与运行约束                           | T3, T26                      | [ ] |
 | FR-10 Project Workspace 与 Task Workspace | T2                           | [ ] |
 | FR-11 课程项目 Phase Gate                    | T5, T6                       | [ ] |
