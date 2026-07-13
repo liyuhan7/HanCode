@@ -75,6 +75,7 @@ class SpyFeedbackBuilder:
         self.parse_errors: list[object] = []
         self.policy_denials: list[object] = []
         self.tool_results: list[object] = []
+        self.tool_result_phases: list[Phase] = []
 
     def from_parse_error(self, error: object) -> object:
         self.parse_errors.append(error)
@@ -84,8 +85,9 @@ class SpyFeedbackBuilder:
         self.policy_denials.append(decision)
         return {"kind": "policy_denial"}
 
-    def from_tool_result(self, result: object) -> object:
+    def from_tool_result(self, result: object, *, phase: Phase) -> object:
         self.tool_results.append(result)
+        self.tool_result_phases.append(phase)
         return {"kind": "tool_result", "result": result}
 
 
@@ -226,7 +228,7 @@ def test_final_action_stops_loop() -> None:
 
 
 def test_tool_observation_is_fed_into_next_context() -> None:
-    loop, llm, _, _, _, _ = _build_loop([_read_file_action(), _finish_action()])
+    loop, llm, _, _, _, feedback = _build_loop([_read_file_action(), _finish_action()])
 
     loop.run("task-001")
 
@@ -238,6 +240,7 @@ def test_tool_observation_is_fed_into_next_context() -> None:
             "result": ToolResult(success=True, action_name="read_file"),
         },
     }
+    assert feedback.tool_result_phases == [Phase.CODE]
 
 
 def test_parse_error_blocks_without_policy_or_tool() -> None:

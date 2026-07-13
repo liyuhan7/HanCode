@@ -44,7 +44,7 @@ class FeedbackBuilder(Protocol):
 
     def from_policy_denial(self, decision: PolicyDecisionLike) -> object: ...
 
-    def from_tool_result(self, result: object) -> object: ...
+    def from_tool_result(self, result: ToolResult, *, phase: Phase) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,7 +170,9 @@ class AgentLoop:
                 assert action.tool_name is not None
                 tool_result = self._tool_registry.dispatch(action)
                 tool_calls.append(action.tool_name)
-                observation = self._feedback_builder.from_tool_result(tool_result)
+                observation = self._feedback_builder.from_tool_result(
+                    tool_result, phase=routing.phase
+                )
                 continue
 
             if action.type in {ActionType.FINISH_PHASE, ActionType.FINAL}:

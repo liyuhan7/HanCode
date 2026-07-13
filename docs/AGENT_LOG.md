@@ -1007,3 +1007,22 @@
   - 全量 `pytest -q -p no:cacheprovider`：454 passed、9 skipped；全量 `ruff check src tests` 与 `mypy src` 通过。
 - 提交：
   - TODO（等待用户决定提交）。
+
+### 2026-07-13 — T20 FeedbackBuilder 失败分类
+
+- 使用的技能：`karpathy-guidelines`、`executing-plans`、`test-driven-development`、`subagent-driven-development`。
+- 摘要：
+  - 新增确定性的 `FeedbackReport`、`Observation` 和 `FeedbackBuilder`，覆盖测试、工具、policy denial、parse error、checkpoint 与 rollback 的反馈构造。
+  - 测试分类在完整输出上按 syntax、import、assertion、timeout/crash、error exception、成功退出和 unknown 的固定顺序执行；摘要随后脱敏并截断。
+  - Observation 深冻结、按 canonical UTF-8 JSON 预算限制；预算不能容纳元数据时返回 `feedback_budget_too_small`，非法预算、phase 或非 JSON 工具输出返回 `feedback_input_invalid`。
+  - `ToolResult` 增加 `timed_out`，AgentLoop 仅显式传递当前 phase，未实现 T21 的 retry、rollback 调度、state 或 trace 副作用。
+  - 共享脱敏器补充裸 `Bearer <token>`，确保 policy、parse、tool、rollback 等不可信文本不泄露 secret。
+- 两阶段评审：
+  - 第一阶段发现并修复 timeout 被成功退出码掩盖、分类文档冲突、set 未深冻结和极小预算截断越界。
+  - 第二阶段发现并修复裸 Bearer 脱敏、顶层敏感 details 键和公开输入的非结构化异常。
+- 验证：
+  - `uv run --no-sync pytest -q -p no:cacheprovider`：483 passed、9 skipped。
+  - `uv run --no-sync ruff check src tests --no-cache`：通过。
+  - `uv run --no-sync mypy src`：通过，19 source files 无问题。
+- 提交：
+  - TODO（等待用户决定提交）。

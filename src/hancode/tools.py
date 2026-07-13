@@ -15,6 +15,7 @@ class ToolResult:
     exit_code: int | None = None
     stdout: str | None = None
     stderr: str | None = None
+    timed_out: bool = False
 
 
 Tool = Callable[..., ToolResult]

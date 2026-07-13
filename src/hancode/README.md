@@ -1,8 +1,8 @@
 # `hancode` 源代码
 
 这里是 HanCode Harness 内核的 Python 实现目录。当前工作树对应 M5，已经完成
-T1-T18 的基础骨架、最小 AgentLoop、Tool Governance 与可恢复状态机制，并正在完成
-T19 的 phase-scoped ContextBuilder；后续任务会继续补充反馈闭环、交付产物、凭据管理和 CLI。
+T1-T20 的基础骨架、最小 AgentLoop、Tool Governance、可恢复状态、phase-scoped context 与
+确定性 FeedbackBuilder；后续任务会继续补充反馈闭环集成、交付产物、凭据管理和 CLI。
 
 ## 当前已实现
 
@@ -48,12 +48,17 @@ T19 的 phase-scoped ContextBuilder；后续任务会继续补充反馈闭环、
 - `tool_policy.py`：`allowed_tools_for_phase()` 从同一条策略矩阵返回确定性的阶段工具列表，供
   CODE context 使用。
 
+### Deterministic Feedback
+
+- `feedback.py`：将测试输出、工具结果、policy denial、解析错误、checkpoint 与 rollback
+  结果转换为冻结、脱敏且受字节预算约束的 Observation；失败类别与纠正建议由固定规则表生成。
+
 ## 当前边界
 
 当前版本已经提供可独立测试的 Tool Governance 与可恢复状态基础，但以下能力仍按
 `docs/PLAN.md` 的后续任务推进：
 
-- FeedbackBuilder 与 retry / rollback 集成。
+- retry / rollback 的 AgentLoop 集成。
 - `TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 和 `DELIVERABLES.md` 生成。
 - CLI、CredentialProvider、package build 和 CI 分发流程。
 

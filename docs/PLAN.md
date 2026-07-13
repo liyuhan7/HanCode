@@ -2174,7 +2174,7 @@ uv run mypy src/hancode/context.py
 
 | 元信息           | 值                        |
 | ------------- | ------------------------ |
-| 状态            | [ ] 未开始                  |
+| 状态            | [x] 已完成                  |
 | 依赖            | T8, T11, T14, T18        |
 | 可并行           | 可与 T19 并行                |
 | Worktree / PR | `feature/M5`              |
@@ -2188,7 +2188,15 @@ uv run mypy src/hancode/context.py
 ### 涉及文件
 
 * `src/hancode/feedback.py`
+* `src/hancode/tools.py`
+* `src/hancode/agent_loop.py`
+* `src/hancode/file_tools.py`
 * `tests/test_feedback.py`
+* `tests/test_tool_registry.py`
+* `tests/test_agent_loop.py`
+* `tests/test_file_tools.py`
+* `docs/系统架构.md`
+* `docs/AGENT_LOG.md`
 
 ### SPEC 依据
 
@@ -2200,6 +2208,7 @@ uv run mypy src/hancode/context.py
 
 ```python
 class FailureCategory(str, Enum):
+    NONE = "none"
     SYNTAX_ERROR = "syntax_error"
     IMPORT_ERROR = "import_error"
     ASSERTION_FAILURE = "assertion_failure"
@@ -2207,8 +2216,25 @@ class FailureCategory(str, Enum):
     TIMEOUT_OR_CRASH = "timeout_or_crash"
     UNKNOWN = "unknown"
 
-def classify_test_output(output: str, exit_code: int, timed_out: bool = False) -> FeedbackReport: ...
-def build_observation(result: ToolResult | PolicyDecision | RollbackResult | ParseError) -> Observation: ...
+class ObservationKind(str, Enum): ...
+
+@dataclass(frozen=True)
+class Observation:
+    kind: ObservationKind
+    success: bool
+    phase: Phase
+    summary: str
+    next_action_hint: str
+    failure_category: FailureCategory | None
+    details: Mapping[str, object]
+
+def classify_test_output(
+    output: str, exit_code: int, timed_out: bool = False, *, max_observation_bytes: int = 8192
+) -> FeedbackReport: ...
+def build_observation(
+    result: ToolResult | PolicyDecision | CheckpointManifest | RollbackResult | ParseError,
+    *, phase: Phase | None = None, max_observation_bytes: int = 8192
+) -> Observation: ...
 ```
 
 输入：测试输出、退出码、工具结果、策略拒绝、rollback 结果、parse error。
@@ -2239,8 +2265,17 @@ def build_observation(result: ToolResult | PolicyDecision | RollbackResult | Par
   * error exception
   * unknown
 * 分类在完整输出上执行，摘要截断在分类之后执行。
-* policy denial observation 包含 `denied_rule`、`reason`、`suggested_fix`。
+* policy denial observation 包含 `denied_rule`、`reason`、`suggested_fix`；checkpoint 也必须可转为 observation。
+* `ToolResult.timed_out` 是显式超时信号；AgentLoop 调用工具反馈时显式传入当前 phase。
+* summary 在完整输出分类后统一脱敏和截断；整个 Observation 受 `max_observation_bytes` 约束。
 * 不调用 LLM 判断失败原因。
+
+### 实现结果
+
+* 新增 `feedback.py`：固定优先级分类完整测试输出，并将测试、通用工具、policy、parse、checkpoint 与 rollback 的确定性结果构造成冻结 `Observation`。
+* `ToolResult` 新增兼容默认值 `timed_out=False`；AgentLoop 仅在工具反馈构造时显式传递当前 `phase`，未进入 T21 的重试、回滚执行、状态或 trace 副作用。
+* Observation 的摘要、建议与 details 在写入前脱敏，包含裸 `Bearer` token；总 canonical JSON UTF-8 字节数受预算限制，不足以容纳元数据时返回结构化 `feedback_budget_too_small`。
+* 公开构造边界会将非法预算、phase 或非 JSON 工具输出转换为 `feedback_input_invalid`；分类优先级已与系统架构文档统一。
 
 ### 验证步骤
 
@@ -2249,6 +2284,8 @@ uv run pytest tests/test_feedback.py -v
 uv run ruff check src/hancode/feedback.py tests/test_feedback.py
 uv run mypy src/hancode/feedback.py
 ```
+
+实际验证：`pytest -q -p no:cacheprovider` 为 483 passed、9 skipped；`ruff check src tests` 与 `mypy src` 均通过。
 
 ### 完成判定
 

@@ -16,7 +16,7 @@ _QUOTED_ASSIGNMENT_SECRET = re.compile(
     r"(?im)\b((?:[A-Z][A-Z0-9_]*_)?(?:API_KEY|TOKEN|SECRET|PASSWORD))"
     r"(\s*=\s*)([\"'])[^\"']*\3"
 )
-_BEARER_SECRET = re.compile(r"(?im)(Authorization\s*:\s*Bearer\s+)[^\s]+")
+_BEARER_SECRET = re.compile(r"(?im)((?:Authorization\s*:\s*)?Bearer\s+)[^\s]+")
 _JSON_SECRET = re.compile(
     r'(?i)(\"(?:api_key|token|secret|password)\"\s*:\s*\")[^\"]*(\")'
 )
