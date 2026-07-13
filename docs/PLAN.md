@@ -1707,7 +1707,7 @@ $env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache';
 | 可并行           | 可与 T13/T14 并行        |
 | Worktree / PR | `feature/M4`         |
 | 主贡献相关         | 是，可观测性核心             |
-| Commit        | 本任务提交（见 `git log`） |
+| Commit        | `df39f8c` |
 
 ### 目标
 
@@ -1747,7 +1747,11 @@ def append_trace(
     task_id: str,
     phase: Phase,
     status: str,
-    ...,
+    action: Mapping[str, object] | None = None,
+    observation: Mapping[str, object] | None = None,
+    error_summary: str | None = None,
+    state_transition: Mapping[str, object] | None = None,
+    timestamp: datetime | None = None,
 ) -> TraceEvent: ...
 ```
 
@@ -1785,11 +1789,11 @@ def append_trace(
 
 ### 实现要点
 
-* `event_id` 格式可采用 `evt-000001`。
+* `event_id` 使用 `evt-{seq:06d}` 格式，例如 `evt-000001`。
 * 每行 JSONL 必须是合法 JSON。
 * 脱敏字段包括 Authorization、api_key、token、secret、password。
 * trace 不记录完整大文件内容。
-* 名称以或终于 `content`、`output`、`stdout`、`stderr`、`body`、`text` 的字段只写入 `[CONTENT_OMITTED]` 摘要与字符串长度，不记录原文，覆盖 `file_content`、`tool_output`、`response_body` 等别名，避免受保护文件或工具输出进入 trace。
+* 规范化名称以 `content`、`output`、`stdout`、`stderr`、`body`、`text` 开头或结尾的字段只写入 `[CONTENT_OMITTED]` 摘要与字符串长度，不记录原文，覆盖 `file_content`、`tool_output`、`response_body` 等别名，避免受保护文件或工具输出进入 trace。
 * 写入或既有 trace 解析失败时，返回不泄露底层异常的 `HanCodeError`；T16 不改 AgentLoop / ToolPolicy，后续调用方捕获此错误后阻断高风险动作。
 * 追加前必须验证全量既有 JSONL：每行都是 JSON object，`seq` 从 1 连续递增，且 `event_id=evt-{seq:06d}`；中间损坏、重复或倒退编号拒绝追加。
 * 文本内容也必须扫描并脱敏 `Authorization: ...`、`API_KEY=...` 等键值形式；JSON 编码失败同样转换为 `trace_write_error`。
@@ -2751,7 +2755,7 @@ git status --short
 | FR-5 ToolPolicy 治理护栏                     | T13, T14, T15                | [ ] |
 | FR-6 ContextBuilder 与记忆选择                | T19                          | [ ] |
 | FR-7 反馈回灌机制                              | T20, T21                     | [ ] |
-| FR-8 TraceLogger                         | T16                          | [ ] |
+| FR-8 TraceLogger                         | T16                          | [x] |
 | FR-9 配置加载与运行约束                           | T3, T26                      | [ ] |
 | FR-10 Project Workspace 与 Task Workspace | T2                           | [ ] |
 | FR-11 课程项目 Phase Gate                    | T5, T6                       | [ ] |

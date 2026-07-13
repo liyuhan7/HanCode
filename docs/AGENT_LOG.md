@@ -68,6 +68,13 @@
 - 最终验证：新增 7 项回归后 `tests/test_trace.py` 为 `29 passed in 0.43s`；全量为 `375 passed, 4 skipped in 3.92s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
 - 第二阶段最终 re-verdict：无 Critical、Important 或 Minor；字段别名及嵌套内容摘要、项目 metadata、payload 与工具审计契约均已关闭。并发 writer lock、`fsync` 与崩溃半行恢复仍为已记录的 post-MVP 非目标。
 
+#### 文档收尾（2026-07-13）
+
+- 按 T16 收尾要求只修改文档，不运行测试、不修改 `src/hancode/`。
+- `docs/PLAN.md`：补齐完整函数式接口、29 项实际测试名称、最终验证记录、T16 实现边界、FR-8 `[x]` 状态和实现提交 `df39f8c`。
+- `docs/系统架构.md`：移除与当前实现不一致的 `schema_version` / `LAST_ERROR` / 旧事件示例，统一为 `seq`、`evt-{seq:06d}`、内容摘要、项目 metadata 校验和结构化错误契约。
+- 文档核验：检查 T16 引用、过时事件格式、占位接口和明显笔误；本轮按用户要求未运行测试。
+
 ### 2026-07-12 — T15 — 课程文件保护
 
 - 使用的技能：test-driven-development；systematic-debugging。
