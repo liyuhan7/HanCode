@@ -18,6 +18,15 @@
 
 ---
 
+### 2026-07-13 — M3 CI 回归 — search_text 凭据 symlink alias
+
+- 问题：Linux CI 的 symlink 场景中，`search_text` 同时报告真实 `.env` 和指向它的 alias；预期只报告 alias。
+- 根因：遍历 canonical 路径时，真实凭据文件和 alias 都进入 `skipped_files`，缺少按 canonical 目标去重。
+- 修复：在 `src/hancode/file_tools.py` 中记录凭据文件的 canonical 路径；存在非凭据 alias 时隐藏真实凭据路径，没有 alias 时保留原有凭据跳过记录。
+- 验证：FileTools 专项 `29 passed, 2 skipped`；Windows 本机因 symlink 权限跳过 alias 用例，需由 Linux CI 复验。
+
+---
+
 ## 记录条目
 
 ### 2026-07-12 — T15 — 课程文件保护

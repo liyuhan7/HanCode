@@ -127,6 +127,8 @@ def search_text(project_root: Path, query: str) -> ToolResult:
 
     matches: list[dict[str, object]] = []
     skipped_files: list[str] = []
+    credential_files: dict[str, str] = {}
+    credential_aliases: set[str] = set()
     try:
         candidates = root.rglob("*")
         for candidate in candidates:
@@ -134,12 +136,17 @@ def search_text(project_root: Path, query: str) -> ToolResult:
             if relative is None or not candidate.is_file():
                 continue
             safe_relative = _safe_relative_file(root, candidate)
+            if _is_credential_path(relative):
+                if safe_relative is not None:
+                    credential_files.setdefault(safe_relative, relative)
+                continue
             if (
                 safe_relative is None
-                or _is_credential_path(relative)
                 or _is_credential_path(safe_relative)
             ):
                 skipped_files.append(relative)
+                if safe_relative is not None and _is_credential_path(safe_relative):
+                    credential_aliases.add(safe_relative)
                 continue
             try:
                 content = candidate.read_text(encoding="utf-8")
@@ -158,6 +165,11 @@ def search_text(project_root: Path, query: str) -> ToolResult:
     except OSError as exc:
         return _failed("search_text", f"File operation failed: {type(exc).__name__}.")
 
+    skipped_files.extend(
+        relative
+        for canonical, relative in credential_files.items()
+        if canonical not in credential_aliases
+    )
     matches.sort(key=lambda match: (str(match["path"]), cast(int, match["line"])))
     return ToolResult(
         success=True,
