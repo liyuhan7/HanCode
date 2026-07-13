@@ -1841,7 +1841,7 @@ uv run mypy src/hancode/trace.py
 | 可并行           | 不并行；依赖路径和保护规则              |
 | Worktree / PR | `feature/M4`                |
 | 主贡献相关         | 是，可回退编码状态核心                |
-| Commit        | TODO（动态验证完成后提交）          |
+| Commit        | `dcfd3fe feat: 完成 T17 CheckpointManager` |
 
 ### 目标
 
@@ -1949,12 +1949,12 @@ uv run mypy src/hancode/checkpoints.py
 
 | 元信息           | 值                        |
 | ------------- | ------------------------ |
-| 状态            | [ ] 未开始                  |
+| 状态            | [x] 已实现并完成全量验证              |
 | 依赖            | T17                      |
 | 可并行           | 不并行                      |
 | Worktree / PR | `feature/M4`              |
 | 主贡献相关         | 是，可回退编码状态核心              |
-| Commit        | TODO                     |
+| Commit        | TODO（待用户决定）             |
 
 ### 目标
 
@@ -1964,6 +1964,10 @@ uv run mypy src/hancode/checkpoints.py
 
 * `src/hancode/checkpoints.py`
 * `tests/test_rollback.py`
+* `docs/PLAN.md`
+* `docs/AGENT_LOG.md`
+* `docs/系统架构.md`
+* `src/hancode/README.md`
 
 ### SPEC 依据
 
@@ -1974,49 +1978,92 @@ uv run mypy src/hancode/checkpoints.py
 ### 接口契约
 
 ```python
-class RollbackResult: ...
+@dataclass(frozen=True, slots=True)
+class RollbackResult:
+    status: OperationStatus
+    checkpoint_id: str | None
+    restored_files: tuple[str, ...]
+    failed_files: tuple[str, ...]
+    error: StructuredError | None
+
+    @property
+    def error_summary(self) -> str | None: ...
+
+    def to_dict(self) -> dict[str, object]: ...
 
 def rollback_last_checkpoint(task_root: Path) -> RollbackResult: ...
 ```
 
 输入：task root。
-输出：RollbackResult，包含 restored files、failed files、error summary。
-不变量：只恢复 manifest 中允许恢复的业务文件。
-错误处理：manifest 损坏、快照缺失、恢复失败时返回 failed / blocked，不盲目恢复。
+输出：结构化 `RollbackResult`，可由后续 FeedbackBuilder 直接序列化为 observation。
+不变量：仅在 `review` phase 恢复 `state.latest_checkpoint` 指向的同 task、同 project、`code` phase、`committed` 且 `rollback_available=true` manifest；只恢复其中经 `PathClassifier` 重新确认的 SOURCE 文件。
+冲突策略：当前业务文件的 SHA-256 必须等于 manifest 的 `after_sha256`；不一致时以 `rollback_conflict` 阻断，零文件写入，不提供 force / confirm。
+状态机：checkpoint manifest 生命周期为 `pending -> committed -> rolled_back`；成功后 `rolled_back` 且 `rollback_available=false`，重复恢复返回 `rollback_not_available`。
+错误处理：phase、state、manifest、快照、路径、symlink/junction、hash 或工作区身份任一校验失败均返回 `blocked`；恢复、manifest/state/trace 持久化失败返回 `failed`，不盲目恢复。
 
 ### 预期失败测试
 
 * `test_rollback_last_checkpoint_restores_file`
-* `test_rollback_records_restored_files`
+* `test_rollback_removes_file_created_after_checkpoint`
+* `test_rollback_records_restored_files_and_serializes_result`
+* `test_rollback_resets_review_state_and_marks_manifest_rolled_back`
+* `test_rollback_requires_review_phase_and_latest_checkpoint`
 * `test_damaged_manifest_blocks_rollback`
 * `test_rollback_does_not_restore_protected_files`
+* `test_rollback_blocks_external_content_conflict_without_writes`
+* `test_rollback_blocks_when_current_file_cannot_be_verified`
+* `test_rollback_blocks_inconsistent_task_state`
+* `test_rollback_blocks_repeated_restore`
+* `test_rollback_blocks_snapshot_escape_before_writing_source`
+* `test_rollback_blocks_external_source_symlink_before_writing`
+* `test_rollback_does_not_reuse_preexisting_restore_temporary_path`
+* `test_rollback_compensates_files_when_multi_file_restore_fails`
+* `test_rollback_compensates_when_manifest_state_or_trace_write_fails`
+* `test_rollback_marks_state_inconsistent_when_compensation_fails`
 * `test_rollback_writes_trace_event`
 
 ### 实现要点
 
-* rollback 成功后写 trace。
-* rollback 结果应可被 FeedbackBuilder 转成 observation。
-* 恢复后更新 state 中 latest checkpoint / rollback 信息。
+* 预检先完成所有读取与校验：task/project/manifest identity、`committed` 状态、before snapshots、SOURCE 分类、路径和链接边界、after hash；任一失败前不得写业务文件。
+* `modify` 从 before snapshot 以同目录临时文件 + replace 恢复；`create` 删除当前目标。恢复前保留所有当前 bytes，用于补偿。
+* 多文件恢复是全有或全无：任一恢复失败，或后续 manifest、state、trace 失败时，补偿全部已改业务文件、manifest 与 state；补偿无法完成时尽力标记 `TaskStatus.INCONSISTENT` / `inconsistent=true`，并返回 `rollback_compensation_failed`。
+* 成功状态保留 `current_phase=review`、`latest_checkpoint`、checkpoint seq 和 retry budget；设置 `rollback_done=true`、`rollback_required=false`、`latest_test_status="none"`、`test_status_consumed=false`、`source_edits_this_phase=0`，并将 code/test/review 的 `phase_completed` 复位为 `false`。
+* 记录 `rollback_started`（`running`）及最终 `rollback_performed`（`succeeded` / `blocked` / `failed`）trace；若 trace 无法持久化，不得报告恢复成功。
+* 错误码至少包括：`rollback_requires_review_phase`、`rollback_checkpoint_required`、`rollback_inconsistent_state`、`rollback_not_available`、`rollback_conflict`、`rollback_restore_failed`、`rollback_manifest_update_failed`、`rollback_state_update_failed`、`rollback_trace_failed`、`rollback_compensation_failed`；沿用 checkpoint 身份、路径与 manifest 错误码。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_rollback.py -v
-uv run ruff check src/hancode/checkpoints.py tests/test_rollback.py
-uv run mypy src/hancode/checkpoints.py
+$env:PYTHONPATH='src'
+uv run --no-sync pytest tests/test_rollback.py tests/test_checkpoints.py -v -p no:cacheprovider --basetemp .t18-pytest-tmp
+uv run --no-sync pytest -q -p no:cacheprovider --basetemp .t18-pytest-tmp
+uv run --no-sync ruff check src tests --no-cache
+uv run --no-sync mypy src --no-incremental
+git diff --check
 ```
+
+### 实际验证（2026-07-13）
+
+* TDD：从缺少 `rollback_last_checkpoint` 的导入 RED 开始；随后依次观察 manifest 生命周期、review state、trace、文件/manifest/state/trace 补偿、after-hash 预检读取、预置临时路径与 inconsistent 门禁的 RED，再以最小实现转绿。
+* 最新联合回归：`tests/test_rollback.py tests/test_checkpoints.py` 为 `62 passed, 5 skipped`；5 个 skip 均为当前 Windows 环境不允许创建文件 symlink。
+* 两阶段新鲜审查：第一阶段发现并修复 after-hash 预检读取错误应为 `blocked`；第二阶段发现并修复临时文件链接绕过、inconsistent 高风险门禁与补偿结果虚报。两阶段复核后均无 Critical/Important。
+* 最终全量：`uv run --no-sync pytest -q -p no:cacheprovider --basetemp .t18-pytest-tmp` 为 `437 passed, 9 skipped in 8.33s`；9 个 skip 均为当前 Windows 环境不允许创建文件 symlink。
+* 静态检查：Ruff 输出 `All checks passed!`；MyPy 输出 `Success: no issues found in 17 source files`；`git diff --check` 通过。
 
 ### 完成判定
 
-* rollback 能恢复业务文件到 checkpoint 状态。
-* manifest 损坏时不盲目恢复。
-* rollback 结果结构化返回。
+* rollback 能将修改文件和新建文件恢复到 checkpoint 前状态。
+* manifest、快照、路径或 hash 损坏时不发生业务文件写入。
+* 任一文件或持久化阶段失败后不留下部分恢复；无法补偿显式进入 inconsistent。
+* `RollbackResult` 结构化返回，state / manifest / trace 三者一致且可审计。
 
 ### 非目标 / 边界
 
 * 不实现 git rollback。
 * 不实现多 checkpoint pruning。
-* 不恢复 protected files。
+* 不恢复 protected files，也不提供 force / confirm 覆盖 hash 冲突。
+* 不实现 pending crash reconcile、跨进程锁或 TOCTOU 消除。
+* 不在本任务接入 AgentLoop / FileTools、不递减 retry budget、不写 REVIEW.md；这些由 T20-T22 消费恢复结果和 trace。
 
 ---
 

@@ -4,13 +4,15 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
+from tempfile import mkstemp
 from typing import Literal, Mapping
 
 from hancode.config import load_config
 from hancode.errors import HanCodeError, StructuredError
-from hancode.models import Phase
+from hancode.models import OperationStatus, Phase, TaskStatus
 from hancode.path_policy import PathClassifier, PathZone
 from hancode.state import TaskState, load_state, save_state
 from hancode.trace import append_trace
@@ -20,6 +22,7 @@ from hancode.workspace import load_project_metadata
 _MANIFEST_SCHEMA_VERSION = 1
 _PENDING: Literal["pending"] = "pending"
 _COMMITTED: Literal["committed"] = "committed"
+_ROLLED_BACK: Literal["rolled_back"] = "rolled_back"
 _SENSITIVE_REASON_PATTERN = re.compile(
     r"(authorization|api[_-]?key|token|secret|password|private[_-]?key|credential|"
     r"cookie|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)"
@@ -56,7 +59,7 @@ class CheckpointManifest:
     phase: Phase
     reason: str
     created_at: datetime
-    status: Literal["pending", "committed"]
+    status: Literal["pending", "committed", "rolled_back"]
     files: tuple[CheckpointFile, ...]
     rollback_available: bool
 
@@ -73,6 +76,37 @@ class CheckpointManifest:
             "files": [file.to_dict() for file in self.files],
             "rollback_available": self.rollback_available,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class RollbackResult:
+    status: OperationStatus
+    checkpoint_id: str | None
+    restored_files: tuple[str, ...]
+    failed_files: tuple[str, ...]
+    error: StructuredError | None
+
+    @property
+    def error_summary(self) -> str | None:
+        return None if self.error is None else self.error.message
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status.value,
+            "checkpoint_id": self.checkpoint_id,
+            "restored_files": list(self.restored_files),
+            "failed_files": list(self.failed_files),
+            "error": None if self.error is None else self.error.to_dict(),
+            "error_summary": self.error_summary,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _RollbackTarget:
+    file: CheckpointFile
+    target: Path
+    before_content: bytes | None
+    current_content: bytes
 
 
 def create_checkpoint(
@@ -364,6 +398,372 @@ def commit_checkpoint(task_root: Path, checkpoint_id: str) -> CheckpointManifest
     return committed
 
 
+def rollback_last_checkpoint(task_root: Path) -> RollbackResult:
+    try:
+        state, project_root, project_metadata = _load_checkpoint_context(task_root)
+    except HanCodeError as exc:
+        return RollbackResult(
+            status=OperationStatus.BLOCKED,
+            checkpoint_id=None,
+            restored_files=(),
+            failed_files=(),
+            error=exc.structured_error,
+        )
+    if state.inconsistent or state.status is TaskStatus.INCONSISTENT:
+        return _record_rollback_outcome(
+            task_root,
+            state,
+            _rollback_blocked(
+                state.latest_checkpoint,
+                _rollback_error(
+                    "rollback_inconsistent_state",
+                    "Rollback is blocked while task state is inconsistent.",
+                    state.current_phase,
+                    "consistent_task_state_required",
+                    "Repair and reconcile task state before requesting rollback.",
+                ).structured_error,
+            ),
+        )
+    if state.current_phase is not Phase.REVIEW:
+        return _record_rollback_outcome(
+            task_root,
+            state,
+            _rollback_blocked(
+                state.latest_checkpoint,
+                _rollback_error(
+                    "rollback_requires_review_phase",
+                    "Rollback is only allowed during the review phase.",
+                    state.current_phase,
+                    "rollback_review_phase_required",
+                    "Enter the review phase before restoring a checkpoint.",
+                ).structured_error,
+            ),
+        )
+    if state.latest_checkpoint is None or not _is_checkpoint_id(state.latest_checkpoint):
+        return _record_rollback_outcome(
+            task_root,
+            state,
+            _rollback_blocked(
+                state.latest_checkpoint,
+                _rollback_error(
+                    "rollback_checkpoint_required",
+                    "Rollback requires the latest committed checkpoint.",
+                    state.current_phase,
+                    "latest_checkpoint_required",
+                    "Create and commit a checkpoint before requesting rollback.",
+                ).structured_error,
+            ),
+        )
+
+    checkpoint_id = state.latest_checkpoint
+    try:
+        task_root = task_root.resolve()
+        checkpoint_dir = _checkpoint_directory(
+            _checkpoints_root(task_root, state.current_phase),
+            checkpoint_id,
+            state.current_phase,
+        )
+        manifest_path = checkpoint_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise _checkpoint_not_found_error(state.current_phase)
+        _validate_manifest_path(checkpoint_dir, manifest_path, state.current_phase)
+        manifest = _load_manifest(manifest_path, state.current_phase)
+        _validate_manifest_identity(
+            manifest,
+            checkpoint_id,
+            state,
+            _required_project_id(project_metadata, state.current_phase),
+        )
+        if manifest.status != _COMMITTED or not manifest.rollback_available:
+            raise _rollback_error(
+                "rollback_not_available",
+                "The latest checkpoint is not available for rollback.",
+                state.current_phase,
+                "committed_checkpoint_required",
+                "Commit an available checkpoint before requesting rollback.",
+            )
+        config = load_config(project_root, state.task_id)
+        classifier = PathClassifier(config)
+        _validate_before_snapshots(checkpoint_dir, manifest.files, state.current_phase)
+        restore_targets: list[_RollbackTarget] = []
+        for file in manifest.files:
+            relative_path, target = _normalise_targets(
+                [Path(file.path)], project_root, classifier, state.current_phase
+            )[0]
+            if relative_path != file.path or not target.is_file():
+                raise _checkpoint_manifest_error(state.current_phase)
+            current_content = target.read_bytes()
+            if sha256(current_content).hexdigest() != file.after_sha256:
+                raise _rollback_error(
+                    "rollback_conflict",
+                    "A source file changed after its checkpoint was committed.",
+                    state.current_phase,
+                    "checkpoint_after_hash_required",
+                    "Resolve the source conflict before requesting rollback again.",
+                )
+            before_content = (
+                None
+                if file.before_snapshot is None
+                else (checkpoint_dir / file.before_snapshot).read_bytes()
+            )
+            restore_targets.append(
+                _RollbackTarget(
+                    file=file,
+                    target=target,
+                    before_content=before_content,
+                    current_content=current_content,
+                )
+            )
+    except HanCodeError as exc:
+        return _record_rollback_outcome(
+            task_root,
+            state,
+            _rollback_blocked(checkpoint_id, exc.structured_error),
+        )
+    except OSError:
+        return _record_rollback_outcome(
+            task_root,
+            state,
+            _rollback_blocked(
+                checkpoint_id,
+                _rollback_error(
+                    "rollback_conflict",
+                    "Current source files could not be verified for rollback.",
+                    state.current_phase,
+                    "checkpoint_after_hash_required",
+                    "Restore source file read access before requesting rollback again.",
+                ).structured_error,
+            ),
+        )
+
+    try:
+        append_trace(
+            task_root,
+            event_type="rollback_started",
+            task_id=state.task_id,
+            phase=state.current_phase,
+            status="running",
+            observation={"checkpoint_id": checkpoint_id},
+        )
+    except HanCodeError:
+        return RollbackResult(
+            status=OperationStatus.FAILED,
+            checkpoint_id=checkpoint_id,
+            restored_files=(),
+            failed_files=(),
+            error=_rollback_error(
+                "rollback_trace_failed",
+                "Rollback start trace could not be persisted.",
+                state.current_phase,
+                "rollback_trace_required",
+                "Restore trace write access before retrying rollback.",
+            ).structured_error,
+        )
+
+    restored_files: list[str] = []
+    for restore_target in restore_targets:
+        try:
+            _restore_rollback_target(restore_target)
+            restored_files.append(restore_target.file.path)
+        except OSError:
+            if not _compensate_rollback_files(restore_targets, restored_files):
+                _mark_rollback_inconsistent(task_root, state)
+                return _record_rollback_outcome(
+                    task_root,
+                    state,
+                    RollbackResult(
+                    status=OperationStatus.FAILED,
+                    checkpoint_id=checkpoint_id,
+                    restored_files=tuple(restored_files),
+                    failed_files=(restore_target.file.path,),
+                    error=_rollback_error(
+                        "rollback_compensation_failed",
+                        "Rollback could not restore its original source state.",
+                        state.current_phase,
+                        "rollback_compensation_required",
+                        "Repair source files before continuing.",
+                    ).structured_error,
+                    ),
+                )
+            return _record_rollback_outcome(
+                task_root,
+                state,
+                RollbackResult(
+                status=OperationStatus.FAILED,
+                checkpoint_id=checkpoint_id,
+                restored_files=(),
+                failed_files=(restore_target.file.path,),
+                error=_rollback_error(
+                    "rollback_restore_failed",
+                    "Rollback could not restore all source files.",
+                    state.current_phase,
+                    "rollback_restore_required",
+                    "Restore source file write access before retrying rollback.",
+                ).structured_error,
+                ),
+            )
+    rolled_back = replace(
+        manifest,
+        status=_ROLLED_BACK,
+        rollback_available=False,
+    )
+    try:
+        _write_manifest(manifest_path, rolled_back, atomic=True)
+    except OSError:
+        if not _compensate_rollback_files(restore_targets, restored_files):
+            _mark_rollback_inconsistent(task_root, state)
+            return _record_rollback_outcome(
+                task_root,
+                state,
+                RollbackResult(
+                status=OperationStatus.FAILED,
+                checkpoint_id=checkpoint_id,
+                restored_files=tuple(restored_files),
+                failed_files=(),
+                error=_rollback_error(
+                    "rollback_compensation_failed",
+                    "Rollback could not restore its original source state.",
+                    state.current_phase,
+                    "rollback_compensation_required",
+                    "Repair source files before continuing.",
+                ).structured_error,
+                ),
+            )
+        return _record_rollback_outcome(
+            task_root,
+            state,
+            RollbackResult(
+            status=OperationStatus.FAILED,
+            checkpoint_id=checkpoint_id,
+            restored_files=(),
+            failed_files=(),
+            error=_rollback_error(
+                "rollback_manifest_update_failed",
+                "Rollback manifest could not be updated.",
+                state.current_phase,
+                "rollback_manifest_update_required",
+                "Restore task workspace write access before retrying rollback.",
+            ).structured_error,
+            ),
+        )
+    phase_completed = dict(state.phase_completed)
+    phase_completed.update({"code": False, "test": False, "review": False})
+    rolled_back_state = replace(
+        state,
+        latest_test_status="none",
+        test_status_consumed=False,
+        source_edits_this_phase=0,
+        rollback_required=False,
+        rollback_done=True,
+        phase_completed=phase_completed,
+    )
+    try:
+        save_state(task_root, rolled_back_state)
+    except HanCodeError:
+        if not _compensate_rollback(
+            task_root,
+            state,
+            manifest_path,
+            manifest,
+            restore_targets,
+            restored_files,
+        ):
+            _mark_rollback_inconsistent(task_root, state)
+            return _record_rollback_outcome(
+                task_root,
+                state,
+                RollbackResult(
+                status=OperationStatus.FAILED,
+                checkpoint_id=checkpoint_id,
+                restored_files=tuple(restored_files),
+                failed_files=(),
+                error=_rollback_error(
+                    "rollback_compensation_failed",
+                    "Rollback could not restore its original state after a state failure.",
+                    state.current_phase,
+                    "rollback_compensation_required",
+                    "Repair state.json, manifest.json, and source files before continuing.",
+                ).structured_error,
+                ),
+            )
+        return _record_rollback_outcome(
+            task_root,
+            state,
+            RollbackResult(
+            status=OperationStatus.FAILED,
+            checkpoint_id=checkpoint_id,
+            restored_files=(),
+            failed_files=(),
+            error=_rollback_error(
+                "rollback_state_update_failed",
+                "Rollback state could not be updated.",
+                state.current_phase,
+                "rollback_state_update_required",
+                "Restore task state write access before retrying rollback.",
+            ).structured_error,
+            ),
+        )
+    try:
+        append_trace(
+            task_root,
+            event_type="rollback_performed",
+            task_id=state.task_id,
+            phase=state.current_phase,
+            status="succeeded",
+            observation={
+                "checkpoint_id": checkpoint_id,
+                "restored_files": list(restored_files),
+            },
+            state_transition={
+                "rollback_done": [state.rollback_done, True],
+                "rollback_required": [state.rollback_required, False],
+            },
+        )
+    except HanCodeError:
+        if not _compensate_rollback(
+            task_root,
+            state,
+            manifest_path,
+            manifest,
+            restore_targets,
+            restored_files,
+        ):
+            _mark_rollback_inconsistent(task_root, state)
+            return RollbackResult(
+                status=OperationStatus.FAILED,
+                checkpoint_id=checkpoint_id,
+                restored_files=tuple(restored_files),
+                failed_files=(),
+                error=_rollback_error(
+                    "rollback_compensation_failed",
+                    "Rollback could not restore its original state after a trace failure.",
+                    state.current_phase,
+                    "rollback_compensation_required",
+                    "Repair state.json, manifest.json, and source files before continuing.",
+                ).structured_error,
+            )
+        return RollbackResult(
+            status=OperationStatus.FAILED,
+            checkpoint_id=checkpoint_id,
+            restored_files=(),
+            failed_files=(),
+            error=_rollback_error(
+                "rollback_trace_failed",
+                "Rollback trace could not be persisted.",
+                state.current_phase,
+                "rollback_trace_required",
+                "Restore trace write access before retrying rollback.",
+            ).structured_error,
+        )
+    return RollbackResult(
+        status=OperationStatus.SUCCEEDED,
+        checkpoint_id=checkpoint_id,
+        restored_files=tuple(restored_files),
+        failed_files=(),
+        error=None,
+    )
+
+
 def _load_checkpoint_context(
     task_root: Path,
 ) -> tuple[TaskState, Path, dict[str, object]]:
@@ -385,6 +785,93 @@ def _load_checkpoint_context(
     project_root = resolved_task_root.parent.parent.parent
     project_metadata = load_project_metadata(resolved_task_root.parent.parent / "project.json")
     return state, project_root, project_metadata
+
+
+def _restore_rollback_target(restore_target: _RollbackTarget) -> None:
+    if restore_target.file.action == "create":
+        restore_target.target.unlink()
+        return
+    if restore_target.before_content is None:
+        raise OSError("Missing before snapshot.")
+    _replace_file_contents(
+        restore_target.target,
+        restore_target.before_content,
+        ".rollback.tmp",
+    )
+
+
+def _compensate_rollback_files(
+    restore_targets: list[_RollbackTarget], restored_files: list[str]
+) -> bool:
+    restored = set(restored_files)
+    try:
+        for restore_target in reversed(restore_targets):
+            if restore_target.file.path not in restored:
+                continue
+            _replace_file_contents(
+                restore_target.target,
+                restore_target.current_content,
+                ".rollback-compensate.tmp",
+            )
+    except OSError:
+        return False
+    return True
+
+
+def _compensate_rollback(
+    task_root: Path,
+    state: TaskState,
+    manifest_path: Path,
+    manifest: CheckpointManifest,
+    restore_targets: list[_RollbackTarget],
+    restored_files: list[str],
+) -> bool:
+    try:
+        save_state(task_root, state)
+        _write_manifest(manifest_path, manifest, atomic=True)
+    except (HanCodeError, OSError):
+        return False
+    return _compensate_rollback_files(restore_targets, restored_files)
+
+
+def _mark_rollback_inconsistent(task_root: Path, state: TaskState) -> None:
+    try:
+        save_state(
+            task_root,
+            replace(state, status=TaskStatus.INCONSISTENT, inconsistent=True),
+        )
+    except HanCodeError:
+        pass
+
+
+def _replace_file_contents(target: Path, content: bytes, temporary_suffix: str) -> None:
+    descriptor: int | None = None
+    temporary_target: Path | None = None
+    try:
+        descriptor, temporary_name = mkstemp(
+            prefix=f".{target.name}{temporary_suffix.removesuffix('.tmp')}-",
+            suffix=".tmp",
+            dir=target.parent,
+        )
+        temporary_target = Path(temporary_name)
+        if _is_link(temporary_target):
+            raise OSError("Rollback temporary file must not be a link.")
+        with os.fdopen(descriptor, "wb") as temporary_file:
+            descriptor = None
+            temporary_file.write(content)
+        temporary_target.replace(target)
+    except OSError:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            if temporary_target is not None:
+                temporary_target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _normalise_targets(
@@ -428,11 +915,9 @@ def _load_manifest(path: Path, phase: Phase) -> CheckpointManifest:
         parsed_files = tuple(_parse_checkpoint_file(file) for file in files)
         created_at = datetime.fromisoformat(_required_str(payload, "created_at"))
         raw_status = _required_str(payload, "status")
-        if raw_status not in {_PENDING, _COMMITTED}:
+        if raw_status not in {_PENDING, _COMMITTED, _ROLLED_BACK}:
             raise ValueError
-        status: Literal["pending", "committed"] = (
-            _PENDING if raw_status == _PENDING else _COMMITTED
-        )
+        status: Literal["pending", "committed", "rolled_back"] = raw_status
         rollback_available = _required_bool(payload, "rollback_available")
         if not parsed_files or (status == _PENDING and rollback_available):
             raise ValueError
@@ -440,6 +925,10 @@ def _load_manifest(path: Path, phase: Phase) -> CheckpointManifest:
             raise ValueError
         if status == _COMMITTED and (
             not rollback_available or any(file.after_sha256 is None for file in parsed_files)
+        ):
+            raise ValueError
+        if status == _ROLLED_BACK and (
+            rollback_available or any(file.after_sha256 is None for file in parsed_files)
         ):
             raise ValueError
         return CheckpointManifest(
@@ -702,6 +1191,68 @@ def _checkpoint_path_error(phase: Phase) -> HanCodeError:
 
 
 def _checkpoint_error(
+    error_code: str,
+    message: str,
+    phase: Phase,
+    denied_rule: str,
+    suggested_fix: str,
+) -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code=error_code,
+            message=message,
+            phase=phase.value,
+            denied_rule=denied_rule,
+            suggested_fix=suggested_fix,
+        )
+    )
+
+
+def _rollback_blocked(
+    checkpoint_id: str | None, error: StructuredError
+) -> RollbackResult:
+    return RollbackResult(
+        status=OperationStatus.BLOCKED,
+        checkpoint_id=checkpoint_id,
+        restored_files=(),
+        failed_files=(),
+        error=error,
+    )
+
+
+def _record_rollback_outcome(
+    task_root: Path, state: TaskState, result: RollbackResult
+) -> RollbackResult:
+    try:
+        append_trace(
+            task_root,
+            event_type="rollback_performed",
+            task_id=state.task_id,
+            phase=state.current_phase,
+            status=result.status.value,
+            observation={
+                "checkpoint_id": result.checkpoint_id,
+                "restored_files": list(result.restored_files),
+                "failed_files": list(result.failed_files),
+            },
+            error_summary=result.error_summary,
+        )
+    except HanCodeError:
+        return replace(
+            result,
+            status=OperationStatus.FAILED,
+            error=_rollback_error(
+                "rollback_trace_failed",
+                "Rollback trace could not be persisted.",
+                state.current_phase,
+                "rollback_trace_required",
+                "Restore trace write access before retrying rollback.",
+            ).structured_error,
+        )
+    return result
+
+
+def _rollback_error(
     error_code: str,
     message: str,
     phase: Phase,

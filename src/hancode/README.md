@@ -1,8 +1,8 @@
 # `hancode` 源代码
 
-这里是 HanCode Harness 内核的 Python 实现目录。当前工作树对应 M3，已经完成
-T1-T15 中的基础骨架、最小 AgentLoop 和 Tool Governance 机制；后续任务会继续
-补充可恢复状态、反馈闭环、交付产物、凭据管理和 CLI。
+这里是 HanCode Harness 内核的 Python 实现目录。当前工作树对应 M4，已经完成
+T1-T18 中的基础骨架、最小 AgentLoop、Tool Governance 与可恢复状态机制；后续任务会继续
+补充反馈闭环、交付产物、凭据管理和 CLI。
 
 ## 当前已实现
 
@@ -31,12 +31,20 @@ T1-T15 中的基础骨架、最小 AgentLoop 和 Tool Governance 机制；后续
 - `tool_policy.py`：依据 Phase、TaskState 和路径区域评估工具调用，默认拒绝越界或
 	受保护写入。
 
+### 可恢复状态
+
+- `trace.py`：以连续 `seq` / `event_id` 追加脱敏的 task trace。
+- `checkpoints.py`：创建与提交 SOURCE checkpoint，并在 review phase 通过
+	`rollback_last_checkpoint()` 恢复最近的 committed checkpoint。
+  rollback 会复核 task/project/manifest 身份、SOURCE 路径、快照与 after hash；外部修改、
+  protected 路径、链接逃逸或 inconsistent state 均 fail-closed。多文件恢复及其
+  manifest/state/trace 持久化采用补偿语义，补偿失败将任务标记为 `inconsistent`。
+
 ## 当前边界
 
-当前版本已经提供可独立测试的 Tool Governance 基础，但以下能力仍按
+当前版本已经提供可独立测试的 Tool Governance 与可恢复状态基础，但以下能力仍按
 `docs/PLAN.md` 的后续任务推进：
 
-- TraceLogger、CheckpointManager 和 RollbackManager。
 - ContextBuilder、FeedbackBuilder 与 retry / rollback 集成。
 - `TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 和 `DELIVERABLES.md` 生成。
 - CLI、CredentialProvider、package build 和 CI 分发流程。
@@ -67,5 +75,5 @@ uv run --no-sync ruff check src tests
 uv run --no-sync mypy src
 ```
 
-M3 在当前 Windows 环境的已知情况：symlink 相关场景可能因为系统权限被跳过；
+M4 在当前 Windows 环境的已知情况：symlink 相关场景可能因为系统权限被跳过；
 需要在允许创建文件 symlink 的 CI 或主机上复验 canonical-path 分支。

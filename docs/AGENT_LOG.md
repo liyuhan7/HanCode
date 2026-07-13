@@ -96,6 +96,26 @@
 - 提交：未提交；T17 已完成验证，是否提交由用户决定。
 - 剩余风险：T18 rollback、T21 自动调度、跨进程锁/TOCTOU、pending crash reconcile 与 pruning 均不在 T17 范围。
 
+### 2026-07-13 — T18 — RollbackManager
+
+- 使用的技能：karpathy-guidelines；test-driven-development；systematic-debugging；requesting-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；第一阶段新鲜契约审查子代理；第二阶段新鲜安全/持久化审查子代理。
+- 已实现：
+  - 在 `checkpoints.py` 新增冻结的 `RollbackResult` 与函数式 `rollback_last_checkpoint()`；仅允许在一致的 review state 中恢复最新、同 task / project、已提交且可回退的 code checkpoint。
+  - manifest 生命周期扩展为 `pending -> committed -> rolled_back`；成功回退后保留 checkpoint 序列和 retry budget，重置 review 后的测试/代码完成标记，并写入开始与结果 trace。
+  - 所有 identity、snapshot、PathClassifier、symlink/junction 与 after hash 校验均在写入前完成；冲突或读取错误返回 `blocked`，零业务文件写入。
+  - 多文件、manifest、state 与 trace 任一持久化失败均做反向补偿；补偿失败将 state 标记为 `inconsistent`。文件恢复使用同目录、独占创建的随机临时文件，避免预置路径或链接重定向。
+- TDD 与两阶段审查：
+  - Red：从缺少 rollback 导入开始，再逐项覆盖生命周期、状态复位、冲突、路径/链接边界和补偿。
+  - 阶段一发现 after-hash 预检读取错误被误报为 `failed`；已改为 `rollback_conflict` 的 `blocked` 结果并复核通过。
+  - 阶段二发现可预测临时路径的链接绕过、inconsistent state 仍可执行回退、以及补偿后结果仍虚报已恢复文件；均以最小代码和回归测试修复，复核后无 Critical/Important。
+- 验证：
+  - `tests/test_rollback.py tests/test_checkpoints.py` 为 `62 passed, 5 skipped`。
+  - 全量 pytest 为 `437 passed, 9 skipped in 8.33s`；9 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
+  - Ruff 输出 `All checks passed!`；MyPy 输出 `Success: no issues found in 17 source files`；`git diff --check` 通过。
+- 提交：未提交；T18 已完成验证，是否提交由用户决定。
+- 剩余风险：Windows 上链接分支仍需在可创建 symlink 的 CI/主机复验；跨进程锁、TOCTOU 完全消除、pending crash reconcile、pruning 与 T21 自动调度不在 T18 范围。
+
 ### 2026-07-12 — T15 — 课程文件保护
 
 - 使用的技能：test-driven-development；systematic-debugging。
