@@ -29,6 +29,45 @@
 
 ## 记录条目
 
+### 2026-07-13 — T16 — TraceLogger
+
+- 使用的技能：karpathy-guidelines；test-driven-development；verification-before-completion。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：
+  - 在 `feature/M4` worktree 实现 T16；用户确认函数式设计，TraceLogger 负责分配 `event_id` 和 `seq`。
+  - 仅新增 `trace.py` 与 `test_trace.py`，并回填 PLAN / AGENT_LOG；不改 AgentLoop、ToolPolicy、CheckpointManager 或 history summary。
+- 摘要：
+  - 新增不可变 `TraceEvent` 与 `append_trace()`；事件追加到 task root 的 `trace.jsonl`，并以最后一条合法事件计算连续 `seq` 及 `evt-000001` 格式 ID。
+  - 对 action、observation、state transition 执行递归复制式脱敏；Authorization、api_key、token、secret、password、credential、private_key 等字段只记录 `[REDACTED]`，字符串超过 4096 字符截断为 `...[TRUNCATED]`。
+  - 损坏 trace 或无效既有编号返回 `trace_parse_error`；追加失败返回 `trace_write_error`，不回显底层异常内容。后续高风险调用链可将该错误作为阻断信号。
+- 逐项 TDD 证据：
+  - Red：先因 `hancode.trace` 不存在得到 `ModuleNotFoundError`；随后编号测试断言第二条仍为 `evt-000001`，安全测试发现假 secret 与完整 4097 字符内容出现在 JSONL，异常测试暴露原始 `JSONDecodeError` / `OSError`，编号完整性测试确认无效末条事件未被拒绝。
+  - Green：最小实现分别补齐追加、序号、脱敏截断、结构化错误与编号校验；最终专项为 `8 passed in 0.13s`。
+- 验证：
+  - `ruff check src/hancode/trace.py tests/test_trace.py --no-cache`：通过。
+  - `mypy src/hancode/trace.py`：`Success: no issues found in 1 source file`。
+  - 全量 pytest：`354 passed, 4 skipped in 5.14s`；全量 ruff：通过；全量 mypy：`Success: no issues found in 16 source files`。
+- 环境备注：受限 sandbox 无法创建 pytest 临时锁文件，且 `uv run --extra dev` 的 editable 构建临时目录被拒绝访问；使用 `$env:PYTHONPATH='src'` 加 `uv run --no-project --with ...` 并在本机环境运行同一测试命令取得验证证据。
+- 提交：本任务提交（见 `git log`）。
+- 剩余风险：MVP 已逐行验证 task 内历史后分配序号，但尚未实现并发 writer lock、`fsync` 或崩溃后半行恢复；这些与实际 AgentLoop / 高风险工具调用链集成均属于后续任务。
+
+#### 第一阶段评审修正
+
+- 新鲜独立评审发现：仅检查末行会允许中间损坏、重复 ID 或倒退序号的历史继续追加；字符串型凭据和 JSON 编码异常仍可能泄露原始异常；tool 事件字段与 task ID 未验证。
+- 修正：追加前逐行验证完整历史的连续 `seq` 与 `event_id`；将 JSON 序列化失败转为 `trace_write_error`；对全部字符串键值形式的敏感文本脱敏；要求 tool action 的名称、参数、原因和 policy decision，要求失败工具事件携带错误摘要，并绑定 task ID 与 task root。
+- 验证：新增 7 项回归后 `tests/test_trace.py` 为 `15 passed in 0.23s`；全量为 `361 passed, 4 skipped in 2.65s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
+
+#### 第二阶段安全/质量评审修正
+
+- 新鲜独立评审发现：cookie、AWS access key 和无键名 Bearer token 能绕过原始脱敏；历史 task ID、task-root 布局、tool policy decision/状态与非字符串运行时输入未被充分验证。
+- 修正：扩展字段和文本型凭据脱敏；逐行校验历史 task ID；限制 task root 为 `.hancode/tasks/<task_id>`；要求完整 policy decision 与受限工具状态；将非字符串 mapping key 规范化为字符串，并将非字符串 error summary 转为 `invalid_trace_payload`。
+- 范围判断：评审提出的并发 writer lock、`flush/fsync` 和进程崩溃半行恢复确有审计耐久性价值，但 `docs/PLAN.md` 将单 task 单活跃 runner 明确列为 post-MVP，且 T16 只承诺单进程函数式 JSONL MVP；本任务不提前实现并发/耐久化机制，保留为后续风险。
+- 验证：新增 7 项回归后 `tests/test_trace.py` 为 `22 passed in 0.32s`；最终全量为 `368 passed, 4 skipped in 2.54s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
+- Re-verdict 修正：第二阶段代理继续发现受保护短文本仍会原样进入 trace、伪造 `.hancode/tasks/` 布局可通过、非 Mapping payload 会抛原始异常，且 tool event status 与 event type 不一致仍可落盘。所有内容字段现只记录 `[CONTENT_OMITTED]` 与长度；task root 还必须存在有效 `project.json`；payload、policy 字段及工具状态均 fail-closed。
+- 最终 Re-verdict 修正：字段名别名（如 `file_content`、`tool_output`、`response_body`）由精确匹配改为规范化前缀/后缀匹配，嵌套内容同样摘要化。
+- 最终验证：新增 7 项回归后 `tests/test_trace.py` 为 `29 passed in 0.43s`；全量为 `375 passed, 4 skipped in 3.92s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
+- 第二阶段最终 re-verdict：无 Critical、Important 或 Minor；字段别名及嵌套内容摘要、项目 metadata、payload 与工具审计契约均已关闭。并发 writer lock、`fsync` 与崩溃半行恢复仍为已记录的 post-MVP 非目标。
+
 ### 2026-07-12 — T15 — 课程文件保护
 
 - 使用的技能：test-driven-development；systematic-debugging。

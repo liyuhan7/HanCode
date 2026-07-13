@@ -1702,12 +1702,12 @@ $env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache';
 
 | 元信息           | 值                    |
 | ------------- | -------------------- |
-| 状态            | [ ] 未开始              |
+| 状态            | [x] 已完成              |
 | 依赖            | T1, T4               |
 | 可并行           | 可与 T13/T14 并行        |
 | Worktree / PR | `feature/M4`         |
 | 主贡献相关         | 是，可观测性核心             |
-| Commit        | TODO                 |
+| Commit        | 本任务提交（见 `git log`） |
 
 ### 目标
 
@@ -1727,23 +1727,61 @@ $env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache';
 ### 接口契约
 
 ```python
-class TraceEvent: ...
+class TraceEvent:
+    event_id: str
+    seq: int
+    event_type: str
+    task_id: str
+    phase: Phase
+    timestamp: datetime
+    status: str
+    action: Mapping[str, object] | None
+    observation: Mapping[str, object] | None
+    error_summary: str | None
+    state_transition: Mapping[str, object] | None
 
-def append_trace(task_root: Path, event: TraceEvent) -> None: ...
+def append_trace(
+    task_root: Path,
+    *,
+    event_type: str,
+    task_id: str,
+    phase: Phase,
+    status: str,
+    ...,
+) -> TraceEvent: ...
 ```
 
-输入：task root、TraceEvent。
-输出：追加写入 `trace.jsonl`。
-不变量：trace 只追加，不修改；event_id / seq 在 task 内可排序。
+输入：task root、事件字段；TraceLogger 生成 event ID 和序号。
+输出：追加写入 `trace.jsonl` 后的 `TraceEvent`。
+不变量：trace 只追加，不修改；`event_id=evt-{seq:06d}`，seq 在 task 内单调递增。
 错误处理：trace 写入失败时阻止继续执行高风险工具。
 
 ### 预期失败测试
 
 * `test_trace_appends_jsonl_event_with_event_id`
 * `test_trace_event_has_monotonic_seq`
-* `test_trace_redacts_secret_like_values`
-* `test_trace_does_not_store_large_file_content`
+* `test_trace_redacts_nested_secret_like_values`
+* `test_trace_truncates_large_content`
+* `test_trace_rejects_malformed_existing_jsonl`
+* `test_trace_rejects_invalid_existing_sequence`
 * `test_trace_write_failure_blocks_high_risk_action`
+* `test_trace_rejects_invalid_history_before_append`
+* `test_trace_serialization_failure_returns_structured_error`
+* `test_trace_redacts_secret_like_text_values`
+* `test_trace_rejects_tool_event_without_auditable_action`
+* `test_trace_rejects_failed_tool_event_without_error_summary`
+* `test_trace_rejects_task_id_outside_task_root`
+* `test_trace_redacts_cookie_aws_and_bearer_values`
+* `test_trace_rejects_history_for_another_task`
+* `test_trace_rejects_tool_event_without_complete_decision_or_status`
+* `test_trace_normalizes_non_string_payload_keys`
+* `test_trace_rejects_non_string_error_summary`
+* `test_trace_rejects_task_root_outside_workspace_layout`
+* `test_trace_rejects_task_root_without_valid_project_metadata`
+* `test_trace_rejects_non_mapping_payloads`
+* `test_trace_rejects_inconsistent_tool_event_details`
+* `test_trace_omits_content_values_from_observations`
+* `test_trace_omits_content_field_aliases_recursively`
 
 ### 实现要点
 
@@ -1751,6 +1789,12 @@ def append_trace(task_root: Path, event: TraceEvent) -> None: ...
 * 每行 JSONL 必须是合法 JSON。
 * 脱敏字段包括 Authorization、api_key、token、secret、password。
 * trace 不记录完整大文件内容。
+* 名称以或终于 `content`、`output`、`stdout`、`stderr`、`body`、`text` 的字段只写入 `[CONTENT_OMITTED]` 摘要与字符串长度，不记录原文，覆盖 `file_content`、`tool_output`、`response_body` 等别名，避免受保护文件或工具输出进入 trace。
+* 写入或既有 trace 解析失败时，返回不泄露底层异常的 `HanCodeError`；T16 不改 AgentLoop / ToolPolicy，后续调用方捕获此错误后阻断高风险动作。
+* 追加前必须验证全量既有 JSONL：每行都是 JSON object，`seq` 从 1 连续递增，且 `event_id=evt-{seq:06d}`；中间损坏、重复或倒退编号拒绝追加。
+* 文本内容也必须扫描并脱敏 `Authorization: ...`、`API_KEY=...` 等键值形式；JSON 编码失败同样转换为 `trace_write_error`。
+* tool 事件要求 action 中包含 `tool_name`、`args`、`reason`、`policy_decision`；`tool_failed` 还要求错误摘要。传入 task ID 必须与 task root 目录名一致。
+* task root 必须位于 `.hancode/tasks/<task_id>` 布局；历史事件的 task ID 必须与当前任务一致。工具 policy decision 至少记录 `allowed`、`message`、`phase`、`denied_rule` 和 `suggested_fix`，工具状态受限为 `running`、`succeeded`、`failed`、`blocked`。
 
 ### 验证步骤
 
@@ -1766,11 +1810,21 @@ uv run mypy src/hancode/trace.py
 * secret fixture 不出现在 trace 中。
 * trace 写失败有明确错误路径。
 
+### 实际验证
+
+* Red：新增基础测试后，`uv run --no-project --with pytest pytest tests/test_trace.py::test_trace_appends_jsonl_event_with_event_id -v -p no:cacheprovider --basetemp .pytest-tmp` 因 `ModuleNotFoundError: No module named 'hancode.trace'` 失败；编号、安全和错误路径测试均在对应最小实现前得到预期断言失败。
+* Green：`$env:PYTHONPATH='src'; uv run --no-project --with pytest pytest tests/test_trace.py -v -p no:cacheprovider --basetemp .pytest-tmp` 通过，8 passed。
+* 定向质量：`ruff check src/hancode/trace.py tests/test_trace.py --no-cache` 通过；`mypy src/hancode/trace.py` 通过，no issues found in 1 source file。
+* 全量回归：`pytest -p no:cacheprovider --basetemp .pytest-tmp` 通过，354 passed、4 skipped；`ruff check src tests --no-cache` 通过；`mypy src` 通过，no issues found in 16 source files。
+* 第一阶段评审修正：新增全量历史完整性、字符串凭据、JSON 编码失败、工具审计字段和 task ID 绑定测试后，专项通过，15 passed；全量回归通过，361 passed、4 skipped；ruff 与 mypy `src` 均通过。
+* 第二阶段安全/质量审查修正：先补齐 cookie、AWS access key、裸 Bearer token、历史 task ID、完整 policy decision、状态、非字符串 payload key / error summary 和 task-root 布局；re-verdict 继续发现受保护短内容、伪造项目元数据、非 Mapping payload、工具事件状态一致性及内容字段别名缺口，已统一改为内容摘要并收紧项目 metadata / payload / policy 契约。最终专项通过，29 passed；全量回归通过，375 passed、4 skipped；ruff 与 mypy `src` 均通过。
+
 ### 非目标 / 边界
 
 * 不实现 history summary。
 * 不实现 demo 完整事件序列。
 * 不实现 checkpoint。
+* 不实现并发 writer lock、进程崩溃后的半行恢复或 `fsync` 耐久化保证；这些属于全局 post-MVP 单 task 单活跃 runner 与持久化增强，不得在 T16 提前扩展。
 
 ---
 
