@@ -1,19 +1,49 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from pathlib import Path
+from typing import Mapping, Protocol
 
 from hancode.actions import Action, ActionType, ParseError, parse_action
+from hancode.checkpoints import CheckpointManifest, RollbackResult
 from hancode.errors import StructuredError
 from hancode.llm import LLMClient, MockLLMExhausted
 from hancode.models import Phase, Risk, TaskStatus
 from hancode.router import select_next_phase
 from hancode.state import TaskState
 from hancode.tools import ToolResult
+from hancode.trace import TraceEvent
 
 
 class StateStore(Protocol):
     def load(self, task_id: str) -> TaskState: ...
+
+    def save(self, task_id: str, state: TaskState) -> None: ...
+
+
+class TraceAppender(Protocol):
+    def append(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        phase: Phase,
+        status: str,
+        action: Mapping[str, object] | None = None,
+        observation: Mapping[str, object] | None = None,
+        error_summary: str | None = None,
+        state_transition: Mapping[str, object] | None = None,
+    ) -> TraceEvent: ...
+
+
+class CheckpointManager(Protocol):
+    def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest: ...
+
+    def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest: ...
+
+
+class RollbackManager(Protocol):
+    def rollback_last(self, task_id: str) -> RollbackResult: ...
 
 
 class ContextBuilder(Protocol):
@@ -25,6 +55,7 @@ class ContextBuilder(Protocol):
 class PolicyDecisionLike(Protocol):
     allowed: bool
     reason: str
+    requires_checkpoint: bool
     denied_rule: str | None
     suggested_fix: str
 
@@ -46,6 +77,10 @@ class FeedbackBuilder(Protocol):
 
     def from_tool_result(self, result: ToolResult, *, phase: Phase) -> object: ...
 
+    def from_checkpoint_manifest(self, manifest: CheckpointManifest) -> object: ...
+
+    def from_rollback_result(self, result: RollbackResult, *, phase: Phase) -> object: ...
+
 
 @dataclass(frozen=True, slots=True)
 class AgentRunResult:
@@ -55,6 +90,9 @@ class AgentRunResult:
     risks: tuple[Risk, ...]
     final_observation: object | None
     error: StructuredError | None
+    final_state: TaskState
+    retry_budget_remaining: int
+    trace_events: tuple[TraceEvent, ...]
 
 
 class AgentLoop:
@@ -67,6 +105,9 @@ class AgentLoop:
         tool_registry: ToolRegistry,
         feedback_builder: FeedbackBuilder,
         state_store: StateStore,
+        trace_appender: TraceAppender,
+        checkpoint_manager: CheckpointManager,
+        rollback_manager: RollbackManager,
         max_steps: int,
     ) -> None:
         if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps <= 0:
@@ -77,13 +118,16 @@ class AgentLoop:
         self._tool_registry = tool_registry
         self._feedback_builder = feedback_builder
         self._state_store = state_store
+        self._trace_appender = trace_appender
+        self._checkpoint_manager = checkpoint_manager
+        self._rollback_manager = rollback_manager
         self._max_steps = max_steps
 
     def run(self, task_id: str) -> AgentRunResult:
         state = self._state_store.load(task_id)
         routing = select_next_phase(state)
         if routing.completed:
-            return _result(TaskStatus.COMPLETED, 0, (), None, None)
+            return _result(TaskStatus.COMPLETED, 0, (), None, None, state)
         if routing.blocked:
             status = (
                 state.status
@@ -102,6 +146,7 @@ class AgentLoop:
                     denied_rule=routing.reason,
                     suggested_fix="Resolve the task state before running the agent loop again.",
                 ),
+                state,
             )
 
         observation: object | None = None
@@ -132,6 +177,7 @@ class AgentLoop:
                         denied_rule=None,
                         suggested_fix=exc.suggested_fix,
                     ),
+                    state,
                 )
 
             action = parse_action(raw_action, routing.phase)
@@ -143,6 +189,7 @@ class AgentLoop:
                     tuple(tool_calls),
                     observation,
                     _structured_parse_error(action),
+                    state,
                 )
 
             decision = self._policy.evaluate(
@@ -164,6 +211,7 @@ class AgentLoop:
                         denied_rule=decision.denied_rule,
                         suggested_fix=decision.suggested_fix,
                     ),
+                    state,
                 )
 
             if action.type is ActionType.TOOL_CALL:
@@ -176,7 +224,9 @@ class AgentLoop:
                 continue
 
             if action.type in {ActionType.FINISH_PHASE, ActionType.FINAL}:
-                return _result(TaskStatus.RUNNING, step, tuple(tool_calls), observation, None)
+                return _result(
+                    TaskStatus.RUNNING, step, tuple(tool_calls), observation, None, state
+                )
 
             return _result(
                 TaskStatus.BLOCKED,
@@ -190,6 +240,7 @@ class AgentLoop:
                     denied_rule=None,
                     suggested_fix="Use a tool call or finish the current phase.",
                 ),
+                state,
             )
 
         return _result(
@@ -204,6 +255,7 @@ class AgentLoop:
                 denied_rule="max_steps_limit",
                 suggested_fix="Increase max_steps or make the action sequence terminate earlier.",
             ),
+            state,
         )
 
 
@@ -213,6 +265,7 @@ def _result(
     tool_calls: tuple[str, ...],
     observation: object | None,
     error: StructuredError | None,
+    final_state: TaskState,
 ) -> AgentRunResult:
     return AgentRunResult(
         status=status,
@@ -221,6 +274,9 @@ def _result(
         risks=(),
         final_observation=observation,
         error=error,
+        final_state=final_state,
+        retry_budget_remaining=final_state.retry_budget_remaining,
+        trace_events=(),
     )
 
 

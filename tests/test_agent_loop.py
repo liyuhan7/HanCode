@@ -8,18 +8,21 @@ import pytest
 
 from hancode.actions import Action
 from hancode.agent_loop import AgentLoop
+from hancode.checkpoints import CheckpointManifest, RollbackResult
 from hancode.config import HanCodeConfig
 from hancode.llm import MockLLM
 from hancode.models import Phase, TaskStatus
 from hancode.state import TaskState
 from hancode.tool_policy import PolicyDecision, ToolPolicy
 from hancode.tools import ToolResult
+from hancode.trace import TraceEvent
 
 
 @dataclass(frozen=True)
 class StubPolicyDecision:
     allowed: bool
     reason: str = "Action is allowed."
+    requires_checkpoint: bool = False
     denied_rule: str | None = None
     suggested_fix: str = "Use an allowed action."
 
@@ -32,6 +35,55 @@ class StubStateStore:
     def load(self, task_id: str) -> TaskState:
         self.task_ids.append(task_id)
         return self.state
+
+    def save(self, task_id: str, state: TaskState) -> None:
+        assert task_id == state.task_id
+        self.task_ids.append(task_id)
+        self.state = state
+
+
+class SpyTraceAppender:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def append(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        phase: Phase,
+        status: str,
+        action: Mapping[str, object] | None = None,
+        observation: Mapping[str, object] | None = None,
+        error_summary: str | None = None,
+        state_transition: Mapping[str, object] | None = None,
+    ) -> TraceEvent:
+        self.calls.append(task_id)
+        raise AssertionError("T21 Task 1 must not append trace events.")
+
+
+class StubCheckpointManager:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def create(
+        self, task_id: str, files: list[Path], reason: str
+    ) -> CheckpointManifest:
+        self.calls.append(task_id)
+        raise AssertionError("T21 Task 1 must not create checkpoints.")
+
+    def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest:
+        self.calls.append(task_id)
+        raise AssertionError("T21 Task 1 must not commit checkpoints.")
+
+
+class StubRollbackManager:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def rollback_last(self, task_id: str) -> RollbackResult:
+        self.calls.append(task_id)
+        raise AssertionError("T21 Task 1 must not roll back checkpoints.")
 
 
 class SpyContextBuilder:
@@ -89,6 +141,12 @@ class SpyFeedbackBuilder:
         self.tool_results.append(result)
         self.tool_result_phases.append(phase)
         return {"kind": "tool_result", "result": result}
+
+    def from_checkpoint_manifest(self, manifest: CheckpointManifest) -> object:
+        return {"kind": "checkpoint", "manifest": manifest}
+
+    def from_rollback_result(self, result: RollbackResult, *, phase: Phase) -> object:
+        return {"kind": "rollback", "result": result, "phase": phase}
 
 
 def test_agent_loop_calls_llm_with_context() -> None:
@@ -169,6 +227,9 @@ def test_real_tool_policy_denial_does_not_execute_tool(tmp_path: Path) -> None:
         tool_registry=tools,
         feedback_builder=feedback,
         state_store=StubStateStore(_task_state()),
+        trace_appender=SpyTraceAppender(),
+        checkpoint_manager=StubCheckpointManager(),
+        rollback_manager=StubRollbackManager(),
         max_steps=1,
     )
 
@@ -214,6 +275,29 @@ def test_finish_action_stops_loop() -> None:
     assert result.steps == 1
     assert result.tool_calls == ()
     assert not tools.actions
+
+
+def test_agent_loop_result_mirrors_loaded_state_without_new_port_side_effects() -> None:
+    state = _task_state()
+    trace_appender = SpyTraceAppender()
+    checkpoint_manager = StubCheckpointManager()
+    rollback_manager = StubRollbackManager()
+    loop, _, _, _, _, _ = _build_loop(
+        [_finish_action()],
+        state=state,
+        trace_appender=trace_appender,
+        checkpoint_manager=checkpoint_manager,
+        rollback_manager=rollback_manager,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.final_state is state
+    assert result.retry_budget_remaining == state.retry_budget_remaining
+    assert result.trace_events == ()
+    assert trace_appender.calls == []
+    assert checkpoint_manager.calls == []
+    assert rollback_manager.calls == []
 
 
 def test_final_action_stops_loop() -> None:
@@ -322,6 +406,9 @@ def _build_loop(
     state: TaskState | None = None,
     decision: StubPolicyDecision | None = None,
     events: list[str] | None = None,
+    trace_appender: SpyTraceAppender | None = None,
+    checkpoint_manager: StubCheckpointManager | None = None,
+    rollback_manager: StubRollbackManager | None = None,
 ) -> tuple[
     AgentLoop,
     MockLLM,
@@ -343,6 +430,9 @@ def _build_loop(
         tool_registry=tools,
         feedback_builder=feedback,
         state_store=StubStateStore(state or _task_state()),
+        trace_appender=trace_appender or SpyTraceAppender(),
+        checkpoint_manager=checkpoint_manager or StubCheckpointManager(),
+        rollback_manager=rollback_manager or StubRollbackManager(),
         max_steps=max_steps,
     )
     return loop, llm, context_builder, policy, tools, feedback
