@@ -264,8 +264,94 @@ class AgentLoop:
                         ),
                         state,
                     )
+                checkpoint: CheckpointManifest | None = None
+                if decision.requires_checkpoint:
+                    path = action.args["path"]
+                    assert isinstance(path, str)
+                    assert action.reason is not None
+                    try:
+                        checkpoint = self._checkpoint_manager.create(
+                            task_id,
+                            [Path(path)],
+                            action.reason,
+                        )
+                    except HanCodeError as exc:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            exc.structured_error,
+                            state,
+                        )
+                    except Exception:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            _checkpoint_guard_error(
+                                "checkpoint_create_failed",
+                                "Checkpoint could not be created before the source write.",
+                                routing.phase,
+                                "checkpoint_creation_required",
+                                "Restore checkpoint storage before retrying the source write.",
+                            ),
+                            state,
+                        )
                 tool_result = self._tool_registry.dispatch(action)
                 tool_calls.append(action.tool_name)
+                if decision.requires_checkpoint:
+                    if not tool_result.success:
+                        state = self._mark_inconsistent(task_id, state)
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            _checkpoint_guard_error(
+                                "checkpointed_write_failed",
+                                "Checkpointed source write failed; task state is inconsistent.",
+                                routing.phase,
+                                "checkpointed_write_must_be_reconciled",
+                                "Inspect the source file and checkpoint before continuing.",
+                            ),
+                            state,
+                            risks=(_checkpoint_failure_risk(),),
+                        )
+                    assert checkpoint is not None
+                    try:
+                        self._checkpoint_manager.commit(task_id, checkpoint.checkpoint_id)
+                    except HanCodeError as exc:
+                        state = self._mark_inconsistent(task_id, state)
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            exc.structured_error,
+                            state,
+                            risks=(_checkpoint_failure_risk(),),
+                        )
+                    except Exception:
+                        state = self._mark_inconsistent(task_id, state)
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            _checkpoint_guard_error(
+                                "checkpoint_commit_failed",
+                                "Checkpoint could not be committed after the source write.",
+                                routing.phase,
+                                "checkpoint_commit_required",
+                                "Reconcile the source file and checkpoint before continuing.",
+                            ),
+                            state,
+                            risks=(_checkpoint_failure_risk(),),
+                        )
                 state = self._save_if_changed(
                     task_id,
                     state,
@@ -365,6 +451,18 @@ class AgentLoop:
     def _block(self, task_id: str, state: TaskState) -> TaskState:
         return self._save_if_changed(task_id, state, replace(state, status=TaskStatus.BLOCKED))
 
+    def _mark_inconsistent(self, task_id: str, state: TaskState) -> TaskState:
+        inconsistent_state = replace(
+            state,
+            status=TaskStatus.INCONSISTENT,
+            inconsistent=True,
+        )
+        try:
+            self._state_store.save(task_id, inconsistent_state)
+        except Exception:
+            pass
+        return inconsistent_state
+
     def _save_if_changed(
         self, task_id: str, previous: TaskState, updated: TaskState
     ) -> TaskState:
@@ -400,12 +498,14 @@ def _result(
     observation: object | None,
     error: StructuredError | None,
     final_state: TaskState,
+    *,
+    risks: tuple[Risk, ...] = (),
 ) -> AgentRunResult:
     return AgentRunResult(
         status=status,
         steps=steps,
         tool_calls=tool_calls,
-        risks=(),
+        risks=risks,
         final_observation=observation,
         error=error,
         final_state=final_state,
@@ -421,6 +521,30 @@ def _structured_parse_error(error: ParseError) -> StructuredError:
         phase=error.phase,
         denied_rule=error.denied_rule,
         suggested_fix=error.suggested_fix,
+    )
+
+
+def _checkpoint_guard_error(
+    error_code: str,
+    message: str,
+    phase: Phase,
+    denied_rule: str,
+    suggested_fix: str,
+) -> StructuredError:
+    return StructuredError(
+        error_code=error_code,
+        message=message,
+        phase=phase.value,
+        denied_rule=denied_rule,
+        suggested_fix=suggested_fix,
+    )
+
+
+def _checkpoint_failure_risk() -> Risk:
+    return Risk(
+        level="high",
+        message="A checkpointed source write may not be recoverable automatically.",
+        mitigation="Reconcile the source file and checkpoint before continuing.",
     )
 
 

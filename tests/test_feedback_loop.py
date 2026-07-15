@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal, Mapping, cast
 
 from hancode.actions import Action
-from hancode.agent_loop import AgentLoop
+from hancode.agent_loop import AgentLoop, CheckpointManager, Policy
 from hancode.checkpoints import CheckpointManifest, RollbackResult
 from hancode.errors import HanCodeError, StructuredError
 from hancode.llm import MockLLM
@@ -47,14 +49,28 @@ class AllowedPolicy:
     ) -> AllowedDecision:
         assert action.phase is phase
         assert state.current_phase is phase
-        return AllowedDecision(requires_checkpoint=self._requires_checkpoint)
+        return AllowedDecision(
+            requires_checkpoint=(
+                self._requires_checkpoint
+                and action.tool_name in {"write_file", "edit_file"}
+            )
+        )
 
 
 class ScriptedTools:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        events: list[str] | None = None,
+        write_success: bool = True,
+    ) -> None:
         self.actions: list[Action] = []
+        self.events = events
+        self.write_success = write_success
 
     def dispatch(self, action: Action) -> ToolResult:
+        if self.events is not None:
+            self.events.append("dispatch")
         self.actions.append(action)
         if action.tool_name == "run_tests":
             return ToolResult(
@@ -62,6 +78,12 @@ class ScriptedTools:
                 action_name="run_tests",
                 exit_code=1,
                 stderr="E   AssertionError: expected retry\n1 failed",
+            )
+        if action.tool_name == "write_file" and not self.write_success:
+            return ToolResult(
+                success=False,
+                action_name="write_file",
+                error_summary="Source write failed.",
             )
         return ToolResult(success=True, action_name=action.tool_name or "unknown")
 
@@ -120,6 +142,36 @@ class NoopCheckpointManager:
         raise AssertionError("Task 2 must not commit checkpoints.")
 
 
+class RecordingCheckpointManager:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        create_error: HanCodeError | None = None,
+        commit_error: HanCodeError | None = None,
+    ) -> None:
+        self.events = events
+        self.create_error = create_error
+        self.commit_error = commit_error
+        self.files: list[Path] | None = None
+        self.reason: str | None = None
+
+    def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest:
+        self.events.append("create")
+        self.files = files
+        self.reason = reason
+        if self.create_error is not None:
+            raise self.create_error
+        return _checkpoint_manifest(task_id)
+
+    def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest:
+        self.events.append("commit")
+        assert checkpoint_id == "ckpt-001"
+        if self.commit_error is not None:
+            raise self.commit_error
+        return _checkpoint_manifest(task_id, status="committed", rollback_available=True)
+
+
 class NoopRollbackManager:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -134,9 +186,126 @@ class RecordingContextBuilder:
         self.calls: list[dict[str, object]] = []
 
     def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]:
-        context = {"task_id": task_id, "phase": phase.value}
+        context: dict[str, object] = {"task_id": task_id, "phase": phase.value}
         self.calls.append(context)
         return context
+
+
+def test_source_write_checkpoint_orders_create_dispatch_then_commit() -> None:
+    events: list[str] = []
+    checkpoints = RecordingCheckpointManager(events)
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=MemoryStateStore(_retry_code_state()),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=checkpoints,
+        max_steps=1,
+    )
+
+    loop.run("task-001")
+
+    assert events == ["create", "dispatch", "commit"]
+    assert checkpoints.files == [Path("src/main.py")]
+    assert checkpoints.reason == "Fix the failed assertion."
+
+
+def test_checkpoint_create_failure_blocks_before_source_write_dispatch() -> None:
+    events: list[str] = []
+    tools = ScriptedTools(events=events)
+    checkpoints = RecordingCheckpointManager(
+        events,
+        create_error=HanCodeError(
+            StructuredError(
+                error_code="checkpoint_snapshot_failed",
+                message="Checkpoint could not be created.",
+                phase=Phase.CODE.value,
+                denied_rule="checkpoint_persistence_required",
+                suggested_fix="Restore checkpoint storage.",
+            )
+        ),
+    )
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=MemoryStateStore(_retry_code_state()),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=tools,
+        checkpoint_manager=checkpoints,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_snapshot_failed"
+    assert events == ["create"]
+    assert tools.actions == []
+
+
+def test_checkpointed_source_write_failure_marks_state_inconsistent_and_stops() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=ScriptedTools(events=events, write_success=False),
+        checkpoint_manager=RecordingCheckpointManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert events == ["create", "dispatch"]
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "checkpointed_write_failed"
+    assert result.final_state.inconsistent is True
+    assert state_store.state.status is TaskStatus.INCONSISTENT
+    assert result.risks[0].level == "high"
+
+
+def test_checkpoint_commit_failure_marks_state_inconsistent_and_stops() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=RecordingCheckpointManager(
+            events,
+            commit_error=HanCodeError(
+                StructuredError(
+                    error_code="checkpoint_commit_failed",
+                    message="Checkpoint could not be committed.",
+                    phase=Phase.CODE.value,
+                    denied_rule="checkpoint_commit_required",
+                    suggested_fix="Reconcile the source file.",
+                )
+            ),
+        ),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert events == ["create", "dispatch", "commit"]
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_commit_failed"
+    assert result.final_state.inconsistent is True
+    assert state_store.state.status is TaskStatus.INCONSISTENT
+    assert result.risks[0].level == "high"
 
 
 def test_failed_test_retries_through_review_then_decrements_once_on_retry_write() -> None:
@@ -156,6 +325,7 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
         context_builder=context_builder,
         feedback=RecordingFeedback(),
         policy=AllowedPolicy(requires_checkpoint=True),
+        checkpoint_manager=RecordingCheckpointManager([]),
         max_steps=4,
     )
 
@@ -244,7 +414,6 @@ def test_final_action_after_failed_test_cannot_bypass_router_completion() -> Non
     result = loop.run("task-001")
 
     assert result.status is TaskStatus.BLOCKED
-    assert result.status is not TaskStatus.COMPLETED
     assert result.error is not None
     assert result.error.error_code == "final_requires_router_completion"
 
@@ -274,18 +443,22 @@ def _loop(
     feedback: RecordingFeedback,
     policy: AllowedPolicy | None = None,
     tools: ScriptedTools | None = None,
+    checkpoint_manager: RecordingCheckpointManager | None = None,
     rollback_manager: NoopRollbackManager | None = None,
     max_steps: int,
 ) -> AgentLoop:
     return AgentLoop(
         llm=llm,
         context_builder=context_builder,
-        policy=policy or AllowedPolicy(),
+        policy=cast(Policy, policy or AllowedPolicy()),
         tool_registry=tools or ScriptedTools(),
         feedback_builder=feedback,
         state_store=state_store,
         trace_appender=NoopTraceAppender(),
-        checkpoint_manager=NoopCheckpointManager(),
+        checkpoint_manager=cast(
+            CheckpointManager,
+            checkpoint_manager or NoopCheckpointManager(),
+        ),
         rollback_manager=rollback_manager or NoopRollbackManager(),
         max_steps=max_steps,
     )
@@ -403,3 +576,23 @@ def _rollback_action() -> dict[str, object]:
         "args": {},
         "reason": None,
     }
+
+
+def _checkpoint_manifest(
+    task_id: str,
+    *,
+    status: Literal["pending", "committed", "rolled_back"] = "pending",
+    rollback_available: bool = False,
+) -> CheckpointManifest:
+    return CheckpointManifest(
+        schema_version=1,
+        project_id="project-001",
+        checkpoint_id="ckpt-001",
+        task_id=task_id,
+        phase=Phase.CODE,
+        reason="Fix the failed assertion.",
+        created_at=datetime.now(UTC),
+        status=status,
+        files=(),
+        rollback_available=rollback_available,
+    )
