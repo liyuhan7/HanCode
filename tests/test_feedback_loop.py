@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 from hancode.actions import Action
@@ -39,16 +39,23 @@ class MemoryStateStore:
 
 
 class AllowedPolicy:
+    def __init__(self, *, requires_checkpoint: bool = False) -> None:
+        self._requires_checkpoint = requires_checkpoint
+
     def evaluate(
         self, *, action: Action, phase: Phase, state: TaskState
     ) -> AllowedDecision:
         assert action.phase is phase
         assert state.current_phase is phase
-        return AllowedDecision()
+        return AllowedDecision(requires_checkpoint=self._requires_checkpoint)
 
 
 class ScriptedTools:
+    def __init__(self) -> None:
+        self.actions: list[Action] = []
+
     def dispatch(self, action: Action) -> ToolResult:
+        self.actions.append(action)
         if action.tool_name == "run_tests":
             return ToolResult(
                 success=False,
@@ -56,8 +63,7 @@ class ScriptedTools:
                 exit_code=1,
                 stderr="E   AssertionError: expected retry\n1 failed",
             )
-        assert action.tool_name == "write_file"
-        return ToolResult(success=True, action_name="write_file")
+        return ToolResult(success=True, action_name=action.tool_name or "unknown")
 
 
 class RecordingFeedback:
@@ -115,7 +121,11 @@ class NoopCheckpointManager:
 
 
 class NoopRollbackManager:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
     def rollback_last(self, task_id: str) -> RollbackResult:
+        self.calls.append(task_id)
         raise AssertionError("Task 2 must not roll back checkpoints.")
 
 
@@ -132,13 +142,21 @@ class RecordingContextBuilder:
 def test_failed_test_retries_through_review_then_decrements_once_on_retry_write() -> None:
     state_store = MemoryStateStore(_state())
     context_builder = RecordingContextBuilder()
-    llm = MockLLM([_run_tests_action(), _finish_review_action(), _retry_write_action()])
+    llm = MockLLM(
+        [
+            _run_tests_action(),
+            _finish_review_action(),
+            _retry_write_action(),
+            _retry_write_action(),
+        ]
+    )
     loop = _loop(
         llm=llm,
         state_store=state_store,
         context_builder=context_builder,
         feedback=RecordingFeedback(),
-        max_steps=3,
+        policy=AllowedPolicy(requires_checkpoint=True),
+        max_steps=4,
     )
 
     result = loop.run("task-001")
@@ -170,7 +188,47 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
         ),
     }
     assert result.retry_budget_remaining == 1
+    assert result.final_state.source_edits_this_phase == 2
     assert result.status is not TaskStatus.COMPLETED
+
+
+def test_successful_retry_write_without_checkpoint_requirement_keeps_budget() -> None:
+    state = _retry_code_state()
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=MemoryStateStore(state),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=False),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.retry_budget_remaining == 2
+    assert result.final_state.source_edits_this_phase == 1
+
+
+def test_rollback_tool_is_blocked_without_dispatch_or_rollback_call() -> None:
+    tools = ScriptedTools()
+    rollback_manager = NoopRollbackManager()
+    loop = _loop(
+        llm=MockLLM([_rollback_action()]),
+        state_store=MemoryStateStore(_review_state()),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=tools,
+        rollback_manager=rollback_manager,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "rollback_deferred_to_task_4"
+    assert tools.actions == []
+    assert rollback_manager.calls == []
 
 
 def test_final_action_after_failed_test_cannot_bypass_router_completion() -> None:
@@ -214,18 +272,21 @@ def _loop(
     state_store: MemoryStateStore,
     context_builder: RecordingContextBuilder,
     feedback: RecordingFeedback,
+    policy: AllowedPolicy | None = None,
+    tools: ScriptedTools | None = None,
+    rollback_manager: NoopRollbackManager | None = None,
     max_steps: int,
 ) -> AgentLoop:
     return AgentLoop(
         llm=llm,
         context_builder=context_builder,
-        policy=AllowedPolicy(),
-        tool_registry=ScriptedTools(),
+        policy=policy or AllowedPolicy(),
+        tool_registry=tools or ScriptedTools(),
         feedback_builder=feedback,
         state_store=state_store,
         trace_appender=NoopTraceAppender(),
         checkpoint_manager=NoopCheckpointManager(),
-        rollback_manager=NoopRollbackManager(),
+        rollback_manager=rollback_manager or NoopRollbackManager(),
         max_steps=max_steps,
     )
 
@@ -267,6 +328,33 @@ def _state() -> TaskState:
     )
 
 
+def _retry_code_state() -> TaskState:
+    state = _state()
+    phase_completed = dict(state.phase_completed)
+    phase_completed[Phase.CODE.value] = False
+    phase_completed[Phase.TEST.value] = False
+    return replace(
+        state,
+        current_phase=Phase.CODE,
+        latest_test_status="failed",
+        test_status_consumed=True,
+        phase_completed=phase_completed,
+    )
+
+
+def _review_state() -> TaskState:
+    state = _state()
+    phase_completed = dict(state.phase_completed)
+    phase_completed[Phase.TEST.value] = True
+    phase_completed[Phase.REVIEW.value] = False
+    return replace(
+        state,
+        current_phase=Phase.REVIEW,
+        latest_test_status="passed",
+        phase_completed=phase_completed,
+    )
+
+
 def _run_tests_action() -> dict[str, object]:
     return {
         "type": "tool_call",
@@ -304,4 +392,14 @@ def _retry_write_action() -> dict[str, object]:
         "tool_name": "write_file",
         "args": {"path": "src/main.py", "content": "fixed\n"},
         "reason": "Fix the failed assertion.",
+    }
+
+
+def _rollback_action() -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": Phase.REVIEW.value,
+        "tool_name": "rollback_last_checkpoint",
+        "args": {},
+        "reason": None,
     }

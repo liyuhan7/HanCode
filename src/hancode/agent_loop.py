@@ -248,10 +248,28 @@ class AgentLoop:
 
             if action.type is ActionType.TOOL_CALL:
                 assert action.tool_name is not None
+                if action.tool_name == "rollback_last_checkpoint":
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        StructuredError(
+                            error_code="rollback_deferred_to_task_4",
+                            message="Rollback execution is not available in this task slice.",
+                            phase=routing.phase.value,
+                            denied_rule="rollback_task_4_required",
+                            suggested_fix="Complete Task 4 before requesting rollback execution.",
+                        ),
+                        state,
+                    )
                 tool_result = self._tool_registry.dispatch(action)
                 tool_calls.append(action.tool_name)
                 state = self._save_if_changed(
-                    task_id, state, _state_after_tool(state, action, tool_result)
+                    task_id,
+                    state,
+                    _state_after_tool(state, action, tool_result, decision),
                 )
                 observation, feedback_error = self._build_feedback(
                     lambda: self._feedback_builder.from_tool_result(
@@ -407,7 +425,10 @@ def _structured_parse_error(error: ParseError) -> StructuredError:
 
 
 def _state_after_tool(
-    state: TaskState, action: Action, result: ToolResult
+    state: TaskState,
+    action: Action,
+    result: ToolResult,
+    decision: PolicyDecisionLike,
 ) -> TaskState:
     phase_completed = dict(state.phase_completed)
     if action.tool_name == "run_tests":
@@ -428,6 +449,7 @@ def _state_after_tool(
         and state.test_status_consumed
         and state.source_edits_this_phase == 0
         and state.retry_budget_remaining > 0
+        and decision.requires_checkpoint
     ):
         phase_completed[Phase.TEST.value] = False
         return replace(
