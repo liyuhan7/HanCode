@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import Callable, Mapping, Protocol
 
 from hancode.actions import Action, ActionType, ParseError, parse_action
 from hancode.checkpoints import CheckpointManifest, RollbackResult
-from hancode.errors import StructuredError
+from hancode.errors import HanCodeError, StructuredError
 from hancode.llm import LLMClient, MockLLMExhausted
 from hancode.models import Phase, Risk, TaskStatus
 from hancode.router import select_next_phase
@@ -125,33 +125,50 @@ class AgentLoop:
 
     def run(self, task_id: str) -> AgentRunResult:
         state = self._state_store.load(task_id)
-        routing = select_next_phase(state)
-        if routing.completed:
-            return _result(TaskStatus.COMPLETED, 0, (), None, None, state)
-        if routing.blocked:
-            status = (
-                state.status
-                if state.status in {TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.INCONSISTENT}
-                else TaskStatus.BLOCKED
-            )
-            return _result(
-                status,
-                0,
-                (),
-                None,
-                StructuredError(
-                    error_code=routing.reason,
-                    message="Agent loop cannot continue from the current routing decision.",
-                    phase=routing.phase.value,
-                    denied_rule=routing.reason,
-                    suggested_fix="Resolve the task state before running the agent loop again.",
-                ),
-                state,
-            )
-
         observation: object | None = None
         tool_calls: list[str] = []
+        last_recoverable_error: StructuredError | None = None
         for step in range(1, self._max_steps + 1):
+            routing = select_next_phase(state)
+            if routing.completed:
+                state = self._save_if_changed(
+                    task_id,
+                    state,
+                    replace(
+                        state,
+                        status=TaskStatus.COMPLETED,
+                        current_phase=routing.phase,
+                    ),
+                )
+                return _result(
+                    TaskStatus.COMPLETED, step - 1, tuple(tool_calls), observation, None, state
+                )
+            if routing.blocked:
+                status = (
+                    state.status
+                    if state.status
+                    in {TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.INCONSISTENT}
+                    else TaskStatus.BLOCKED
+                )
+                state = self._save_if_changed(
+                    task_id, state, replace(state, status=status, current_phase=routing.phase)
+                )
+                return _result(
+                    status,
+                    step - 1,
+                    tuple(tool_calls),
+                    observation,
+                    StructuredError(
+                        error_code=routing.reason,
+                        message="Agent loop cannot continue from the current routing decision.",
+                        phase=routing.phase.value,
+                        denied_rule=routing.reason,
+                        suggested_fix="Resolve the task state before running the agent loop again.",
+                    ),
+                    state,
+                )
+
+            state = self._enter_phase(task_id, state, routing.phase)
             context = dict(
                 self._context_builder.build(
                     task_id=task_id,
@@ -165,32 +182,40 @@ class AgentLoop:
             try:
                 raw_action = self._llm.next_action(context)
             except MockLLMExhausted as exc:
+                state = self._block(task_id, state)
+                error = last_recoverable_error or StructuredError(
+                    error_code=exc.error_code,
+                    message=str(exc),
+                    phase=routing.phase.value,
+                    denied_rule=None,
+                    suggested_fix=exc.suggested_fix,
+                )
                 return _result(
                     TaskStatus.BLOCKED,
                     step,
                     tuple(tool_calls),
                     observation,
-                    StructuredError(
-                        error_code=exc.error_code,
-                        message=str(exc),
-                        phase=routing.phase.value,
-                        denied_rule=None,
-                        suggested_fix=exc.suggested_fix,
-                    ),
+                    error,
                     state,
                 )
 
             action = parse_action(raw_action, routing.phase)
             if isinstance(action, ParseError):
-                observation = self._feedback_builder.from_parse_error(action)
-                return _result(
-                    TaskStatus.BLOCKED,
-                    step,
-                    tuple(tool_calls),
-                    observation,
-                    _structured_parse_error(action),
-                    state,
+                last_recoverable_error = _structured_parse_error(action)
+                observation, feedback_error = self._build_feedback(
+                    lambda: self._feedback_builder.from_parse_error(action), routing.phase
                 )
+                if feedback_error is not None:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        feedback_error,
+                        state,
+                    )
+                continue
 
             decision = self._policy.evaluate(
                 action=action,
@@ -198,36 +223,78 @@ class AgentLoop:
                 state=state,
             )
             if not decision.allowed:
-                observation = self._feedback_builder.from_policy_denial(decision)
+                last_recoverable_error = StructuredError(
+                    error_code="policy_denied",
+                    message=decision.reason,
+                    phase=routing.phase.value,
+                    denied_rule=decision.denied_rule,
+                    suggested_fix=decision.suggested_fix,
+                )
+                observation, feedback_error = self._build_feedback(
+                    lambda: self._feedback_builder.from_policy_denial(decision),
+                    routing.phase,
+                )
+                if feedback_error is not None:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        feedback_error,
+                        state,
+                    )
+                continue
+
+            if action.type is ActionType.TOOL_CALL:
+                assert action.tool_name is not None
+                tool_result = self._tool_registry.dispatch(action)
+                tool_calls.append(action.tool_name)
+                state = self._save_if_changed(
+                    task_id, state, _state_after_tool(state, action, tool_result)
+                )
+                observation, feedback_error = self._build_feedback(
+                    lambda: self._feedback_builder.from_tool_result(
+                        tool_result, phase=routing.phase
+                    ),
+                    routing.phase,
+                )
+                if feedback_error is not None:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        feedback_error,
+                        state,
+                    )
+                continue
+
+            if action.type is ActionType.FINISH_PHASE:
+                state = self._save_if_changed(
+                    task_id, state, _state_after_phase_finish(state, routing.phase)
+                )
+                continue
+
+            if action.type is ActionType.FINAL:
+                state = self._block(task_id, state)
                 return _result(
                     TaskStatus.BLOCKED,
                     step,
                     tuple(tool_calls),
                     observation,
                     StructuredError(
-                        error_code="policy_denied",
-                        message=decision.reason,
+                        error_code="final_requires_router_completion",
+                        message="Final actions cannot bypass router-controlled completion.",
                         phase=routing.phase.value,
-                        denied_rule=decision.denied_rule,
-                        suggested_fix=decision.suggested_fix,
+                        denied_rule="router_completion_required",
+                        suggested_fix="Finish the current phase and let the router determine completion.",
                     ),
                     state,
                 )
 
-            if action.type is ActionType.TOOL_CALL:
-                assert action.tool_name is not None
-                tool_result = self._tool_registry.dispatch(action)
-                tool_calls.append(action.tool_name)
-                observation = self._feedback_builder.from_tool_result(
-                    tool_result, phase=routing.phase
-                )
-                continue
-
-            if action.type in {ActionType.FINISH_PHASE, ActionType.FINAL}:
-                return _result(
-                    TaskStatus.RUNNING, step, tuple(tool_calls), observation, None, state
-                )
-
+            state = self._block(task_id, state)
             return _result(
                 TaskStatus.BLOCKED,
                 step,
@@ -243,12 +310,14 @@ class AgentLoop:
                 state,
             )
 
+        state = self._block(task_id, state)
         return _result(
             TaskStatus.BLOCKED,
             self._max_steps,
             tuple(tool_calls),
             observation,
-            StructuredError(
+            last_recoverable_error
+            or StructuredError(
                 error_code="max_steps_exceeded",
                 message="Agent loop reached the configured maximum number of steps.",
                 phase=routing.phase.value,
@@ -257,6 +326,53 @@ class AgentLoop:
             ),
             state,
         )
+
+    def _enter_phase(self, task_id: str, state: TaskState, phase: Phase) -> TaskState:
+        source_edits = (
+            0
+            if phase is Phase.CODE and state.current_phase is not Phase.CODE
+            else state.source_edits_this_phase
+        )
+        return self._save_if_changed(
+            task_id,
+            state,
+            replace(
+                state,
+                status=TaskStatus.RUNNING,
+                current_phase=phase,
+                source_edits_this_phase=source_edits,
+            ),
+        )
+
+    def _block(self, task_id: str, state: TaskState) -> TaskState:
+        return self._save_if_changed(task_id, state, replace(state, status=TaskStatus.BLOCKED))
+
+    def _save_if_changed(
+        self, task_id: str, previous: TaskState, updated: TaskState
+    ) -> TaskState:
+        if updated != previous:
+            self._state_store.save(task_id, updated)
+        return updated
+
+    @staticmethod
+    def _build_feedback(
+        factory: Callable[[], object], phase: Phase
+    ) -> tuple[object | None, StructuredError | None]:
+        try:
+            return factory(), None
+        except HanCodeError as exc:
+            return None, exc.structured_error
+        except Exception:
+            return (
+                None,
+                StructuredError(
+                    error_code="feedback_construction_failed",
+                    message="Feedback could not be constructed from the current loop event.",
+                    phase=phase.value,
+                    denied_rule="feedback_construction",
+                    suggested_fix="Repair the feedback builder input or implementation.",
+                ),
+            )
 
 
 def _result(
@@ -288,3 +404,56 @@ def _structured_parse_error(error: ParseError) -> StructuredError:
         denied_rule=error.denied_rule,
         suggested_fix=error.suggested_fix,
     )
+
+
+def _state_after_tool(
+    state: TaskState, action: Action, result: ToolResult
+) -> TaskState:
+    phase_completed = dict(state.phase_completed)
+    if action.tool_name == "run_tests":
+        phase_completed[Phase.TEST.value] = False
+        return replace(
+            state,
+            latest_test_status="passed" if result.success else "failed",
+            test_status_consumed=False,
+            phase_completed=phase_completed,
+        )
+
+    if action.tool_name not in {"write_file", "edit_file"} or not result.success:
+        return state
+    source_edits = state.source_edits_this_phase + 1
+    if (
+        state.current_phase is Phase.CODE
+        and state.latest_test_status == "failed"
+        and state.test_status_consumed
+        and state.source_edits_this_phase == 0
+        and state.retry_budget_remaining > 0
+    ):
+        phase_completed[Phase.TEST.value] = False
+        return replace(
+            state,
+            latest_test_status="none",
+            test_status_consumed=False,
+            retry_budget_remaining=state.retry_budget_remaining - 1,
+            source_edits_this_phase=source_edits,
+            phase_completed=phase_completed,
+        )
+    return replace(state, source_edits_this_phase=source_edits)
+
+
+def _state_after_phase_finish(state: TaskState, phase: Phase) -> TaskState:
+    phase_completed = dict(state.phase_completed)
+    phase_completed[phase.value] = True
+    if (
+        phase is Phase.REVIEW
+        and state.latest_test_status == "failed"
+        and not state.test_status_consumed
+        and state.retry_budget_remaining > 0
+    ):
+        phase_completed[Phase.CODE.value] = False
+        return replace(
+            state,
+            phase_completed=phase_completed,
+            test_status_consumed=True,
+        )
+    return replace(state, phase_completed=phase_completed)

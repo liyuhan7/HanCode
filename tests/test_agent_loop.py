@@ -149,14 +149,17 @@ class SpyFeedbackBuilder:
         return {"kind": "rollback", "result": result, "phase": phase}
 
 
-def test_agent_loop_calls_llm_with_context() -> None:
+def test_finish_action_routes_to_the_next_phase_with_context() -> None:
     loop, llm, context_builder, _, _, _ = _build_loop([_finish_action()])
 
     result = loop.run("task-001")
 
-    assert result.status is TaskStatus.RUNNING
+    assert result.status is TaskStatus.BLOCKED
     assert context_builder.calls[0][0:2] == ("task-001", Phase.CODE)
-    assert llm.contexts == ({"task_id": "task-001", "phase": "code"},)
+    assert llm.contexts == (
+        {"task_id": "task-001", "phase": "code"},
+        {"task_id": "task-001", "phase": "test"},
+    )
 
 
 def test_agent_loop_parses_action_before_policy() -> None:
@@ -266,18 +269,18 @@ def test_max_steps_prevents_infinite_loop() -> None:
     assert [action.tool_name for action in tools.actions] == ["read_file", "read_file"]
 
 
-def test_finish_action_stops_loop() -> None:
+def test_finish_action_does_not_stop_before_router_selects_next_phase() -> None:
     loop, _, _, _, tools, _ = _build_loop([_finish_action(), _read_file_action()])
 
     result = loop.run("task-001")
 
-    assert result.status is TaskStatus.RUNNING
-    assert result.steps == 1
+    assert result.status is TaskStatus.BLOCKED
+    assert result.steps == 3
     assert result.tool_calls == ()
     assert not tools.actions
 
 
-def test_agent_loop_result_mirrors_loaded_state_without_new_port_side_effects() -> None:
+def test_agent_loop_result_preserves_non_state_port_boundaries() -> None:
     state = _task_state()
     trace_appender = SpyTraceAppender()
     checkpoint_manager = StubCheckpointManager()
@@ -292,7 +295,9 @@ def test_agent_loop_result_mirrors_loaded_state_without_new_port_side_effects() 
 
     result = loop.run("task-001")
 
-    assert result.final_state is state
+    assert result.final_state is not state
+    assert result.final_state.current_phase is Phase.TEST
+    assert result.final_state.phase_completed[Phase.CODE.value] is True
     assert result.retry_budget_remaining == state.retry_budget_remaining
     assert result.trace_events == ()
     assert trace_appender.calls == []
@@ -300,15 +305,17 @@ def test_agent_loop_result_mirrors_loaded_state_without_new_port_side_effects() 
     assert rollback_manager.calls == []
 
 
-def test_final_action_stops_loop() -> None:
+def test_final_action_requires_router_controlled_completion() -> None:
     loop, _, _, _, tools, _ = _build_loop([_final_action(), _read_file_action()])
 
     result = loop.run("task-001")
 
-    assert result.status is TaskStatus.RUNNING
+    assert result.status is TaskStatus.BLOCKED
     assert result.steps == 1
     assert result.tool_calls == ()
     assert not tools.actions
+    assert result.error is not None
+    assert result.error.error_code == "final_requires_router_completion"
 
 
 def test_tool_observation_is_fed_into_next_context() -> None:
