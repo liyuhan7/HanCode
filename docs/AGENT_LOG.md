@@ -1088,4 +1088,4 @@
   - checkpoint 仍是单次 source write 粒度，不提供一次 loop 多文件事务聚合；checkpoint pruning、跨进程锁、fsync 耐久性、外部攻击者级 TOCTOU 和 project_id 外部认证绑定留给后续任务。
   - `resume=True` 复用持久化 state/checkpoint/trace，但不跨会话持久化上一次 observation，也不重放完整生命周期上下文。
   - T21 未重构 T16 的完整 phase/context/action 生命周期事件矩阵；当前审计重点是 feedback、retry、rollback 与安全边界事件。
-- 提交：未提交，等待最终新鲜两阶段复审与用户决定。
+- 提交：`375f735b535c115b2d897adc52da9ae7371bf1c8`（`feat: 完成 T21 AgentLoop 反馈重试回滚集成`）。
