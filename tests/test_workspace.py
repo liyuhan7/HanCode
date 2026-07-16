@@ -423,3 +423,14 @@ def _link_directory(link_path: Path, target_path: Path) -> None:
             "Directory link creation unavailable in this environment: "
             f"{result.stdout}{result.stderr}"
         )
+
+
+def test_project_workspace_rejects_hancode_directory_link(tmp_path: Path) -> None:
+    external_workspace = tmp_path / "external-hancode"
+    external_workspace.mkdir()
+    _link_directory(tmp_path / ".hancode", external_workspace)
+
+    with pytest.raises(HanCodeError) as error:
+        init_project_workspace(tmp_path, "course-project", "AI4SE", "Harness")
+
+    assert error.value.structured_error.error_code == "workspace_link_not_allowed"

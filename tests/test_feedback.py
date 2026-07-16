@@ -156,6 +156,7 @@ def test_tool_observation_redacts_and_truncates_to_total_byte_budget() -> None:
         output={
             "content": "HEAD\nHANCODE_API_KEY=live-secret\n" + "middle\n" * 80 + "TAIL\n",
             "secret": "json-secret",
+            "cookie": "cookie-secret",
         },
     )
 
@@ -173,6 +174,7 @@ def test_tool_observation_redacts_and_truncates_to_total_byte_budget() -> None:
     assert "[TRUNCATED]" in observation.summary
     assert "live-secret" not in serialized
     assert "json-secret" not in serialized
+    assert "cookie-secret" not in serialized
     assert "[REDACTED]" in serialized
     assert len(serialized.encode("utf-8")) <= 420
 

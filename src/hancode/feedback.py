@@ -37,6 +37,20 @@ class ObservationKind(str, Enum):
     ROLLBACK_FEEDBACK = "rollback_feedback"
 
 
+_SENSITIVE_KEY_MARKERS = (
+    "apikey",
+    "authorization",
+    "awsaccesskeyid",
+    "awssecretaccesskey",
+    "cookie",
+    "credential",
+    "password",
+    "privatekey",
+    "secret",
+    "token",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class FeedbackReport:
     passed: bool
@@ -383,7 +397,7 @@ def _sanitize_value(value: object) -> object:
 
 def _is_sensitive_key(key: str) -> bool:
     normalized = "".join(character for character in key.casefold() if character.isalnum())
-    return any(marker in normalized for marker in ("apikey", "authorization", "password", "secret", "token"))
+    return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)
 
 
 def _freeze_value(value: object) -> object:

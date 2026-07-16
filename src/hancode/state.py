@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+import os
 from pathlib import Path
+from tempfile import mkstemp
 from types import MappingProxyType
 from typing import Mapping, TypeGuard
 
@@ -119,7 +121,10 @@ class TaskState:
 
 def load_state(task_root: Path) -> TaskState:
     try:
-        data = json.loads((task_root / "state.json").read_text(encoding="utf-8"))
+        state_file = task_root / "state.json"
+        if _is_link(state_file):
+            raise ValueError("Task state file must not be a link.")
+        data = json.loads(state_file.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("Task state must be a JSON object.")
         if set(data) != _STATE_FIELDS:
@@ -159,7 +164,8 @@ def load_state(task_root: Path) -> TaskState:
 
 def reconcile_state(task_root: Path, state: TaskState) -> TaskState:
     has_artifact_drift = any(
-        (task_root / artifact_name).is_file() is not expected_to_exist
+        _is_link(task_root / artifact_name)
+        or (task_root / artifact_name).is_file() is not expected_to_exist
         for artifact_name, expected_to_exist in state.artifacts.items()
     )
     if not has_artifact_drift:
@@ -201,16 +207,30 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "artifacts": dict(state.artifacts),
     }
     state_file = task_root / "state.json"
-    temporary_state_file = task_root / "state.json.tmp"
+    if _is_link(state_file):
+        raise _state_write_error(persisted_state.current_phase)
+    temporary_state_file: Path | None = None
+    descriptor: int | None = None
     try:
-        temporary_state_file.write_text(
-            json.dumps(state_data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        descriptor, temporary_name = mkstemp(
+            prefix=".state-",
+            suffix=".tmp",
+            dir=task_root,
         )
+        temporary_state_file = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as temporary_file:
+            descriptor = None
+            temporary_file.write(json.dumps(state_data, ensure_ascii=False, indent=2) + "\n")
         temporary_state_file.replace(state_file)
     except (OSError, UnicodeError):
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         try:
-            temporary_state_file.unlink(missing_ok=True)
+            if temporary_state_file is not None:
+                temporary_state_file.unlink(missing_ok=True)
         except OSError:
             pass
         raise _state_write_error(persisted_state.current_phase) from None
@@ -291,6 +311,14 @@ def _invalid_state_field(field: str) -> ValueError:
 
 def _is_nonnegative_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_link(path: Path) -> bool:
+    try:
+        is_junction = getattr(path, "is_junction", None)
+        return path.is_symlink() or bool(is_junction and is_junction())
+    except (OSError, RuntimeError):
+        return True
 
 
 def _is_str_tuple(value: object) -> bool:

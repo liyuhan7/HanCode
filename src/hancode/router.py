@@ -17,13 +17,25 @@ class RoutingDecision:
 
 def select_next_phase(state: TaskState) -> RoutingDecision:
     if state.inconsistent or state.status is TaskStatus.INCONSISTENT:
+        if state.rollback_required and state.latest_checkpoint is not None:
+            return RoutingDecision(
+                Phase.REVIEW, "rollback_required", rollback_required=True
+            )
         return RoutingDecision(
             state.current_phase, "state_inconsistent", blocked=True
         )
+    if state.status is TaskStatus.COMPLETED:
+        if not state.artifacts["KNOWLEDGE.md"]:
+            return RoutingDecision(Phase.DELIVER, "knowledge_missing", blocked=True)
+        if not state.artifacts["DELIVERABLES.md"]:
+            return RoutingDecision(Phase.DELIVER, "deliverables_missing", blocked=True)
+        return RoutingDecision(state.current_phase, "task_completed", completed=True)
     if state.status is TaskStatus.BLOCKED:
         return RoutingDecision(state.current_phase, "task_blocked", blocked=True)
     if state.status is TaskStatus.FAILED:
         return RoutingDecision(state.current_phase, "task_failed", blocked=True)
+    if state.rollback_required and not state.rollback_done:
+        return RoutingDecision(Phase.REVIEW, "rollback_required", rollback_required=True)
     if not state.artifacts["SPEC.md"]:
         return RoutingDecision(Phase.SPEC, "spec_missing")
     if not state.artifacts["PLAN.md"]:

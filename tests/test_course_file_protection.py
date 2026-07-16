@@ -6,7 +6,7 @@ from typing import Mapping
 
 import pytest
 
-from hancode.agent_loop import AgentLoop
+from hancode.agent_loop import AgentLoop, InMemoryMutationGuard
 from hancode.actions import Action
 from hancode.checkpoints import CheckpointManifest, RollbackResult
 from hancode.config import HanCodeConfig, load_config
@@ -132,6 +132,7 @@ def test_protected_write_is_denied_before_registry_dispatch(
         checkpoint_manager=StubCheckpointManager(),
         rollback_manager=StubRollbackManager(),
         max_steps=1,
+        mutation_guard=InMemoryMutationGuard(),
     )
 
     result = loop.run("task-001")

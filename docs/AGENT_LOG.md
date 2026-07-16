@@ -1026,3 +1026,66 @@
   - `uv run --no-sync mypy src`：通过，19 source files 无问题。
 - 提交：
   - TODO（等待用户决定提交）。
+
+### 2026-07-16 — T21 AgentLoop feedback / retry / rollback 修复
+
+- 使用的技能：`brainstorming`、`using-git-worktrees`、`executing-plans`、`test-driven-development`。
+- 修复依据：
+  - 两个新鲜只读审核发现强制 rollback、AgentLoop trace、checkpoint 元数据一致性和源码写入 fail-closed 边界未闭环。
+- 摘要：
+  - retry budget 耗尽且存在 checkpoint 时，AgentLoop 进入 review 并强制调用 RollbackManager；rollback 成功后保留 review phase，回滚结果作为 observation 返回。
+  - 记录 `test_failed`、`retry_budget_consumed`、`source_write_authorized`、`rollback_started`、`rollback_completed` 等事件，并将 AgentLoop 产生的事件返回给 `AgentRunResult.trace_events`；trace 写入失败会在源码写入前阻断操作。
+  - checkpoint 创建后重新加载状态，防止旧 TaskState 覆盖 `latest_checkpoint` 与 `checkpoint_seq`；校验 checkpoint 的 task、phase、pending 状态后才派发源码写入。
+  - AgentLoop 对 `write_file` / `edit_file` 强制 checkpoint，不依赖 Policy 漏标；成功写入同步 `files_changed`，写入后的状态持久化异常转换为结构化 `INCONSISTENT`。
+- 验证：
+  - `uv run --no-sync pytest tests/test_feedback_loop.py -q -p no:cacheprovider`：13 passed。
+  - `uv run --no-sync pytest -q -p no:cacheprovider`：497 passed、9 skipped。
+  - `uv run --no-sync ruff check src tests --no-cache`：通过。
+  - `uv run --no-sync mypy src`：通过，19 source files 无问题。
+- 初始实现的剩余风险：
+  - 当时尚未覆盖真实文件系统适配层、checkpoint 数量限制和 TOCTOU 锁策略；其中适配层与 workspace 边界已在本轮复审修正，数量限制与外部攻击者级 TOCTOU 仍留给后续任务。
+- 提交：
+  - 待复审与用户决定提交。
+
+### 2026-07-16 — T21 两阶段复审修正与收尾
+
+- 使用的技能：`karpathy-guidelines`、`test-driven-development`、`executing-plans`。
+- 本轮修正：
+  - 增加显式 `run(task_id, resume=True)` 恢复入口；默认 blocked 仍 fail-closed，failed / inconsistent 不允许绕过状态门禁，已持久化 completed 状态不会再次调度工具。
+  - 上下文构造、checkpoint ID、checkpoint 指针、rollback 结果、tool result、trace event 和 policy decision 增加结构化边界校验；非法结果进入可审计的 blocked / inconsistent 状态。
+  - `run_tests` 更新 `tests_run`；source write 仍强制 checkpoint，artifact write 只更新对应 artifact 状态。
+  - workspace 拒绝 `.hancode` / task 链接；state 与 manifest 原子写改为同目录独占临时文件，降低临时文件预置/替换风险。
+  - feedback、error result、trace、file-tools 使用统一的敏感字段/文本脱敏，覆盖 cookie、credential、private key 和 AWS key 标记。
+- 验证证据：
+  - `uv run --no-sync pytest tests/test_agent_loop.py tests/test_feedback_loop.py tests/test_feedback.py tests/test_router.py -q -p no:cacheprovider -k 'not real_tool_policy_denial'`：101 passed，1 deselected。
+  - `uv run --no-sync ruff check src tests --no-cache`：通过。
+  - `uv run --no-sync mypy src`：通过，19 个源文件无错误。
+  - 真实文件系统测试受 Windows pytest 临时目录 ACL 阻塞（23 passed，117 个 setup PermissionError）；未将 ACL 阻塞误报为代码通过。
+  - 脱敏 smoke：通过；策略 smoke：通过（此前记录）。
+- 剩余风险 / 非目标：真实文件系统解析与写入仍存在外部攻击者级 TOCTOU 窗口；checkpoint project_id 未做外部认证绑定；checkpoint 数量 pruning、分布式锁和真实 LLM 不在 T21 范围。
+- 提交：未提交，等待最终新鲜两阶段复审与用户后续提交决定。
+
+### 2026-07-16 — T21 最终修正与复审前验证
+
+- 本轮修正：
+  - `FilesystemStateStore.reconcile()` 只返回内存中的一致性结果，不自动回写 `state.json`；AgentLoop 启动时记录 `state_reconciled` / `state_inconsistent` 审计事件，漂移状态 fail-closed。
+  - AgentLoop 对同一运行内的 trace 序号和 `event_id` 执行连续性校验，同时兼容已有持久化 trace 的首个序号。
+  - `append_trace()` 在读取和追加前拒绝 `trace.jsonl` 的 symlink/junction，并增加对应回归测试。
+  - 路由器不再信任缺少 `KNOWLEDGE.md` / `DELIVERABLES.md` 的 persisted `completed` 状态，改为 `deliver` 阶段结构化阻断，与 SPEC §10.2 / FR-16 对齐。
+  - source write 后的状态持久化失败保留 `rollback_required`；显式 `resume=True` 进入受限 review rollback 恢复通道，不开放 LLM 绕过不一致状态。
+  - AgentLoop 校验 TraceAppender 返回的 tool payload；artifact 路径判定绑定当前 task；真实文件系统 rollback 由 AgentLoop 统一写 `rollback_started` / `rollback_performed` 生命周期 trace，避免 manager 与 loop 重复写事件。
+  - trace 字符串脱敏复用统一 `file_tools.redact_text()`，覆盖带引号 JSON、cookie 和其他敏感值。
+  - 非法或字段类型损坏的 `StructuredError` 在结果边界转换为安全的结构化兜底错误。
+  - 增加 trace 序号跳跃和带引号 secret 的回归测试；计划文档明确 write-level checkpoint、resume observation 重放和外部攻击者级 TOCTOU 的范围边界。
+- 验证证据：
+  - `.venv\Scripts\pytest.exe tests/test_agent_loop.py tests/test_feedback_loop.py tests/test_feedback.py tests/test_router.py -q -p no:cacheprovider -k 'not real_tool_policy_denial'`：106 passed，1 deselected。
+  - `.venv\Scripts\ruff.exe check src tests --no-cache`：通过。
+  - `.venv\Scripts\mypy.exe src`：通过，19 个源文件无错误。
+  - 源码内存 compile：19 个源文件通过。
+  - 直接脱敏 smoke：通过；输出未包含 quoted JSON、cookie 或 token 明文。
+  - `tests/test_trace.py` 与 `tests/test_agent_loop_adapters.py` 仍受 Windows pytest 临时目录 ACL 阻塞，用例在 setup 阶段无法创建 `.lock`；未把环境失败误报为代码失败。
+- 当前非目标 / 剩余风险：
+  - checkpoint 仍是单次 source write 粒度，不提供一次 loop 多文件事务聚合；checkpoint pruning、跨进程锁、fsync 耐久性、外部攻击者级 TOCTOU 和 project_id 外部认证绑定留给后续任务。
+  - `resume=True` 复用持久化 state/checkpoint/trace，但不跨会话持久化上一次 observation，也不重放完整生命周期上下文。
+  - T21 未重构 T16 的完整 phase/context/action 生命周期事件矩阵；当前审计重点是 feedback、retry、rollback 与安全边界事件。
+- 提交：未提交，等待最终新鲜两阶段复审与用户决定。

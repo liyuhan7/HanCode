@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Mapping
 
 import pytest
 
 from hancode.actions import Action
-from hancode.agent_loop import AgentLoop
+from hancode.agent_loop import AgentLoop, InMemoryMutationGuard
 from hancode.checkpoints import CheckpointManifest, RollbackResult
 from hancode.config import HanCodeConfig
+from hancode.errors import HanCodeError, StructuredError
+from hancode.feedback import FeedbackBuilder
 from hancode.llm import MockLLM
 from hancode.models import Phase, TaskStatus
+from hancode.path_policy import PathZone
 from hancode.state import TaskState
 from hancode.tool_policy import PolicyDecision, ToolPolicy
 from hancode.tools import ToolResult
@@ -25,6 +29,7 @@ class StubPolicyDecision:
     requires_checkpoint: bool = False
     denied_rule: str | None = None
     suggested_fix: str = "Use an allowed action."
+    target_zone: PathZone | None = None
 
 
 class StubStateStore:
@@ -45,6 +50,7 @@ class StubStateStore:
 class SpyTraceAppender:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.events: list[TraceEvent] = []
 
     def append(
         self,
@@ -59,7 +65,54 @@ class SpyTraceAppender:
         state_transition: Mapping[str, object] | None = None,
     ) -> TraceEvent:
         self.calls.append(task_id)
-        raise AssertionError("T21 Task 1 must not append trace events.")
+        event = TraceEvent(
+            event_id=f"evt-{len(self.events) + 1:06d}",
+            seq=len(self.events) + 1,
+            event_type=event_type,
+            task_id=task_id,
+            phase=phase,
+            timestamp=datetime.now(UTC),
+            status=status,
+            action=action,
+            observation=observation,
+            error_summary=error_summary,
+            state_transition=state_transition,
+        )
+        self.events.append(event)
+        return event
+
+
+class GappedTraceAppender(SpyTraceAppender):
+    def append(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        phase: Phase,
+        status: str,
+        action: Mapping[str, object] | None = None,
+        observation: Mapping[str, object] | None = None,
+        error_summary: str | None = None,
+        state_transition: Mapping[str, object] | None = None,
+    ) -> TraceEvent:
+        event = super().append(
+            task_id,
+            event_type=event_type,
+            phase=phase,
+            status=status,
+            action=action,
+            observation=observation,
+            error_summary=error_summary,
+            state_transition=state_transition,
+        )
+        if len(self.events) == 2:
+            event = replace(
+                event,
+                event_id="evt-000003",
+                seq=3,
+            )
+            self.events[-1] = event
+        return event
 
 
 class StubCheckpointManager:
@@ -95,6 +148,14 @@ class SpyContextBuilder:
         return {"task_id": task_id, "phase": phase.value}
 
 
+class FailingContextBuilder:
+    def __init__(self, error: HanCodeError) -> None:
+        self.error = error
+
+    def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]:
+        raise self.error
+
+
 class SpyPolicy:
     def __init__(self, decision: StubPolicyDecision, events: list[str]) -> None:
         self.decision = decision
@@ -104,8 +165,7 @@ class SpyPolicy:
     def evaluate(
         self, *, action: Action, phase: Phase, state: TaskState
     ) -> StubPolicyDecision:
-        assert phase is Phase.CODE
-        assert state.current_phase is Phase.CODE
+        assert state.current_phase is phase
         self.events.append("policy")
         self.actions.append(action)
         return self.decision
@@ -234,6 +294,7 @@ def test_real_tool_policy_denial_does_not_execute_tool(tmp_path: Path) -> None:
         checkpoint_manager=StubCheckpointManager(),
         rollback_manager=StubRollbackManager(),
         max_steps=1,
+        mutation_guard=InMemoryMutationGuard(),
     )
 
     result = loop.run("task-001")
@@ -267,6 +328,19 @@ def test_max_steps_prevents_infinite_loop() -> None:
     assert result.error.error_code == "max_steps_exceeded"
     assert len(llm.contexts) == 2
     assert [action.tool_name for action in tools.actions] == ["read_file", "read_file"]
+
+
+def test_trace_sequence_gap_is_rejected_at_agent_loop_boundary() -> None:
+    loop, _, _, _, _, _ = _build_loop(
+        [_read_file_action()],
+        trace_appender=GappedTraceAppender(),
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "trace_event_invalid"
 
 
 def test_finish_action_does_not_stop_before_router_selects_next_phase() -> None:
@@ -368,6 +442,126 @@ def test_mock_llm_exhaustion_returns_structured_blocked_result() -> None:
     assert not tools.actions
 
 
+def test_blocked_task_requires_explicit_resume_to_retry() -> None:
+    blocked_state = _task_state()
+    blocked_state = replace(blocked_state, status=TaskStatus.BLOCKED)
+    loop, llm, _, _, tools, _ = _build_loop([_read_file_action()], state=blocked_state, max_steps=1)
+
+    blocked = loop.run("task-001")
+    resumed = loop.run("task-001", resume=True)
+
+    assert blocked.status is TaskStatus.BLOCKED
+    assert blocked.error is not None
+    assert blocked.error.error_code == "task_blocked"
+    assert resumed.tool_calls == ("read_file",)
+    assert len(llm.contexts) == 1
+    assert [action.tool_name for action in tools.actions] == ["read_file"]
+
+
+def test_context_builder_hancode_error_is_preserved_as_blocked() -> None:
+    state = _task_state()
+    context_error = HanCodeError(
+        StructuredError(
+            error_code="context_required_artifact_missing",
+            message="Required artifact is missing.",
+            phase="code",
+            denied_rule="required_context",
+            suggested_fix="Restore PLAN.md before retrying.",
+        )
+    )
+    loop, _, _, _, _, _ = _build_loop([_read_file_action()], state=state)
+    loop._context_builder = FailingContextBuilder(context_error)  # type: ignore[attr-defined]
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error == context_error.structured_error
+    assert result.final_state.status is TaskStatus.BLOCKED
+
+
+def test_resume_canonicalizes_inconsistent_blocked_state() -> None:
+    state = replace(
+        _task_state(),
+        status=TaskStatus.BLOCKED,
+        inconsistent=True,
+    )
+    loop, _, _, _, _, _ = _build_loop([], state=state)
+
+    result = loop.run("task-001", resume=True)
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.final_state.status is TaskStatus.INCONSISTENT
+    assert result.final_state.inconsistent is True
+
+
+def test_real_feedback_observation_is_json_safe_for_mock_llm_context() -> None:
+    loop, llm, _, _, _, _ = _build_loop(
+        [
+            {
+                "type": "tool_call",
+                "phase": "code",
+                "tool_name": "run_tests",
+                "args": {},
+                "reason": None,
+            },
+            _finish_action(),
+        ],
+        max_steps=2,
+    )
+    loop._feedback_builder = FeedbackBuilder()  # type: ignore[attr-defined]
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "max_steps_exceeded"
+    assert isinstance(llm.contexts[1]["observation"], dict)
+    assert llm.contexts[1]["observation"]["kind"] == "test_feedback"
+
+
+def test_step_exhaustion_still_returns_completed_after_final_artifact_write() -> None:
+    state = _task_state(
+        phase_completed={phase.value: True for phase in Phase},
+        latest_test_status="passed",
+        artifacts={
+            "SPEC.md": True,
+            "PLAN.md": True,
+            "TEST_REPORT.md": True,
+            "REVIEW.md": True,
+            "KNOWLEDGE.md": False,
+            "DELIVERABLES.md": False,
+        },
+    )
+    actions = [
+        {
+            "type": "tool_call",
+            "phase": "deliver",
+            "tool_name": "write_file",
+            "args": {"path": "KNOWLEDGE.md", "content": "# Knowledge\n"},
+            "reason": "Write knowledge.",
+        },
+        {
+            "type": "tool_call",
+            "phase": "deliver",
+            "tool_name": "write_file",
+            "args": {"path": "DELIVERABLES.md", "content": "# Deliverables\n"},
+            "reason": "Write deliverables.",
+        },
+    ]
+    loop, _, _, _, _, _ = _build_loop(
+        actions,
+        state=state,
+        max_steps=2,
+        decision=StubPolicyDecision(allowed=True, target_zone=PathZone.ARTIFACT),
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.COMPLETED
+    assert result.steps == 2
+    assert result.final_state.current_phase is Phase.DELIVER
+
+
 def test_terminal_routing_stops_before_llm() -> None:
     state = _task_state(
         phase_completed={phase.value: True for phase in Phase},
@@ -441,6 +635,7 @@ def _build_loop(
         checkpoint_manager=checkpoint_manager or StubCheckpointManager(),
         rollback_manager=rollback_manager or StubRollbackManager(),
         max_steps=max_steps,
+        mutation_guard=InMemoryMutationGuard(),
     )
     return loop, llm, context_builder, policy, tools, feedback
 

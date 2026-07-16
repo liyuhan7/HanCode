@@ -70,7 +70,7 @@ HanCode 的核心交付不是 prompt、规则文件或宿主 Coding Agent 的能
 ### 3.2 post-MVP
 
 * 单 task 单活跃 runner 的并发锁。
-* blocked 后的 resume 断点续跑语义。
+* 跨会话 observation 恢复与完整上下文重放；T21 已提供显式 `run(task_id, resume=True)` 的 blocked 恢复入口，但恢复时重新构造上下文。
 * pending checkpoint 的启动崩溃恢复。
 * `confirm_before_write` 写前人工确认。
 * Docker demo image。
@@ -2305,12 +2305,12 @@ uv run mypy src/hancode/feedback.py
 
 | 元信息           | 值                                 |
 | ------------- | --------------------------------- |
-| 状态            | [ ] 未开始                           |
+| 状态            | [~] 实现完成，待复审与提交                    |
 | 依赖            | T10, T14, T16, T18, T20           |
 | 可并行           | 不并行；主贡献闭环任务                       |
 | Worktree / PR | `feature/M5`                         |
 | 主贡献相关         | 是，主贡献闭环核心                         |
-| Commit        | TODO                              |
+| Commit        | 待提交                              |
 
 ### 目标
 
@@ -2319,7 +2319,21 @@ uv run mypy src/hancode/feedback.py
 ### 涉及文件
 
 * `src/hancode/agent_loop.py`
+* `src/hancode/tool_policy.py`
+* `src/hancode/router.py`
+* `src/hancode/feedback.py`
+* `src/hancode/file_tools.py`
+* `src/hancode/state.py`
+* `src/hancode/checkpoints.py`
+* `src/hancode/trace.py`
+* `src/hancode/workspace.py`
+* `tests/test_agent_loop.py`
+* `tests/test_agent_loop_adapters.py`
 * `tests/test_feedback_loop.py`
+* `tests/test_tool_policy.py`
+* `tests/test_course_file_protection.py`
+* `tests/test_router.py`
+* `tests/test_workspace.py`
 
 ### SPEC 依据
 
@@ -2353,13 +2367,19 @@ uv run mypy src/hancode/feedback.py
 * retry budget 耗尽时调用 rollback。
 * rollback 后保持 review / blocked，不直接 completed。
 * 每个关键事件写 trace。
+* blocked 状态默认 fail-closed，只有 `run(task_id, resume=True)` 才允许显式恢复；`failed` / `inconsistent` 不允许绕过修复门禁。
+* adapter 返回值、checkpoint 指针、rollback 状态和 trace 事件均在边界处结构化校验；上下文构造失败保留原始结构化错误。
+* source write 强制 checkpoint，artifact write 只更新 artifact 状态；测试执行追加 `tests_run` 审计记录。
+* 文件系统适配层拒绝 workspace 链接，并使用独占临时文件完成 state/manifest 原子替换；错误、反馈和 trace 统一脱敏。
+* 启动时通过文件系统适配层执行 artifact 漂移检查；不一致只在本次运行内 fail-closed，不自动回写 `state.json`。
+* source write 后状态持久化异常保留 `rollback_required`，仅允许显式 `resume=True` 进入受限 rollback 恢复通道；真实文件系统 rollback 的生命周期 trace 由 AgentLoop 统一记录。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_feedback_loop.py -v
-uv run ruff check src/hancode/agent_loop.py tests/test_feedback_loop.py
-uv run mypy src/hancode/agent_loop.py
+uv run --no-sync pytest tests/test_agent_loop.py tests/test_feedback_loop.py tests/test_feedback.py tests/test_router.py -q -p no:cacheprovider
+uv run --no-sync ruff check src tests --no-cache
+uv run --no-sync mypy src
 ```
 
 ### 完成判定
@@ -2367,12 +2387,19 @@ uv run mypy src/hancode/agent_loop.py
 * 主贡献闭环可在 MockLLM 下确定性复现。
 * 测试失败不会直接 completed。
 * retry 超限会强制 rollback。
+* blocked 恢复必须显式传入 `resume=True`，完成态不会因状态漂移再次执行工具。
+* persisted `completed` 状态仍需满足 `KNOWLEDGE.md` 与 `DELIVERABLES.md` 交付物完整性；缺失时 fail-closed 到 `deliver` blocked。
+* 适配器边界的坏类型、非法 checkpoint ID、trace 参数和文件系统 workspace 越界均返回结构化拒绝。
+* TraceAppender 返回的 tool event payload、artifact task 路径和 persisted completed 交付物完整性均在边界处再次校验。
 
 ### 非目标 / 边界
 
 * 不生成最终 Markdown 报告。
 * 不接真实 LLM。
 * 不做 CLI demo。
+* checkpoint 采用“单次 source write 前”粒度；一次 loop 内的多文件事务聚合、checkpoint pruning、跨进程锁和外部攻击者级 TOCTOU 防护留给后续任务。
+* resume 不跨会话持久化上一次 observation，也不重放完整生命周期 trace；当前仅复用持久化 state、checkpoint 与已有 trace 序列。
+* T21 只补齐 feedback / retry / rollback 相关 trace 与边界事件；完整 phase/context/action 生命周期事件矩阵不在本卡内重构。
 
 ---
 
@@ -2504,7 +2531,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult: ...
 * `test_mock_demo_trace_contains_policy_denial`
 * `test_mock_demo_trace_contains_feedback_generated`
 * `test_mock_demo_trace_contains_checkpoint_created`
-* `test_mock_demo_trace_contains_rollback_completed`
+* `test_mock_demo_trace_contains_rollback_performed`
 * `test_mock_demo_generates_knowledge_and_deliverables`
 
 ### 实现要点

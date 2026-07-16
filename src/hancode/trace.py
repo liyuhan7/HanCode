@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Mapping
 
 from hancode.errors import HanCodeError, StructuredError
+from hancode.file_tools import redact_text
 from hancode.models import Phase
 from hancode.workspace import load_project_metadata
 
@@ -84,6 +85,7 @@ def append_trace(
     state_transition: Mapping[str, object] | None = None,
     timestamp: datetime | None = None,
 ) -> TraceEvent:
+    event_timestamp = datetime.now(UTC) if timestamp is None else timestamp
     _validate_event(
         task_root,
         task_id,
@@ -94,8 +96,11 @@ def append_trace(
         observation,
         state_transition,
         error_summary,
+        event_timestamp,
     )
     trace_path = task_root / "trace.jsonl"
+    if _is_link(trace_path):
+        raise _trace_path_link_error(phase)
     seq = _next_sequence(trace_path, phase, task_id)
     event = TraceEvent(
         event_id=f"evt-{seq:06d}",
@@ -103,7 +108,7 @@ def append_trace(
         event_type=event_type,
         task_id=task_id,
         phase=phase,
-        timestamp=datetime.now(UTC) if timestamp is None else timestamp,
+        timestamp=event_timestamp,
         status=status,
         action=None if action is None else _sanitize_mapping(action),
         observation=None if observation is None else _sanitize_mapping(observation),
@@ -113,6 +118,8 @@ def append_trace(
         ),
     )
     try:
+        if _is_link(trace_path):
+            raise _trace_path_link_error(phase)
         serialized_event = json.dumps(event.to_dict(), ensure_ascii=False)
         with trace_path.open("a", encoding="utf-8") as trace_file:
             trace_file.write(serialized_event + "\n")
@@ -122,6 +129,8 @@ def append_trace(
 
 
 def _next_sequence(trace_path: Path, phase: Phase, task_id: str) -> int:
+    if _is_link(trace_path):
+        raise _trace_path_link_error(phase)
     try:
         lines = trace_path.read_text(encoding="utf-8").splitlines()
         for expected_seq, line in enumerate(lines, start=1):
@@ -163,6 +172,7 @@ def _sanitize_value(value: object) -> object:
 
 
 def _sanitize_string(value: str) -> str:
+    value = redact_text(value)
     value = _SENSITIVE_TEXT_PATTERN.sub(_redacted_text, value)
     value = _BEARER_TOKEN_PATTERN.sub("Bearer [REDACTED]", value)
     if len(value) <= _MAX_TRACE_STRING_CHARS:
@@ -189,6 +199,14 @@ def _is_content_field(name: str) -> bool:
     )
 
 
+def _is_link(path: Path) -> bool:
+    try:
+        is_junction = getattr(path, "is_junction", None)
+        return path.is_symlink() or bool(is_junction and is_junction())
+    except (OSError, RuntimeError):
+        return True
+
+
 def _redacted_text(match: re.Match[str]) -> str:
     separator = ":" if ":" in match.group(0) else "="
     return f"{match.group(1)}{separator}[REDACTED]"
@@ -204,7 +222,12 @@ def _validate_event(
     observation: Mapping[str, object] | None,
     state_transition: Mapping[str, object] | None,
     error_summary: str | None,
+    timestamp: datetime,
 ) -> None:
+    if not isinstance(phase, Phase):
+        raise _invalid_trace_payload_error(Phase.SPEC)
+    if not isinstance(timestamp, datetime):
+        raise _invalid_trace_payload_error(phase)
     resolved_task_root = task_root.resolve()
     if (
         resolved_task_root.parent.name != "tasks"
@@ -324,5 +347,17 @@ def _invalid_trace_payload_error(phase: Phase) -> HanCodeError:
             phase=phase.value,
             denied_rule="valid_trace_payload_required",
             suggested_fix="Use JSON-compatible payload values and a string error summary.",
+        )
+    )
+
+
+def _trace_path_link_error(phase: Phase) -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="trace_path_link_not_allowed",
+            message="Task trace path must not be a symbolic link or junction.",
+            phase=phase.value,
+            denied_rule="canonical_trace_path_required",
+            suggested_fix="Replace trace.jsonl with a regular file inside the task workspace.",
         )
     )

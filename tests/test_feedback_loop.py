@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, Mapping, cast
+from typing import Iterator, Literal, Mapping, cast
 
 from hancode.actions import Action
 from hancode.agent_loop import AgentLoop, CheckpointManager, Policy
-from hancode.checkpoints import CheckpointManifest, RollbackResult
+from hancode.checkpoints import CheckpointFile, CheckpointManifest, RollbackResult
 from hancode.errors import HanCodeError, StructuredError
 from hancode.llm import MockLLM
-from hancode.models import Phase, TaskStatus
+from hancode.models import OperationStatus, Phase, TaskStatus
+from hancode.path_policy import PathZone
 from hancode.state import TaskState
 from hancode.tools import ToolResult
 from hancode.trace import TraceEvent
@@ -23,6 +25,22 @@ class AllowedDecision:
     requires_checkpoint: bool = False
     denied_rule: str | None = None
     suggested_fix: str = "Continue."
+    target_zone: PathZone | None = None
+
+
+class AllowMutationGuard:
+    def __init__(self) -> None:
+        self.acquisitions = 0
+        self.active = 0
+
+    @contextmanager
+    def acquire(self, task_id: str, phase: Phase) -> Iterator[None]:
+        self.acquisitions += 1
+        self.active += 1
+        try:
+            yield
+        finally:
+            self.active -= 1
 
 
 class MemoryStateStore:
@@ -40,6 +58,78 @@ class MemoryStateStore:
         self.saves.append(state)
 
 
+class FailingSaveAfterFirstSaveStore(MemoryStateStore):
+    def __init__(self, state: TaskState) -> None:
+        super().__init__(state)
+        self._save_calls = 0
+
+    def save(self, task_id: str, state: TaskState) -> None:
+        self._save_calls += 1
+        if self._save_calls == 3:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="state_write_error",
+                    message="Task state could not be persisted.",
+                    phase=Phase.CODE.value,
+                    denied_rule="state_write_required",
+                    suggested_fix="Restore task state storage.",
+                )
+            )
+        super().save(task_id, state)
+
+
+class PersistentFailureAfterCheckpointStore(MemoryStateStore):
+    def __init__(self, state: TaskState) -> None:
+        super().__init__(state)
+        self._save_calls = 0
+
+    def save(self, task_id: str, state: TaskState) -> None:
+        self._save_calls += 1
+        if self._save_calls >= 3:
+            raise OSError("state storage unavailable")
+        super().save(task_id, state)
+
+
+class ReloadFailureAfterCheckpointStore(MemoryStateStore):
+    def __init__(self, state: TaskState) -> None:
+        super().__init__(state)
+        self._load_calls = 0
+
+    def load(self, task_id: str) -> TaskState:
+        self._load_calls += 1
+        if self._load_calls >= 3:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="state_reload_failed",
+                    message="Task state could not be reloaded.",
+                    phase=Phase.CODE.value,
+                    denied_rule="state_read_required",
+                    suggested_fix="Restore task state storage.",
+                )
+            )
+        return super().load(task_id)
+
+
+class FailingRollbackStateStore(MemoryStateStore):
+    def __init__(self, state: TaskState) -> None:
+        super().__init__(state)
+        self._save_calls = 0
+
+    def save(self, task_id: str, state: TaskState) -> None:
+        self._save_calls += 1
+        if self._save_calls >= 2:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="state_write_error",
+                    message="Task state could not be persisted.",
+                    phase=Phase.REVIEW.value,
+                    denied_rule="state_write_required",
+                    suggested_fix="Restore task state storage.",
+                )
+            )
+        super().save(task_id, state)
+
+
 class AllowedPolicy:
     def __init__(self, *, requires_checkpoint: bool = False) -> None:
         self._requires_checkpoint = requires_checkpoint
@@ -53,7 +143,16 @@ class AllowedPolicy:
             requires_checkpoint=(
                 self._requires_checkpoint
                 and action.tool_name in {"write_file", "edit_file"}
-            )
+            ),
+            target_zone=(
+                PathZone.ARTIFACT
+                if action.tool_name in {"write_file", "edit_file"}
+                and str(action.args.get("path", "")).replace("\\", "/")
+                in {"SPEC.md", "PLAN.md", "TEST_REPORT.md", "REVIEW.md", "KNOWLEDGE.md", "DELIVERABLES.md"}
+                else PathZone.SOURCE
+                if action.tool_name in {"write_file", "edit_file"}
+                else None
+            ),
         )
 
 
@@ -134,6 +233,63 @@ class NoopTraceAppender:
         raise AssertionError("Task 2 must not append trace events.")
 
 
+class RecordingTraceAppender:
+    def __init__(self) -> None:
+        self.events: list[TraceEvent] = []
+
+    def append(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        phase: Phase,
+        status: str,
+        action: Mapping[str, object] | None = None,
+        observation: Mapping[str, object] | None = None,
+        error_summary: str | None = None,
+        state_transition: Mapping[str, object] | None = None,
+    ) -> TraceEvent:
+        event = TraceEvent(
+            event_id=f"evt-{len(self.events) + 1:06d}",
+            seq=len(self.events) + 1,
+            event_type=event_type,
+            task_id=task_id,
+            phase=phase,
+            timestamp=datetime.now(UTC),
+            status=status,
+            action=action,
+            observation=observation,
+            error_summary=error_summary,
+            state_transition=state_transition,
+        )
+        self.events.append(event)
+        return event
+
+
+class FailingTraceAppender:
+    def append(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        phase: Phase,
+        status: str,
+        action: Mapping[str, object] | None = None,
+        observation: Mapping[str, object] | None = None,
+        error_summary: str | None = None,
+        state_transition: Mapping[str, object] | None = None,
+    ) -> TraceEvent:
+        raise HanCodeError(
+            StructuredError(
+                error_code="trace_write_error",
+                message="Trace storage is unavailable.",
+                phase=phase.value,
+                denied_rule="trace_write_required",
+                suggested_fix="Restore trace storage.",
+            )
+        )
+
+
 class NoopCheckpointManager:
     def create(self, task_id: str, files: list[object], reason: str) -> CheckpointManifest:
         raise AssertionError("Task 2 must not create checkpoints.")
@@ -155,6 +311,11 @@ class RecordingCheckpointManager:
         self.commit_error = commit_error
         self.files: list[Path] | None = None
         self.reason: str | None = None
+        self._state_store: MemoryStateStore | None = None
+        self._pending_manifest: CheckpointManifest | None = None
+
+    def bind_state_store(self, state_store: MemoryStateStore) -> None:
+        self._state_store = state_store
 
     def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest:
         self.events.append("create")
@@ -162,14 +323,88 @@ class RecordingCheckpointManager:
         self.reason = reason
         if self.create_error is not None:
             raise self.create_error
-        return _checkpoint_manifest(task_id)
+        manifest = _checkpoint_manifest(task_id)
+        if self._state_store is not None:
+            self._state_store.save(
+                task_id,
+                replace(
+                    self._state_store.state,
+                    latest_checkpoint=manifest.checkpoint_id,
+                    checkpoint_seq=self._state_store.state.checkpoint_seq + 1,
+                ),
+            )
+        self._pending_manifest = manifest
+        return manifest
 
     def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest:
         self.events.append("commit")
         assert checkpoint_id == "ckpt-001"
         if self.commit_error is not None:
             raise self.commit_error
+        pending = self._pending_manifest or _checkpoint_manifest(task_id)
+        return replace(pending, status="committed", rollback_available=True, files=tuple(
+            replace(file, after_sha256="a" * 64) for file in pending.files
+        ))
+
+
+class StatePersistingCheckpointManager(RecordingCheckpointManager):
+    def __init__(self, events: list[str], state_store: MemoryStateStore) -> None:
+        super().__init__(events)
+        self.bind_state_store(state_store)
+
+    def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest:
+        return super().create(task_id, files, reason)
+
+
+class InvalidCheckpointManager(RecordingCheckpointManager):
+    def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest:
+        return replace(super().create(task_id, files, reason), task_id="other-task")
+
+
+class MalformedCheckpointIdManager(RecordingCheckpointManager):
+    def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest:
+        return replace(super().create(task_id, files, reason), checkpoint_id="../outside")
+
+
+class InconsistentCheckpointStateManager(StatePersistingCheckpointManager):
+    def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest:
+        manifest = super().create(task_id, files, reason)
+        state_store = self._state_store
+        assert state_store is not None
+        state_store.save(
+            task_id,
+            replace(state_store.state, status=TaskStatus.INCONSISTENT, inconsistent=True),
+        )
+        return manifest
+
+
+class InvalidCommitCheckpointManager(RecordingCheckpointManager):
+    def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest:
+        committed = super().commit(task_id, checkpoint_id)
+        return replace(committed, status="pending", rollback_available=False)
+
+
+class NoPersistCheckpointManager:
+    def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest:
+        return _checkpoint_manifest(task_id)
+
+    def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest:
         return _checkpoint_manifest(task_id, status="committed", rollback_available=True)
+
+
+class TamperedCommitCheckpointManager(RecordingCheckpointManager):
+    def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest:
+        committed = super().commit(task_id, checkpoint_id)
+        return replace(
+            committed,
+            files=(*committed.files, CheckpointFile(
+                path="src/victim.py",
+                action="create",
+                before_snapshot=None,
+                before_sha256=None,
+                after_sha256="c" * 64,
+            )),
+        )
 
 
 class NoopRollbackManager:
@@ -179,6 +414,179 @@ class NoopRollbackManager:
     def rollback_last(self, task_id: str) -> RollbackResult:
         self.calls.append(task_id)
         raise AssertionError("Task 2 must not roll back checkpoints.")
+
+
+class FailingRollbackManager:
+    def rollback_last(self, task_id: str) -> RollbackResult:
+        return RollbackResult(
+            status=OperationStatus.FAILED,
+            checkpoint_id="ckpt-001",
+            restored_files=(),
+            failed_files=("src/main.py",),
+            error=StructuredError(
+                error_code="rollback_restore_failed",
+                message="Rollback could not restore the source file.",
+                phase=Phase.REVIEW.value,
+                denied_rule="rollback_restore_required",
+                suggested_fix="Restore source file access.",
+            ),
+        )
+
+
+class RaisingRollbackManager:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def rollback_last(self, task_id: str) -> RollbackResult:
+        self.calls.append(task_id)
+        raise HanCodeError(
+            StructuredError(
+                error_code="rollback_storage_failed",
+                message="Rollback storage is unavailable.",
+                phase=Phase.REVIEW.value,
+                denied_rule="rollback_execution_required",
+                suggested_fix="Restore checkpoint storage before retrying rollback.",
+            )
+        )
+
+
+class RaisingTools(ScriptedTools):
+    def dispatch(self, action: Action) -> ToolResult:
+        raise HanCodeError(
+            StructuredError(
+                error_code="tool_dispatch_failed",
+                message="Tool dispatch failed.",
+                phase=action.phase.value,
+                denied_rule="tool_dispatch_required",
+                suggested_fix="Repair the tool registry.",
+            )
+        )
+
+
+class InvalidToolResultTools(ScriptedTools):
+    def dispatch(self, action: Action) -> ToolResult:
+        return ToolResult(
+            success=cast(bool, "yes"),
+            action_name=action.tool_name or "unknown",
+        )
+
+
+class RecordingRollbackManager:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self._state_store: MemoryStateStore | None = None
+
+    def bind_state_store(self, state_store: MemoryStateStore) -> None:
+        self._state_store = state_store
+
+    def rollback_last(self, task_id: str) -> RollbackResult:
+        self.calls.append(task_id)
+        if self._state_store is not None:
+            phase_completed = dict(self._state_store.state.phase_completed)
+            phase_completed.update(
+                {
+                    Phase.CODE.value: False,
+                    Phase.TEST.value: False,
+                    Phase.REVIEW.value: False,
+                }
+            )
+            self._state_store.save(
+                task_id,
+                replace(
+                    self._state_store.state,
+                    latest_test_status="none",
+                    test_status_consumed=False,
+                    source_edits_this_phase=0,
+                    rollback_required=False,
+                    rollback_done=True,
+                    phase_completed=phase_completed,
+                ),
+            )
+        return RollbackResult(
+            status=OperationStatus.SUCCEEDED,
+            checkpoint_id="ckpt-001",
+            restored_files=("src/main.py",),
+            failed_files=(),
+            error=None,
+        )
+
+
+class StatePersistingRollbackManager(RecordingRollbackManager):
+    def __init__(self, state_store: MemoryStateStore) -> None:
+        super().__init__()
+        self._state_store = state_store
+
+    def rollback_last(self, task_id: str) -> RollbackResult:
+        result = super().rollback_last(task_id)
+        phase_completed = dict(self._state_store.state.phase_completed)
+        phase_completed.update(
+            {
+                Phase.CODE.value: False,
+                Phase.TEST.value: False,
+                Phase.REVIEW.value: False,
+            }
+        )
+        self._state_store.save(
+            task_id,
+            replace(
+                self._state_store.state,
+                latest_test_status="none",
+                test_status_consumed=False,
+                source_edits_this_phase=0,
+                rollback_required=False,
+                rollback_done=True,
+                phase_completed=phase_completed,
+            ),
+        )
+        return result
+
+
+class InvalidRollbackResultManager:
+    def rollback_last(self, task_id: str) -> RollbackResult:
+        return RollbackResult(
+            status=OperationStatus.SUCCEEDED,
+            checkpoint_id=None,
+            restored_files=(),
+            failed_files=(),
+            error=None,
+        )
+
+
+class InconsistentFailingRollbackManager:
+    def __init__(self, state_store: MemoryStateStore) -> None:
+        self._state_store = state_store
+
+    def rollback_last(self, task_id: str) -> RollbackResult:
+        self._state_store.save(
+            task_id,
+            replace(self._state_store.state, status=TaskStatus.INCONSISTENT, inconsistent=True),
+        )
+        return RollbackResult(
+            status=OperationStatus.FAILED,
+            checkpoint_id="ckpt-001",
+            restored_files=(),
+            failed_files=("src/main.py",),
+            error=StructuredError(
+                error_code="rollback_compensation_failed",
+                message="Rollback compensation failed.",
+                phase=Phase.REVIEW.value,
+                denied_rule="rollback_compensation_required",
+                suggested_fix="Reconcile source and state before retrying.",
+            ),
+        )
+
+
+class FailingRollbackFeedback(RecordingFeedback):
+    def from_rollback_result(self, result: RollbackResult, *, phase: Phase) -> object:
+        raise HanCodeError(
+            StructuredError(
+                error_code="rollback_feedback_failed",
+                message="Rollback feedback could not be constructed.",
+                phase=phase.value,
+                denied_rule="rollback_feedback_required",
+                suggested_fix="Repair the rollback feedback builder.",
+            )
+        )
 
 
 class RecordingContextBuilder:
@@ -212,7 +620,29 @@ def test_source_write_checkpoint_orders_create_dispatch_then_commit() -> None:
     assert checkpoints.reason == "Fix the failed assertion."
 
 
-def test_checkpoint_create_failure_blocks_before_source_write_dispatch() -> None:
+def test_checkpointed_write_preserves_checkpoint_metadata_persisted_by_manager() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=StatePersistingCheckpointManager(events, state_store),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.final_state.latest_checkpoint == "ckpt-001"
+    assert result.final_state.checkpoint_seq == 1
+    assert state_store.state.latest_checkpoint == "ckpt-001"
+    assert state_store.state.checkpoint_seq == 1
+
+
+def test_checkpoint_create_failure_marks_state_inconsistent_before_source_dispatch() -> None:
     events: list[str] = []
     tools = ScriptedTools(events=events)
     checkpoints = RecordingCheckpointManager(
@@ -240,11 +670,123 @@ def test_checkpoint_create_failure_blocks_before_source_write_dispatch() -> None
 
     result = loop.run("task-001")
 
-    assert result.status is TaskStatus.BLOCKED
+    assert result.status is TaskStatus.INCONSISTENT
     assert result.error is not None
     assert result.error.error_code == "checkpoint_snapshot_failed"
+    assert result.final_state.inconsistent is True
     assert events == ["create"]
     assert tools.actions == []
+
+
+def test_invalid_checkpoint_manifest_blocks_before_source_write_dispatch() -> None:
+    events: list[str] = []
+    tools = ScriptedTools(events=events)
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=MemoryStateStore(_retry_code_state()),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=tools,
+        checkpoint_manager=InvalidCheckpointManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_manifest_invalid"
+    assert events == ["create"]
+    assert tools.actions == []
+
+
+def test_malformed_checkpoint_id_returns_structured_inconsistent_result() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=MalformedCheckpointIdManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_manifest_invalid"
+    assert result.final_state.inconsistent is True
+    assert events == ["create"]
+
+
+def test_inconsistent_state_after_checkpoint_blocks_before_source_dispatch() -> None:
+    events: list[str] = []
+    tools = ScriptedTools(events=events)
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=tools,
+        checkpoint_manager=InconsistentCheckpointStateManager(events, state_store),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_state_invalid"
+    assert events == ["create"]
+    assert tools.actions == []
+
+
+def test_invalid_commit_manifest_marks_state_inconsistent() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=InvalidCommitCheckpointManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert events == ["create", "dispatch", "commit"]
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_manifest_invalid"
+    assert result.final_state.inconsistent is True
+
+
+def test_tool_dispatch_failure_after_checkpoint_returns_inconsistent_result() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=RaisingTools(events=events),
+        checkpoint_manager=RecordingCheckpointManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert events == ["create"]
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "tool_dispatch_failed"
+    assert result.final_state.inconsistent is True
 
 
 def test_checkpointed_source_write_failure_marks_state_inconsistent_and_stops() -> None:
@@ -311,6 +853,7 @@ def test_checkpoint_commit_failure_marks_state_inconsistent_and_stops() -> None:
 def test_failed_test_retries_through_review_then_decrements_once_on_retry_write() -> None:
     state_store = MemoryStateStore(_state())
     context_builder = RecordingContextBuilder()
+    trace_appender = RecordingTraceAppender()
     llm = MockLLM(
         [
             _run_tests_action(),
@@ -326,6 +869,7 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
         feedback=RecordingFeedback(),
         policy=AllowedPolicy(requires_checkpoint=True),
         checkpoint_manager=RecordingCheckpointManager([]),
+        trace_appender=trace_appender,
         max_steps=4,
     )
 
@@ -343,6 +887,7 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
     )
 
     assert failed_test_state.phase_completed[Phase.TEST.value] is False
+    assert failed_test_state.tests_run == ("run_tests",)
     assert failed_test_state.retry_budget_remaining == 2
     assert review_state.test_status_consumed is True
     assert review_state.phase_completed[Phase.CODE.value] is False
@@ -360,9 +905,172 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
     assert result.retry_budget_remaining == 1
     assert result.final_state.source_edits_this_phase == 2
     assert result.status is not TaskStatus.COMPLETED
+    assert [event.event_type for event in trace_appender.events] == [
+        "tool_called",
+        "tool_failed",
+        "test_failed",
+        "tool_called",
+        "source_write_authorized",
+        "tool_completed",
+        "retry_budget_consumed",
+        "tool_called",
+        "source_write_authorized",
+        "tool_completed",
+    ]
+    assert result.trace_events == tuple(trace_appender.events)
 
 
-def test_successful_retry_write_without_checkpoint_requirement_keeps_budget() -> None:
+def test_mutation_guard_is_released_between_two_source_writes() -> None:
+    guard = AllowMutationGuard()
+    loop = _loop(
+        llm=MockLLM([_retry_write_action(), _retry_write_action()]),
+        state_store=MemoryStateStore(_retry_code_state()),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=ScriptedTools(),
+        checkpoint_manager=RecordingCheckpointManager([]),
+        mutation_guard=guard,
+        max_steps=2,
+    )
+
+    loop.run("task-001")
+
+    assert guard.acquisitions == 1
+    assert guard.active == 0
+
+
+def test_artifact_write_does_not_use_source_checkpoint_or_edit_budget() -> None:
+    phase_completed = {phase.value: False for phase in Phase}
+    state = replace(
+        _state(),
+        current_phase=Phase.SPEC,
+        phase_completed={**phase_completed, Phase.CODE.value: True},
+        artifacts={**_state().artifacts, "SPEC.md": False},
+    )
+    loop = _loop(
+        llm=MockLLM([_artifact_write_action()]),
+        state_store=MemoryStateStore(state),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.tool_calls == ("write_file",)
+    assert result.final_state.files_changed == ()
+    assert result.final_state.source_edits_this_phase == 0
+    assert result.final_state.artifacts["SPEC.md"] is True
+
+
+def test_checkpoint_pointer_mismatch_is_persisted_as_inconsistent() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=cast(CheckpointManager, NoPersistCheckpointManager()),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_state_invalid"
+    assert state_store.state.inconsistent is True
+    assert state_store.state.status is TaskStatus.INCONSISTENT
+    assert events == []
+
+
+def test_checkpoint_state_reload_failure_persists_recovery_pointer() -> None:
+    events: list[str] = []
+    state_store = ReloadFailureAfterCheckpointStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=RecordingCheckpointManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_state_reload_failed"
+    assert state_store.state.latest_checkpoint == "ckpt-001"
+    assert state_store.state.inconsistent is True
+    assert events == ["create"]
+
+
+def test_tampered_commit_manifest_is_rejected() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=TamperedCommitCheckpointManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "checkpoint_manifest_invalid"
+    assert state_store.state.inconsistent is True
+
+
+def test_malformed_tool_result_is_fail_closed() -> None:
+    state_store = MemoryStateStore(_state())
+    loop = _loop(
+        llm=MockLLM([_run_tests_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=InvalidToolResultTools(),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "tool_result_invalid"
+    assert state_store.state.inconsistent is True
+
+
+def test_failed_test_trace_uses_previous_test_status_in_state_transition() -> None:
+    state = replace(_state(), latest_test_status="passed")
+    trace_appender = RecordingTraceAppender()
+    loop = _loop(
+        llm=MockLLM([_run_tests_action()]),
+        state_store=MemoryStateStore(state),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        trace_appender=trace_appender,
+        max_steps=1,
+    )
+
+    loop.run("task-001")
+
+    test_failed = next(event for event in trace_appender.events if event.event_type == "test_failed")
+    assert test_failed.state_transition == {"latest_test_status": ["passed", "failed"]}
+
+
+def test_source_write_without_policy_requirement_still_uses_checkpoint_and_consumes_retry_budget() -> None:
+    events: list[str] = []
     state = _retry_code_state()
     loop = _loop(
         llm=MockLLM([_retry_write_action()]),
@@ -370,25 +1078,30 @@ def test_successful_retry_write_without_checkpoint_requirement_keeps_budget() ->
         context_builder=RecordingContextBuilder(),
         feedback=RecordingFeedback(),
         policy=AllowedPolicy(requires_checkpoint=False),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=RecordingCheckpointManager(events),
         max_steps=1,
     )
 
     result = loop.run("task-001")
 
-    assert result.retry_budget_remaining == 2
+    assert events == ["create", "dispatch", "commit"]
+    assert result.retry_budget_remaining == 1
     assert result.final_state.source_edits_this_phase == 1
+    assert result.final_state.files_changed == ("src/main.py",)
 
 
-def test_rollback_tool_is_blocked_without_dispatch_or_rollback_call() -> None:
-    tools = ScriptedTools()
-    rollback_manager = NoopRollbackManager()
+def test_trace_failure_blocks_source_write_before_checkpoint_or_dispatch() -> None:
+    events: list[str] = []
+    tools = ScriptedTools(events=events)
     loop = _loop(
-        llm=MockLLM([_rollback_action()]),
-        state_store=MemoryStateStore(_review_state()),
+        llm=MockLLM([_retry_write_action()]),
+        state_store=MemoryStateStore(_retry_code_state()),
         context_builder=RecordingContextBuilder(),
         feedback=RecordingFeedback(),
         tools=tools,
-        rollback_manager=rollback_manager,
+        checkpoint_manager=RecordingCheckpointManager(events),
+        trace_appender=FailingTraceAppender(),
         max_steps=1,
     )
 
@@ -396,9 +1109,331 @@ def test_rollback_tool_is_blocked_without_dispatch_or_rollback_call() -> None:
 
     assert result.status is TaskStatus.BLOCKED
     assert result.error is not None
-    assert result.error.error_code == "rollback_deferred_to_task_4"
+    assert result.error.error_code == "trace_write_error"
+    assert events == []
     assert tools.actions == []
-    assert rollback_manager.calls == []
+
+
+def test_state_persistence_failure_after_source_write_returns_inconsistent_result() -> None:
+    events: list[str] = []
+    state_store = FailingSaveAfterFirstSaveStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=RecordingCheckpointManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert events == ["create", "dispatch", "commit"]
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "state_write_error"
+    assert result.final_state.inconsistent is True
+    assert result.final_state.rollback_required is True
+    assert state_store.state.status is TaskStatus.INCONSISTENT
+
+
+def test_persistent_state_failure_is_not_swallowed_when_marking_inconsistent() -> None:
+    events: list[str] = []
+    state_store = PersistentFailureAfterCheckpointStore(_retry_code_state())
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(events=events),
+        checkpoint_manager=RecordingCheckpointManager(events),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert events == ["create", "dispatch", "commit"]
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "state_persistence_failed"
+    assert result.final_state.inconsistent is True
+
+
+def test_retry_budget_exhaustion_forces_rollback_and_returns_feedback_observation() -> None:
+    tools = ScriptedTools()
+    rollback_manager = RecordingRollbackManager()
+    trace_appender = RecordingTraceAppender()
+    loop = _loop(
+        llm=MockLLM([]),
+        state_store=MemoryStateStore(_retry_budget_exhausted_state()),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=tools,
+        rollback_manager=rollback_manager,
+        trace_appender=trace_appender,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.RUNNING
+    assert result.final_state.current_phase is Phase.REVIEW
+    assert result.final_state.rollback_required is False
+    assert result.final_state.rollback_done is True
+    assert result.final_observation == {"kind": "rollback"}
+    assert tools.actions == []
+    assert rollback_manager.calls == ["task-001"]
+    assert [event.event_type for event in trace_appender.events] == [
+        "rollback_started",
+        "rollback_performed",
+    ]
+    assert result.trace_events == tuple(trace_appender.events)
+
+
+def test_rollback_preserves_state_persisted_by_rollback_manager() -> None:
+    state_store = MemoryStateStore(_retry_budget_exhausted_state())
+    rollback_manager = StatePersistingRollbackManager(state_store)
+    loop = _loop(
+        llm=MockLLM([]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=rollback_manager,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.RUNNING
+    assert result.final_state.latest_test_status == "none"
+    assert result.final_state.test_status_consumed is False
+    assert result.final_state.source_edits_this_phase == 0
+    assert result.final_state.rollback_required is False
+    assert result.final_state.rollback_done is True
+    assert result.final_state.phase_completed[Phase.CODE.value] is False
+    assert result.final_state.phase_completed[Phase.TEST.value] is False
+    assert result.final_state.phase_completed[Phase.REVIEW.value] is False
+
+
+def test_explicit_rollback_action_is_dispatched_once_and_returns_observation() -> None:
+    state_store = MemoryStateStore(
+        replace(_review_state(), latest_checkpoint="ckpt-001", checkpoint_seq=1)
+    )
+    rollback_manager = RecordingRollbackManager()
+    guard = AllowMutationGuard()
+    loop = _loop(
+        llm=MockLLM([_rollback_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=rollback_manager,
+        mutation_guard=guard,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.RUNNING
+    assert result.tool_calls == ("rollback_last_checkpoint",)
+    assert result.final_observation == {"kind": "rollback"}
+    assert rollback_manager.calls == ["task-001"]
+    assert guard.acquisitions == 1
+    assert guard.active == 0
+
+
+def test_invalid_rollback_result_is_fail_closed() -> None:
+    state_store = MemoryStateStore(_retry_budget_exhausted_state())
+    loop = _loop(
+        llm=MockLLM([]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=cast(
+            RecordingRollbackManager, InvalidRollbackResultManager()
+        ),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "rollback_result_invalid"
+    assert state_store.state.inconsistent is True
+
+
+def test_rollback_compensation_inconsistency_is_not_overwritten() -> None:
+    state_store = MemoryStateStore(_retry_budget_exhausted_state())
+    loop = _loop(
+        llm=MockLLM([]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=cast(
+            RecordingRollbackManager, InconsistentFailingRollbackManager(state_store)
+        ),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.final_state.inconsistent is True
+    assert state_store.state.inconsistent is True
+
+
+def test_rollback_feedback_failure_preserves_persisted_success_flags() -> None:
+    state_store = MemoryStateStore(_retry_budget_exhausted_state())
+    loop = _loop(
+        llm=MockLLM([]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=FailingRollbackFeedback(),
+        rollback_manager=StatePersistingRollbackManager(state_store),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "rollback_feedback_failed"
+    assert result.final_state.inconsistent is True
+    assert result.final_state.rollback_done is True
+    assert result.final_state.rollback_required is False
+
+
+def test_budget_exhaustion_on_last_step_still_forces_rollback() -> None:
+    state_store = MemoryStateStore(
+        replace(
+            _retry_code_state(),
+            latest_checkpoint="ckpt-001",
+            checkpoint_seq=1,
+            retry_budget_remaining=1,
+        )
+    )
+    rollback_manager = RecordingRollbackManager()
+    loop = _loop(
+        llm=MockLLM([_retry_write_action(), _finish_code_action(), _run_tests_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        checkpoint_manager=RecordingCheckpointManager([]),
+        rollback_manager=rollback_manager,
+        max_steps=3,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.RUNNING
+    assert rollback_manager.calls == ["task-001"]
+    assert result.final_state.current_phase is Phase.REVIEW
+
+
+def test_rollback_state_save_failure_returns_structured_inconsistent_result() -> None:
+    state_store = FailingRollbackStateStore(_retry_budget_exhausted_state())
+    loop = _loop(
+        llm=MockLLM([]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=FailingRollbackManager(),
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "state_write_error"
+    assert result.final_state.inconsistent is True
+
+
+def test_rollback_exception_records_rollback_failed_trace_event() -> None:
+    trace_appender = RecordingTraceAppender()
+    loop = _loop(
+        llm=MockLLM([]),
+        state_store=MemoryStateStore(_retry_budget_exhausted_state()),
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=RaisingRollbackManager(),
+        trace_appender=trace_appender,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "rollback_storage_failed"
+    assert [event.event_type for event in trace_appender.events] == [
+        "rollback_started",
+        "rollback_performed",
+    ]
+
+
+def test_resume_after_rollback_failure_retries_rollback_before_llm() -> None:
+    state_store = MemoryStateStore(_retry_budget_exhausted_state())
+    rollback_manager = RaisingRollbackManager()
+    first_loop = _loop(
+        llm=MockLLM([]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=rollback_manager,
+        max_steps=1,
+    )
+
+    first = first_loop.run("task-001")
+    second_loop = _loop(
+        llm=MockLLM([_finish_review_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=rollback_manager,
+        max_steps=1,
+    )
+
+    second = second_loop.run("task-001", resume=True)
+
+    assert first.status is TaskStatus.BLOCKED
+    assert second.status is TaskStatus.BLOCKED
+    assert second.final_state.rollback_required is True
+    assert second.final_state.phase_completed[Phase.REVIEW.value] is False
+    assert rollback_manager.calls == ["task-001", "task-001"]
+
+
+def test_resume_can_recover_inconsistent_state_with_required_checkpoint_rollback() -> None:
+    state_store = MemoryStateStore(
+        replace(
+            _retry_code_state(),
+            status=TaskStatus.INCONSISTENT,
+            inconsistent=True,
+            latest_checkpoint="ckpt-001",
+            checkpoint_seq=1,
+            rollback_required=True,
+        )
+    )
+    rollback_manager = RecordingRollbackManager()
+    loop = _loop(
+        llm=MockLLM([]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        rollback_manager=rollback_manager,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001", resume=True)
+
+    assert result.status is TaskStatus.RUNNING
+    assert result.error is None
+    assert result.final_state.inconsistent is False
+    assert result.final_state.rollback_required is False
+    assert result.final_state.rollback_done is True
+    assert rollback_manager.calls == ["task-001"]
 
 
 def test_final_action_after_failed_test_cannot_bypass_router_completion() -> None:
@@ -438,15 +1473,36 @@ def test_feedback_construction_failure_blocks_with_its_structured_error() -> Non
 def _loop(
     *,
     llm: MockLLM,
-    state_store: MemoryStateStore,
+    state_store: MemoryStateStore | FailingSaveAfterFirstSaveStore | PersistentFailureAfterCheckpointStore | FailingRollbackStateStore | ReloadFailureAfterCheckpointStore,
     context_builder: RecordingContextBuilder,
     feedback: RecordingFeedback,
     policy: AllowedPolicy | None = None,
     tools: ScriptedTools | None = None,
-    checkpoint_manager: RecordingCheckpointManager | None = None,
-    rollback_manager: NoopRollbackManager | None = None,
+    checkpoint_manager: (
+        RecordingCheckpointManager
+        | StatePersistingCheckpointManager
+        | InvalidCheckpointManager
+        | MalformedCheckpointIdManager
+        | InconsistentCheckpointStateManager
+        | InvalidCommitCheckpointManager
+        | None
+    ) = None,
+    rollback_manager: (
+        NoopRollbackManager
+        | RecordingRollbackManager
+        | StatePersistingRollbackManager
+        | FailingRollbackManager
+        | RaisingRollbackManager
+        | None
+    ) = None,
+    trace_appender: NoopTraceAppender | RecordingTraceAppender | FailingTraceAppender | None = None,
+    mutation_guard: AllowMutationGuard | None = None,
     max_steps: int,
 ) -> AgentLoop:
+    if isinstance(checkpoint_manager, RecordingCheckpointManager):
+        checkpoint_manager.bind_state_store(state_store)
+    if isinstance(rollback_manager, RecordingRollbackManager):
+        rollback_manager.bind_state_store(state_store)
     return AgentLoop(
         llm=llm,
         context_builder=context_builder,
@@ -454,13 +1510,14 @@ def _loop(
         tool_registry=tools or ScriptedTools(),
         feedback_builder=feedback,
         state_store=state_store,
-        trace_appender=NoopTraceAppender(),
+        trace_appender=trace_appender or RecordingTraceAppender(),
         checkpoint_manager=cast(
             CheckpointManager,
             checkpoint_manager or NoopCheckpointManager(),
         ),
         rollback_manager=rollback_manager or NoopRollbackManager(),
         max_steps=max_steps,
+        mutation_guard=mutation_guard or AllowMutationGuard(),
     )
 
 
@@ -528,6 +1585,21 @@ def _review_state() -> TaskState:
     )
 
 
+def _retry_budget_exhausted_state() -> TaskState:
+    state = _state()
+    phase_completed = dict(state.phase_completed)
+    phase_completed[Phase.TEST.value] = False
+    return replace(
+        state,
+        current_phase=Phase.TEST,
+        latest_checkpoint="ckpt-001",
+        checkpoint_seq=1,
+        latest_test_status="failed",
+        retry_budget_remaining=0,
+        phase_completed=phase_completed,
+    )
+
+
 def _run_tests_action() -> dict[str, object]:
     return {
         "type": "tool_call",
@@ -542,6 +1614,16 @@ def _finish_review_action() -> dict[str, object]:
     return {
         "type": "finish_phase",
         "phase": Phase.REVIEW.value,
+        "tool_name": None,
+        "args": {},
+        "reason": None,
+    }
+
+
+def _finish_code_action() -> dict[str, object]:
+    return {
+        "type": "finish_phase",
+        "phase": Phase.CODE.value,
         "tool_name": None,
         "args": {},
         "reason": None,
@@ -565,6 +1647,16 @@ def _retry_write_action() -> dict[str, object]:
         "tool_name": "write_file",
         "args": {"path": "src/main.py", "content": "fixed\n"},
         "reason": "Fix the failed assertion.",
+    }
+
+
+def _artifact_write_action() -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": Phase.SPEC.value,
+        "tool_name": "write_file",
+        "args": {"path": "SPEC.md", "content": "# Spec\n"},
+        "reason": "Record the task specification.",
     }
 
 
@@ -593,6 +1685,14 @@ def _checkpoint_manifest(
         reason="Fix the failed assertion.",
         created_at=datetime.now(UTC),
         status=status,
-        files=(),
+        files=(
+            CheckpointFile(
+                path="src/main.py",
+                action="modify",
+                before_snapshot="files/001-main.before",
+                before_sha256="b" * 64,
+                after_sha256="a" * 64 if status == "committed" else None,
+            ),
+        ),
         rollback_available=rollback_available,
     )

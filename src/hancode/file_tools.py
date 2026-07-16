@@ -18,7 +18,19 @@ _QUOTED_ASSIGNMENT_SECRET = re.compile(
 )
 _BEARER_SECRET = re.compile(r"(?im)((?:Authorization\s*:\s*)?Bearer\s+)[^\s]+")
 _JSON_SECRET = re.compile(
-    r'(?i)(\"(?:api_key|token|secret|password)\"\s*:\s*\")[^\"]*(\")'
+    r'(?i)(\"(?:api_key|token|secret|password|authorization|cookie|credential|'
+    r'private[_-]?key|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)'
+    r'\"\s*:\s*)(\"(?:\\.|[^\"\\])*\"|\'(?:\\.|[^\'\\])*\')'
+)
+_QUOTED_GENERIC_SECRET = re.compile(
+    r"(?im)\b(authorization|api[_-]?key|token|secret|password|private[_-]?key|"
+    r"credential|cookie|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)"
+    r"(\s*[:=]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')"
+)
+_GENERIC_SECRET = re.compile(
+    r"(?im)\b(authorization|api[_-]?key|token|secret|password|private[_-]?key|"
+    r"credential|cookie|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)"
+    r"(\s*[:=]\s*)(?:bearer\s+)?[^\s,;\"']+"
 )
 _SK_SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]+\b")
 
@@ -227,8 +239,20 @@ def redact_text(text: str) -> str:
     redacted = _QUOTED_ASSIGNMENT_SECRET.sub(r"\1\2\3[REDACTED]\3", text)
     redacted = _ASSIGNMENT_SECRET.sub(r"\1\2[REDACTED]", redacted)
     redacted = _BEARER_SECRET.sub(r"\1[REDACTED]", redacted)
-    redacted = _JSON_SECRET.sub(r"\1[REDACTED]\2", redacted)
+    redacted = _QUOTED_GENERIC_SECRET.sub(_redact_quoted_generic, redacted)
+    redacted = _JSON_SECRET.sub(_redact_quoted_json, redacted)
+    redacted = _GENERIC_SECRET.sub(r"\1\2[REDACTED]", redacted)
     return _SK_SECRET.sub("[REDACTED]", redacted)
+
+
+def _redact_quoted_generic(match: re.Match[str]) -> str:
+    quoted_value = match.group(3)
+    return f"{match.group(1)}{match.group(2)}{quoted_value[0]}[REDACTED]{quoted_value[0]}"
+
+
+def _redact_quoted_json(match: re.Match[str]) -> str:
+    quoted_value = match.group(2)
+    return f"{match.group(1)}{quoted_value[0]}[REDACTED]{quoted_value[0]}"
 
 
 def _failed(action_name: str, error_summary: str) -> ToolResult:

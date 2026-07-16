@@ -202,6 +202,18 @@ def test_full_completion_returns_completed_deliver_decision() -> None:
     assert decision == RoutingDecision(Phase.DELIVER, "all_done", completed=True)
 
 
+def test_persisted_completed_status_blocks_when_deliverables_are_missing() -> None:
+    decision = select_next_phase(
+        _state(
+            status=TaskStatus.COMPLETED,
+            current_phase=Phase.DELIVER,
+            artifacts={"KNOWLEDGE.md": False, "DELIVERABLES.md": False},
+        )
+    )
+
+    assert decision == RoutingDecision(Phase.DELIVER, "knowledge_missing", blocked=True)
+
+
 def test_router_is_pure_and_does_not_write_state() -> None:
     state = _state()
     original_artifacts = dict(state.artifacts)

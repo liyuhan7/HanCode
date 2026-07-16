@@ -27,7 +27,7 @@ def init_project_workspace(
     course_name: str,
     assignment_name: str,
 ) -> Path:
-    workspace = project_root.resolve() / ".hancode"
+    _project_root, workspace = _workspace_paths(project_root)
     workspace.mkdir(exist_ok=True)
     (workspace / "tasks").mkdir(exist_ok=True)
 
@@ -54,10 +54,15 @@ def init_project_workspace(
 
 
 def task_path(project_root: Path, task_id: str) -> Path:
-    workspace_root = (project_root.resolve() / ".hancode").resolve()
-    tasks_root = (workspace_root / "tasks").resolve()
+    _project_root, workspace = _workspace_paths(project_root)
+    workspace_root = workspace.resolve()
+    tasks_root_path = workspace / "tasks"
+    tasks_root = tasks_root_path.resolve()
     task_id_path = Path(task_id)
-    candidate = (tasks_root / task_id_path).resolve()
+    candidate_path = tasks_root_path / task_id_path
+    if _is_link(candidate_path):
+        raise _workspace_boundary_error()
+    candidate = candidate_path.resolve()
 
     if (
         task_id_path.is_absolute()
@@ -90,13 +95,13 @@ def task_path(project_root: Path, task_id: str) -> Path:
 
 
 def init_task_workspace(project_root: Path, task_id: str) -> Path:
-    workspace = project_root.resolve() / ".hancode"
+    _project_root, workspace = _workspace_paths(project_root)
     required_files = [
         workspace / "project.json",
         *(workspace / filename for filename in _PROJECT_MARKDOWN_FILES),
     ]
     if not (workspace / "tasks").is_dir() or any(
-        not path.is_file() for path in required_files
+        _is_link(path) or not path.is_file() for path in required_files
     ):
         raise HanCodeError(
             StructuredError(
@@ -112,15 +117,22 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
 
     load_project_metadata(workspace / "project.json")
     task_workspace = task_path(project_root, task_id)
+    checkpoints_dir = task_workspace / "checkpoints"
+    if _is_link(checkpoints_dir):
+        raise _workspace_file_link_error("checkpoints")
     task_workspace.mkdir(exist_ok=True)
-    (task_workspace / "checkpoints").mkdir(exist_ok=True)
+    checkpoints_dir.mkdir(exist_ok=True)
 
     for filename in ("trace.jsonl", "history.jsonl"):
         path = task_workspace / filename
+        if _is_link(path):
+            raise _workspace_file_link_error(filename)
         if not path.exists():
             path.write_text("", encoding="utf-8")
 
     state_file = task_workspace / "state.json"
+    if _is_link(state_file):
+        raise _workspace_file_link_error("state.json")
     if not state_file.exists():
         initial_state = {
             "schema_version": 1,
@@ -156,7 +168,63 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
     return task_workspace
 
 
+def _workspace_paths(project_root: Path) -> tuple[Path, Path]:
+    project_root = project_root.resolve()
+    workspace = project_root / ".hancode"
+    if _is_link(workspace):
+        raise _workspace_link_error()
+    if _is_link(workspace / "tasks"):
+        raise _workspace_boundary_error()
+    return project_root, workspace
+
+
+def _is_link(path: Path) -> bool:
+    try:
+        is_junction = getattr(path, "is_junction", None)
+        return path.is_symlink() or bool(is_junction and is_junction())
+    except (OSError, RuntimeError):
+        return True
+
+
+def _workspace_link_error() -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="workspace_link_not_allowed",
+            message="Project workspace links are not allowed for task state storage.",
+            phase="spec",
+            denied_rule="canonical_workspace_root_required",
+            suggested_fix="Replace .hancode and .hancode/tasks links with directories inside the project.",
+        )
+    )
+
+
+def _workspace_boundary_error() -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="workspace_path_outside_project_root",
+            message="Task workspace path must stay inside the project workspace.",
+            phase="spec",
+            denied_rule="workspace_root_boundary",
+            suggested_fix="Use a relative task ID without parent-directory segments.",
+        )
+    )
+
+
+def _workspace_file_link_error(filename: str) -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="workspace_file_link_not_allowed",
+            message=f"Task workspace file must not be a link: {filename}.",
+            phase="spec",
+            denied_rule="canonical_task_file_required",
+            suggested_fix="Replace the task workspace link with a regular file or directory inside the task.",
+        )
+    )
+
+
 def load_project_metadata(project_file: Path) -> dict[str, object]:
+    if _is_link(project_file):
+        raise _workspace_file_link_error(project_file.name)
     try:
         metadata = json.loads(project_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
