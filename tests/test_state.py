@@ -279,6 +279,7 @@ def test_load_state_fails_closed_when_junction_probe_is_indeterminate(
         Path,
         "is_junction",
         lambda _path: (_ for _ in ()).throw(AttributeError("st_reparse_tag")),
+        raising=False,
     )
 
     with pytest.raises(HanCodeError) as error:

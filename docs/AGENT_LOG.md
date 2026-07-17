@@ -1197,3 +1197,9 @@
   - 第二阶段进一步要求 gate 校验 `phase=review` 与 `denied_rule=max_steps_limit`；fixture 复制时排除 pytest bytecode cache、传入根仍严格拒绝额外文件；专项回归更新为 8 passed。
   - 最终验证：全量 `uv run --no-sync pytest -q -p no:cacheprovider --basetemp '.test-tmp-t23-postreview-full'`：585 passed，10 skipped；ruff、mypy、离线 demo 与 `git diff --check` 均通过（见本条此前记录）。
   - 状态：T23 已完成，尚未提交，等待开发者授权。
+
+### 2026-07-17 — M6 CI 跨平台 junction 测试夹具修正
+
+- Linux CI 的 `python -m pytest` 首次暴露两个测试夹具错误：Python 3.11 POSIX 的 `pathlib.Path` 没有 `is_junction`，测试在验证 fail-closed 行为前就因 monkeypatch 默认 `raising=True` 失败。
+- 将 `tests/test_delivery.py` 与 `tests/test_state.py` 的 `is_junction` monkeypatch 改为 `raising=False`，只在测试运行时注入缺失探针；生产代码仍通过 `getattr` 和异常捕获保持跨平台 fail-closed 语义。
+- 验证：两个 junction 回归测试 2 passed；全量 pytest 585 passed、10 skipped；ruff、mypy、`git diff --check` 通过。
