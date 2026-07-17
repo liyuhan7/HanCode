@@ -1170,3 +1170,30 @@
   - Task 4（输入边界 + 文案清理）：`write_deliverables` 首行新增 `AgentRunResult` 类型守卫，`error_code="delivery_result_invalid"`，断言 state 不变；`_delivery_blockers` coverage digest 不一致消息改为中文；`_next_steps` 两条英文建议翻译为中文；`_cell` 删除冗余 `.replace("\n", " ")`。Red：`test_write_deliverables_rejects_non_run_result` 因 `AttributeError` 失败；Green：27 passed（含文案断言更新）。
   - #6 双重 state 加载保留为写入前重校验（fail-closed 边界），不删除。
   - #9 三处 `_is_link` 重复实现已对齐异常语义；跨六模块共享 helper 抽取列为后续技术债，不在本返工扩大范围。
+
+### 2026-07-17 — T23 MockLLM 机制 Demo（实现与评审前验证）
+
+- 使用的技能：`brainstorming`、`writing-plans`、`executing-plans`、`test-driven-development`、`systematic-debugging`、`requesting-code-review`。
+- 任务范围：仅实现 `examples/broken_project/`、`scripts/demo_mock_loop.py` 与 `tests/test_mock_demo.py` 的离线、确定性机制演示；不改 AgentLoop/T21/T22 核心实现，不接真实 LLM、网络或凭据。
+- Red → Green 证据：
+  - 初始 `tests/test_mock_demo.py` 因 fixture 不存在失败；创建 fixture 后因 demo 脚本不存在再次失败。
+  - 初版集成触发 `trace_event_invalid`：`CheckpointManager` 会向持久 trace 追加事件，而单次 AgentLoop 的内存 trace 仍要求局部连续序号。经诊断，在 demo 边界加入 `_DemoTraceAppender`：持久化仍交给文件系统 trace appender，返回给 loop 的仅是本次子运行的局部连续序号；最终结果重新加载持久 trace。
+  - 初版 delivery 后仍是 `blocked`：T22 按 persisted state fail-closed，不会自动提升被阶段上限阻断的状态。demo 只在已完成恢复与测试之后显式进入 deliver，再调用 T22 写入器，保持 T22 既有边界不变。
+  - 新增“最终 TEST_REPORT 包含真实 unittest 输出 `Ran 1 test`”断言，初版因以 trace 状态合成 `OK` 而失败；`_record_test_evidence()` 改为返回本次 `ToolResult` 的真实分类报告，并直接传给交付写入器后通过。
+- 实现摘要：
+  - fixture 包含不可修改的 `assignment.md`、最初抛出异常的 `calculator.py` 与标准库 `unittest`。
+  - 固定 MockLLM 序列真实触发 protected-write policy denial、source-write checkpoint、两次失败测试、`assertion_failure` 反馈、retry budget 消耗与 rollback；随后以正确实现恢复并通过测试。
+  - `_DemoTestRunner` 用固定 argv、`shell=False`、2 秒超时执行本地 `unittest`；6 个 T22 交付物和最终 `ResultBuilder` 输出均来自该运行。
+  - 非 fixture 根目录返回 `mock_demo_fixture_required`；未预期异常收口为 `mock_demo_internal_error`，保留 trace 和 blocked state。
+- 评审前验证：
+  - `uv run --no-sync pytest tests/test_mock_demo.py -q -p no:cacheprovider --basetemp '.test-tmp-t23-r2-green'`：8 passed。
+  - `uv run --no-sync ruff check scripts/demo_mock_loop.py tests/test_mock_demo.py --no-cache`：通过。
+  - `MYPYPATH=src uv run --no-sync mypy scripts/demo_mock_loop.py tests/test_mock_demo.py --no-incremental`：no issues found in 2 source files。
+  - `uv run --no-sync python scripts/demo_mock_loop.py`：退出码 0，输出 `completed`，包含 6 个交付物、checkpoint、rollback 和 69 个持久 trace ID。
+- 待办：完成两阶段互相独立的新鲜评审、处理重要问题并做全量验证；尚未提交。
+
+- 两阶段新鲜评审与返工：
+  - 第一阶段发现任意 blocked→deliver 绕过、失败结果含虚拟 trace、fixture 可被篡改及 trace 因果测试不足。新增预期 delivery gate allowlist、失败只返回持久 trace、fixture SHA-256/链接/清单校验和对应 Red→Green 回归。
+  - 第二阶段进一步要求 gate 校验 `phase=review` 与 `denied_rule=max_steps_limit`；fixture 复制时排除 pytest bytecode cache、传入根仍严格拒绝额外文件；专项回归更新为 8 passed。
+  - 最终验证：全量 `uv run --no-sync pytest -q -p no:cacheprovider --basetemp '.test-tmp-t23-postreview-full'`：585 passed，10 skipped；ruff、mypy、离线 demo 与 `git diff --check` 均通过（见本条此前记录）。
+  - 状态：T23 已完成，尚未提交，等待开发者授权。

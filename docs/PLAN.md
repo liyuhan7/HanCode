@@ -2572,7 +2572,7 @@ uv run mypy src/hancode/delivery.py src/hancode/state.py
 
 | 元信息           | 值                 |
 | ------------- | ----------------- |
-| 状态            | [ ] 未开始           |
+| 状态            | [x] 已完成（待开发者授权提交） |
 | 依赖            | T21, T22          |
 | 可并行           | 不并行；集成演示任务        |
 | Worktree / PR | `feature/M6`      |
@@ -2628,6 +2628,18 @@ def run_mock_demo(project_root: Path) -> AgentRunResult: ...
   * rollback。
   * deliver artifacts 生成。
 * `examples/broken_project/` 只作为 fixture，不作为 HanCode 自身实现。
+* fixture 中使用标准库 `unittest`；测试器以固定 argv、`shell=False` 和有限超时执行，不调用网络或 provider。
+* 测试报告必须直接使用该次 `ToolResult` 的确定性失败分类和原始（已脱敏）输出，不能从 trace 状态反向推断摘要。
+* 每次 `AgentLoop` 子运行使用局部 trace 序号适配器；持久 trace 仍由文件系统适配器统一写入，最终结果只读取持久 trace。
+* retry 预算耗尽后的 rollback 保留在 review；恢复后的正确实现通过测试后才切换到 deliver 并调用 T22 交付写入器。
+
+### 实施记录（待评审）
+
+* 新增受保护的课程要求、初始缺陷加法实现与 `unittest` fixture；运行时仅接受该 fixture 的干净副本，其他目录返回结构化 `mock_demo_fixture_required`。
+* 固定 MockLLM action 序列依次证明：protected write 拒绝、source write 前 checkpoint、两次失败测试与确定性 `assertion_failure` 分类、retry budget 耗尽、rollback、正确修复后的通过测试，以及 6 个交付物写入。
+* demo 对未预期的运行时异常收口为结构化 `mock_demo_internal_error`，并保留 trace 与 blocked state；预期的 HanCode 错误保留原错误码。
+* TDD：先验证 fixture 与脚本缺失导致 Red；随后新增“测试报告包含真实 unittest 输出”的断言，初始报告仅含合成 `OK` 而失败，改为直接传递 `ToolResult` 分类报告后 Green。
+* 两阶段评审后验证：`uv run --no-sync pytest tests/test_mock_demo.py -q -p no:cacheprovider --basetemp '.test-tmp-t23-r2-green'` 为 8 passed；脚本原命令 `uv run --no-sync python scripts/demo_mock_loop.py` 返回 `completed`；专项 ruff 与 mypy 通过。全量回归为 585 passed、10 skipped。
 
 ### 验证步骤
 
