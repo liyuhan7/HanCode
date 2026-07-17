@@ -906,9 +906,13 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
     assert result.final_state.source_edits_this_phase == 2
     assert result.status is not TaskStatus.COMPLETED
     assert [event.event_type for event in trace_appender.events] == [
+        "phase_started",
         "tool_called",
         "tool_failed",
         "test_failed",
+        "phase_started",
+        "phase_completed",
+        "phase_started",
         "tool_called",
         "source_write_authorized",
         "tool_completed",

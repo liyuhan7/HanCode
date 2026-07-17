@@ -39,6 +39,29 @@
 
 ---
 
+### 2026-07-17 — T21-R1 Task 2 — 错误优先级与生命周期审计事件
+
+- 使用的技能：test-driven-development。
+- 使用的智能体：Claude Opus。
+- 背景：Task 1 全量测试遗留 `3 failed`，其中 2 项为 course-file protection trace stub 用例——它们断言"trace 后端完全不可用时，受保护写入仍必须以 `policy_denied` 为主错误被拒"，而 AgentLoop 旧实现让 `trace_write_failed` 覆盖了 `policy_denied`。
+- 修复（均 TDD：先失败测试后最小实现）：
+  - 错误优先级（对齐修复边界"policy denial 保留为主错误；trace 写失败作为审计风险"）：在**已有既存主错误**的两个平行分支——`policy_denied` 与 `action_parse_failed`——写 trace 失败时，保留业务主错误（policy 拒绝 / 解析错误），trace 失败降级为 `Risk(level="medium")` 附加到结果，仍 fail-closed 不派发工具。新增 `_trace_failure_risk()` 辅助函数与 `test_policy_denial_keeps_primary_error_when_trace_write_fails`、`test_parse_error_keeps_primary_error_when_trace_write_fails`。其余 trace 点（tool_called / source_write_authorized / checkpoint 等变更关卡，及 tool_failed / test_failed / retry_budget_consumed 等无既存业务主错误的点）维持原 fail-closed 语义未改。
+  - 生命周期审计事件：补 `phase_started`（阶段切换时，单阶段内不重复）、`phase_completed`（FINISH_PHASE 成功后）、`run_completed`（路由判定 completed 时，含循环内与循环末两条路径）。新增 `test_lifecycle_events_bracket_a_finished_phase`、`test_run_completed_event_is_emitted_on_router_completion`。
+  - 失败语义分层：纯审计标记点（phase_started/phase_completed/run_completed/policy_denied）trace 写失败降级为 risk 累加、不掩盖主错误/结果；变更与工具执行点（tool_called、source_write_authorized、checkpoint）保持 fail-closed BLOCK 不变，作为"无未审计变更"的安全底线。用运行内 `pending_risks` 累加器 + `_result` 闭包自动合并 risks。
+  - 回归测试同步：更新 `test_agent_loop_result_preserves_non_state_port_boundaries`、`GappedTraceAppender` 注入点、`test_failed_test_retries_through_review_then_decrements_once_on_retry_write` 的精确 trace 序列以反映新增生命周期事件。
+- 验证：全量 `uv run pytest -q -p no:cacheprovider` 为 `548 passed, 9 skipped`（较 Task 1 的 3 failed，2 项 course-file protection 转绿，无新增红）；`ruff check src tests --no-cache` 通过；`mypy src` 19 文件无错误；`git diff --check` 干净。
+- 同步文档：`PLAN.md` 收窄 T21-R1 非目标句（原"完整生命周期事件矩阵不在本卡内"改为记录已追加 phase/run 生命周期事件、仅 context/action 级矩阵仍不重构），标注组2工具待实现风险（接真实 registry 时 `edit_file` / `run_tests` 会命中 `tools.py:44` "Tool is not registered."）；`系统架构.md` §10A.2 将 reconcile 的 committed checkpoint 快照校验与 pending checkpoint 自动回滚标记 aborted 标注为"未实现 / post-MVP"，与 `reconcile_state()` 仅做 artifact 漂移检测的实现现状对齐。
+- 审计条目核对说明：
+  - 组3所列"test_trace.py:218 固化反向行为需改"经核实为**行号误标**——该用例测的是 `trace.py::append_trace()` 底层原语契约（写文件失败必须抛 `HanCodeError`），是 loop 层错误优先级决策与 fail-closed 关卡的前提，不能改。真正固化反向行为的是 `test_course_file_protection.py` 两个用例，本批 A 改动后已自动转绿。
+  - H① / H② 目标文本在当前仓库不存在：全仓无 `trace_limit_exceeded` 错误码（代码为 `trace_event_limit_exceeded`，PLAN 未写该码，无不一致）、所有 `.md` 无 `journal` 措辞。未做无依据的"修正"。
+- 剩余风险 / 非目标（本批未实现，留待后续任务）：
+  - 组2内置工具（`edit_file` 恰好一次匹配 + 原子写入、`run_tests` 仅执行配置命令且禁止 `shell=True`、默认工具装配工厂）仍未实现——`tools.py` 当前只提供 `ToolRegistry` dispatch 骨架；接真实 registry 前 `edit_file` / `run_tests` 会在 `tools.py:44` 返回 "Tool is not registered."，仅测试 stub 可用。
+  - PathClassifier / config 保护模式已覆盖 `*.key` / `*.pem`；证书类扩展（如 `*.crt` / `*.cer`）与无扩展名、`.pdf`、`requirements.txt` 的分类扩展未在本批处理。
+  - pending checkpoint 恢复的完整分支覆盖仍依赖 T21 既有 resume 通道；未新增跨会话 observation 重放。
+- 提交：待用户决定。
+
+---
+
 ### 2026-07-13 — T16 — TraceLogger
 
 - 使用的技能：karpathy-guidelines；test-driven-development；verification-before-completion。

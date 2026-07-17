@@ -2399,7 +2399,50 @@ uv run --no-sync mypy src
 * 不做 CLI demo。
 * checkpoint 采用“单次 source write 前”粒度；一次 loop 内的多文件事务聚合、checkpoint pruning、跨进程锁和外部攻击者级 TOCTOU 防护留给后续任务。
 * resume 不跨会话持久化上一次 observation，也不重放完整生命周期 trace；当前仅复用持久化 state、checkpoint 与已有 trace 序列。
-* T21 只补齐 feedback / retry / rollback 相关 trace 与边界事件；完整 phase/context/action 生命周期事件矩阵不在本卡内重构。
+* T21 补齐 feedback / retry / rollback 相关 trace 与边界事件；T21-R1 Task 2 追加 `phase_started` / `phase_completed` / `run_completed` 阶段生命周期事件。完整的 context / action 级生命周期事件矩阵仍不在本卡内重构。
+
+---
+
+## T21-R1：未覆盖缺陷安全、工具与恢复收尾
+
+| 元信息           | 值                                 |
+| ------------- | --------------------------------- |
+| 状态            | [~] 进行中（Task 1 安全边界、Task 2 错误优先级与生命周期审计已完成；组2内置工具待实现） |
+| 依赖            | T21                              |
+| 可并行           | 分组串行；先安全边界，再工具与恢复          |
+| Worktree / PR | `feature/M5`                       |
+| 主贡献相关         | 是，T21 收尾修复                     |
+| Commit        | Task 1 `b91ed75`；Task 2 待提交    |
+
+### 目标
+
+修复 T22-T27 未明确承接的 T21 缺陷：凭据路径边界、配置联动、资源上限、普通文件原子写入、Windows workspace junction、内置 edit/run 工具、默认工具装配、Trace 完整性与 pending checkpoint 恢复。
+
+### 修复边界
+
+* checkpoint / trace 达到上限时 fail-closed 拒绝新增，不自动 pruning。（Task 1 已实现）
+* policy denial 保留为主错误；trace 写失败作为审计风险，不得导致工具执行。（Task 2 已实现：`policy_denied` 主错误保留、trace 失败降级为 `Risk`）
+* 纯审计标记点（phase_started / phase_completed / run_completed / policy_denied）trace 写失败降级为 risk 不掩盖主错误；变更与工具执行点（tool_called / source_write_authorized / checkpoint）保持 fail-closed。（Task 2 已实现）
+* `edit_file` 使用恰好一次匹配规则和原子写入；`run_tests` 只执行配置命令，禁止 `shell=True`。（**待实现**：`tools.py` 目前仅有 `ToolRegistry` dispatch 骨架，无内置 edit/run 工具与默认装配工厂。**风险**：一旦接入真实 registry，`edit_file` / `run_tests` 调用会在 `src/hancode/tools.py:44` 命中 "Tool is not registered." 返回失败——当前仅测试用 stub registry 可跑通端到端。留给 T22-T27。）
+* PathClassifier / config 已覆盖 `*.key` / `*.pem`；证书类（`*.crt` / `*.cer`）与无扩展名、`.pdf`、`requirements.txt` 分类扩展**待评估**。
+* pending checkpoint 不自动猜测提交；无法确认时标记 inconsistent / rollback_required。（依赖 T21 既有 resume 通道）
+* 不接真实 LLM、真实凭据或网络 provider；不提前实现 T22-T27 的交付任务。
+
+### 涉及文件
+
+* `src/hancode/file_tools.py`
+* `src/hancode/workspace.py`
+* `src/hancode/checkpoints.py`
+* `src/hancode/trace.py`
+* `src/hancode/tools.py`
+* `src/hancode/agent_loop.py`
+* 对应 `tests/` 回归测试与本文件、`docs/AGENT_LOG.md`
+
+### 验证要求
+
+* 每组先新增失败测试，再实现最小修复。
+* 通过专项 pytest、全量 pytest、Ruff、MyPy、源码编译和 `git diff --check`。
+* 覆盖凭据路径、资源上限、原子写入、junction、工具执行、trace 生命周期/并发、错误优先级和 pending checkpoint 恢复。
 
 ---
 

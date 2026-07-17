@@ -105,14 +105,53 @@ class GappedTraceAppender(SpyTraceAppender):
             error_summary=error_summary,
             state_transition=state_transition,
         )
-        if len(self.events) == 2:
+        if len(self.events) == 3:
             event = replace(
                 event,
-                event_id="evt-000003",
-                seq=3,
+                event_id="evt-000004",
+                seq=4,
             )
             self.events[-1] = event
         return event
+
+
+class FailingTraceAppender(SpyTraceAppender):
+    def __init__(self, *, fail_on: str | None = None) -> None:
+        super().__init__()
+        self._fail_on = fail_on
+
+    def append(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        phase: Phase,
+        status: str,
+        action: Mapping[str, object] | None = None,
+        observation: Mapping[str, object] | None = None,
+        error_summary: str | None = None,
+        state_transition: Mapping[str, object] | None = None,
+    ) -> TraceEvent:
+        if self._fail_on is None or event_type == self._fail_on:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="trace_write_error",
+                    message="Trace storage is unavailable.",
+                    phase=phase.value,
+                    denied_rule="trace_write_required",
+                    suggested_fix="Restore trace storage.",
+                )
+            )
+        return super().append(
+            task_id,
+            event_type=event_type,
+            phase=phase,
+            status=status,
+            action=action,
+            observation=observation,
+            error_summary=error_summary,
+            state_transition=state_transition,
+        )
 
 
 class StubCheckpointManager:
@@ -268,6 +307,31 @@ def test_policy_denial_does_not_execute_tool() -> None:
     assert feedback.policy_denials == [policy.decision]
 
 
+def test_policy_denial_keeps_primary_error_when_trace_write_fails() -> None:
+    events: list[str] = []
+    loop, _, _, _, tools, _ = _build_loop(
+        [_read_file_action()],
+        decision=StubPolicyDecision(
+            allowed=False,
+            reason="Source files are protected.",
+            denied_rule="protected_file",
+            suggested_fix="Choose an allowed file.",
+        ),
+        events=events,
+        trace_appender=FailingTraceAppender(fail_on="policy_denied"),
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "policy_denied"
+    assert result.error.denied_rule == "protected_file"
+    assert [risk.level for risk in result.risks] == ["medium"]
+    assert result.risks[0].message.startswith("The audit trace")
+    assert not tools.actions
+
+
 def test_real_tool_policy_denial_does_not_execute_tool(tmp_path: Path) -> None:
     events: list[str] = []
     llm = MockLLM(
@@ -373,8 +437,12 @@ def test_agent_loop_result_preserves_non_state_port_boundaries() -> None:
     assert result.final_state.current_phase is Phase.TEST
     assert result.final_state.phase_completed[Phase.CODE.value] is True
     assert result.retry_budget_remaining == state.retry_budget_remaining
-    assert result.trace_events == ()
-    assert trace_appender.calls == []
+    assert [event.event_type for event in result.trace_events] == [
+        "phase_started",
+        "phase_completed",
+        "phase_started",
+    ]
+    assert result.trace_events == tuple(trace_appender.events)
     assert checkpoint_manager.calls == []
     assert rollback_manager.calls == []
 
@@ -421,6 +489,22 @@ def test_parse_error_blocks_without_policy_or_tool() -> None:
     assert not policy.actions
     assert not tools.actions
     assert len(feedback.parse_errors) == 1
+
+
+def test_parse_error_keeps_primary_error_when_trace_write_fails() -> None:
+    loop, _, _, _, tools, _ = _build_loop(
+        [{}],
+        trace_appender=FailingTraceAppender(fail_on="action_parse_failed"),
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "missing_action_fields"
+    assert [risk.level for risk in result.risks] == ["medium"]
+    assert result.risks[0].message.startswith("The audit trace")
+    assert not tools.actions
 
 
 def test_mock_llm_exhaustion_returns_structured_blocked_result() -> None:
@@ -560,6 +644,45 @@ def test_step_exhaustion_still_returns_completed_after_final_artifact_write() ->
     assert result.status is TaskStatus.COMPLETED
     assert result.steps == 2
     assert result.final_state.current_phase is Phase.DELIVER
+
+
+def test_lifecycle_events_bracket_a_finished_phase() -> None:
+    trace_appender = SpyTraceAppender()
+    loop, _, _, _, _, _ = _build_loop(
+        [_finish_action()],
+        trace_appender=trace_appender,
+    )
+
+    loop.run("task-001")
+
+    types = [event.event_type for event in trace_appender.events]
+    assert "phase_started" in types
+    assert "phase_completed" in types
+    assert types.index("phase_started") < types.index("phase_completed")
+
+
+def test_run_completed_event_is_emitted_on_router_completion() -> None:
+    state = _task_state(
+        phase_completed={phase.value: True for phase in Phase},
+        artifacts={
+            "SPEC.md": True,
+            "PLAN.md": True,
+            "TEST_REPORT.md": True,
+            "REVIEW.md": True,
+            "KNOWLEDGE.md": True,
+            "DELIVERABLES.md": True,
+        },
+        latest_test_status="passed",
+    )
+    trace_appender = SpyTraceAppender()
+    loop, _, _, _, _, _ = _build_loop(
+        [], state=state, trace_appender=trace_appender
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.COMPLETED
+    assert [event.event_type for event in trace_appender.events] == ["run_completed"]
 
 
 def test_terminal_routing_stops_before_llm() -> None:

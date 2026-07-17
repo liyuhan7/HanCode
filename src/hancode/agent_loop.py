@@ -457,6 +457,7 @@ class AgentLoop:
         tool_calls: list[str] = []
         last_recoverable_error: StructuredError | None = None
         trace_events: list[TraceEvent] = []
+        pending_risks: list[Risk] = []
 
         def _result(
             status: TaskStatus,
@@ -475,7 +476,7 @@ class AgentLoop:
                 final_observation,
                 error,
                 final_state,
-                risks=risks,
+                risks=(*pending_risks, *risks),
                 trace_events=tuple(trace_events),
             )
 
@@ -555,6 +556,7 @@ class AgentLoop:
                     state,
                 )
 
+        traced_phase: Phase | None = None
         for step in range(1, self._max_steps + 1):
             routing = select_next_phase(state)
             if routing.rollback_required:
@@ -580,6 +582,15 @@ class AgentLoop:
                         current_phase=routing.phase,
                     ),
                 )
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="run_completed",
+                    phase=routing.phase,
+                    status="succeeded",
+                )
+                if trace_error is not None:
+                    pending_risks.append(_trace_failure_risk(trace_error))
                 return _result(
                     TaskStatus.COMPLETED, step - 1, tuple(tool_calls), observation, None, state
                 )
@@ -609,6 +620,17 @@ class AgentLoop:
                 )
 
             state = self._enter_phase(task_id, state, routing.phase)
+            if routing.phase is not traced_phase:
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="phase_started",
+                    phase=routing.phase,
+                    status="running",
+                )
+                if trace_error is not None:
+                    pending_risks.append(_trace_failure_risk(trace_error))
+                traced_phase = routing.phase
             try:
                 context = dict(
                     self._context_builder.build(
@@ -665,7 +687,8 @@ class AgentLoop:
 
             action = parse_action(raw_action, routing.phase)
             if isinstance(action, ParseError):
-                last_recoverable_error = _structured_parse_error(action)
+                parse_error = _structured_parse_error(action)
+                last_recoverable_error = parse_error
                 trace_error = self._append_trace(
                     task_id,
                     trace_events,
@@ -682,8 +705,9 @@ class AgentLoop:
                         step,
                         tuple(tool_calls),
                         observation,
-                        trace_error,
+                        parse_error,
                         state,
+                        risks=(_trace_failure_risk(trace_error),),
                     )
                 observation, feedback_error = self._build_feedback(
                     lambda: self._feedback_builder.from_parse_error(action), routing.phase
@@ -725,13 +749,14 @@ class AgentLoop:
                     state,
                 )
             if not decision.allowed:
-                last_recoverable_error = StructuredError(
+                policy_error = StructuredError(
                     error_code="policy_denied",
                     message=decision.reason,
                     phase=routing.phase.value,
                     denied_rule=decision.denied_rule,
                     suggested_fix=decision.suggested_fix,
                 )
+                last_recoverable_error = policy_error
                 trace_error = self._append_trace(
                     task_id,
                     trace_events,
@@ -748,8 +773,9 @@ class AgentLoop:
                         step,
                         tuple(tool_calls),
                         observation,
-                        trace_error,
+                        policy_error,
                         state,
+                        risks=(_trace_failure_risk(trace_error),),
                     )
                 observation, feedback_error = self._build_feedback(
                     lambda: self._feedback_builder.from_policy_denial(decision),
@@ -1446,6 +1472,15 @@ class AgentLoop:
                 state = self._save_if_changed(
                     task_id, state, _state_after_phase_finish(state, routing.phase)
                 )
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="phase_completed",
+                    phase=routing.phase,
+                    status="succeeded",
+                )
+                if trace_error is not None:
+                    pending_risks.append(_trace_failure_risk(trace_error))
                 continue
 
             if action.type is ActionType.FINAL:
@@ -1506,6 +1541,15 @@ class AgentLoop:
                     current_phase=final_routing.phase,
                 ),
             )
+            trace_error = self._append_trace(
+                task_id,
+                trace_events,
+                event_type="run_completed",
+                phase=final_routing.phase,
+                status="succeeded",
+            )
+            if trace_error is not None:
+                pending_risks.append(_trace_failure_risk(trace_error))
             return _result(
                 TaskStatus.COMPLETED,
                 self._max_steps,
@@ -2434,6 +2478,14 @@ def _checkpoint_failure_risk() -> Risk:
         level="high",
         message="A checkpointed source write may not be recoverable automatically.",
         mitigation="Reconcile the source file and checkpoint before continuing.",
+    )
+
+
+def _trace_failure_risk(error: StructuredError) -> Risk:
+    return Risk(
+        level="medium",
+        message="The audit trace could not be persisted for a non-mutating loop event.",
+        mitigation=redact_text(error.suggested_fix),
     )
 
 
