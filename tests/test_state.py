@@ -271,6 +271,23 @@ def test_state_save_is_atomic_when_replace_fails(
     assert not (task_root / "state.json.tmp").exists()
 
 
+def test_load_state_fails_closed_when_junction_probe_is_indeterminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_root = _init_task(tmp_path)
+    monkeypatch.setattr(
+        Path,
+        "is_junction",
+        lambda _path: (_ for _ in ()).throw(AttributeError("st_reparse_tag")),
+        raising=False,
+    )
+
+    with pytest.raises(HanCodeError) as error:
+        load_state(task_root)
+
+    assert error.value.to_dict()["error_code"] == "state_parse_error"
+
+
 def _init_task(project_root: Path) -> Path:
     init_project_workspace(
         project_root,

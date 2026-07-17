@@ -673,7 +673,8 @@ classDiagram
     "DELIVERABLES.md": false
   },
   "files_changed": [],
-  "inconsistent": false
+  "inconsistent": false,
+  "delivery_coverage_digest": "<64-char-lowercase-sha256-or-null>"
 }
 ```
 
@@ -684,6 +685,7 @@ classDiagram
 - `artifacts` 记录阶段产物是否已经由 Harness 成功写入。
 - 当 `write_file` 成功写入阶段产物时，ToolExecutor 必须同步更新 `state.json.artifacts`。
 - `files_changed` 在 code phase 的 `edit_file` / `write_file` 成功修改业务代码后更新；test phase 和 review phase 只能读取该字段，不应继续写入。
+- `delivery_coverage_digest` 仅在 `DELIVERABLES.md` 由 Harness 成功写入并同步 state 后保存；它绑定最终状态使用的需求覆盖证据；旧 state 缺失此字段按 `null` 兼容加载；不得从 Markdown 内容反向重建或覆盖它。
 - HanCode 不做从文件系统到 `state.json` 的反向扫描，不因发现某个 Markdown 文件存在就自动修改状态。
 - AgentLoop 启动时必须检查 `state.json.artifacts` 与实际文件是否一致；若不一致，将任务标记为 `inconsistent` 并提示用户处理，但不得自动回写 `state.json`。
 - 学生可以手动编辑 Markdown 产物；手动编辑不影响状态机判断。

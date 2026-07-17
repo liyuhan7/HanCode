@@ -1122,3 +1122,84 @@
   - `resume=True` 复用持久化 state/checkpoint/trace，但不跨会话持久化上一次 observation，也不重放完整生命周期上下文。
   - T21 未重构 T16 的完整 phase/context/action 生命周期事件矩阵；当前审计重点是 feedback、retry、rollback 与安全边界事件。
 - 提交：`375f735b535c115b2d897adc52da9ae7371bf1c8`（`feat: 完成 T21 AgentLoop 反馈重试回滚集成`）。
+
+### 2026-07-17 — T22 Delivery Artifacts 生成（返工完成，待提交）
+
+- 使用的技能：`karpathy-guidelines`、`executing-plans`、`test-driven-development`、`using-git-worktrees`。
+- 摘要：
+  - 新增确定性的 `delivery.py`，生成 `TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 和 `DELIVERABLES.md`，并以原子写入同步 `state.json` 的 artifact 标记。
+  - 新增 `ResultBuilder` / `DeliveryResult`；最终结果包含需求覆盖、知识项、变更文件、测试状态、checkpoint、rollback、交付物、trace ID、风险与下一步。
+  - 交付阶段不修改业务代码；缺测试、缺审查、缺 KNOWLEDGE / DELIVERABLES、测试失败或核心需求未覆盖时，确定性返回 `blocked`，并记录结构化风险。
+  - 写入路径拒绝链接，输出统一脱敏；写入和状态同步失败均转换为 `HanCodeError` + `StructuredError`。
+- TDD 证据：
+  - 初始 `tests/test_delivery.py` 因 `hancode.delivery` 不存在而在 collection 阶段失败（Red）。
+  - 新增“DELIVERABLES 必须记录缺测试/审查风险”测试先失败，再以最小实现通过（Red → Green）。
+  - 新增“最终结果必须返回需求覆盖与知识项”测试先因接口缺参失败，再以最小接口补全通过（Red → Green）。
+  - 新增“交付清单最终状态必须使用核心覆盖证据”测试先因接口缺参失败，再以可选 `coverage` 参数补全通过（Red → Green）。
+  - 新鲜复审提出的两项 P1 均先复现为 Red：直接构造的 `Authorization: Basic <credential>` 在结构化结果中泄露凭据；以空 coverage 写入后再以覆盖证据构建结果会使 Markdown 与结构化状态分叉。
+  - 最小修复将 Basic 凭据脱敏收口到 T22 输出边界，并把 coverage 的 SHA-256 摘要持久化到 `state.json`；ResultBuilder 对摘要不一致 fail-closed（Red → Green）。旧 state.json 缺少该可选字段时按 `None` 兼容加载，下一次安全保存会写入该字段。
+  - 修复后新鲜评审再发现 `AgentRunResult.status` 可覆盖未持久化的最终状态。新增回归先复现该分叉，再让 `write_deliverables()` 在同一原子状态同步中持久化最终状态，ResultBuilder 只从 state 决定状态（Red → Green）。
+  - 全量回归曾有两项 Windows junction mock 失败：Python 3.12 的 `Path.is_junction()` 在测试替身缺少 `st_reparse_tag` 时抛出 `AttributeError`。`workspace._is_link()` 将该底层元数据异常按既有安全策略 fail-closed 处理，原有参数化回归由 Red 转 Green。
+- 验证证据：
+  - `uv run --no-sync pytest tests/test_delivery.py -q -p no:cacheprovider --basetemp '.test-tmp'`：24 passed。
+  - `uv run --no-sync ruff check src/hancode/delivery.py src/hancode/state.py tests/test_delivery.py`：通过。
+  - `uv run --no-sync mypy src/hancode/delivery.py src/hancode/state.py`：通过。
+  - `uv run --no-sync pytest tests/test_workspace.py::test_workspace_rejects_windows_reparse_point_directory_on_python311 -q -p no:cacheprovider --basetemp '.test-tmp-workspace'`：2 passed。
+  - `uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py`：通过。
+  - `uv run --no-sync mypy src/hancode/workspace.py`：通过。
+  - 全量 pytest：573 passed，9 skipped，0 failed。
+- 评审状态：
+  - 初步新鲜评审已完成并促成状态漂移、Markdown 注入、结果字段与 fail-closed 边界修正；第二阶段新鲜评审继续发现直接构造输出的脱敏缺口。
+  - 返工后两阶段自评审完成：第一阶段检查接口、状态一致性、SPEC/PLAN 同步和结构化错误；第二阶段检查链接 fail-closed、溯源、脱敏与全量验证证据；两阶段均无阻塞项。T22 标记为已完成。
+- 提交：TODO（等待开发者授权提交）。
+- 返工最终验证（2026-07-17）：
+  - 专项：`uv run --no-sync pytest tests/test_delivery.py tests/test_state.py tests/test_workspace.py -q -p no:cacheprovider`：75 passed。
+  - Lint：`uv run --no-sync ruff check src/hancode/delivery.py src/hancode/state.py src/hancode/workspace.py tests/test_delivery.py tests/test_state.py tests/test_workspace.py`：通过。
+  - Type check：`uv run --no-sync mypy src/hancode/delivery.py src/hancode/state.py src/hancode/workspace.py`：no issues found in 3 source files。
+  - 全量回归：`uv run --no-sync pytest -q -p no:cacheprovider`：577 passed，9 skipped，0 failed。
+  - `git diff --check`：无格式错误。
+- 待修复（两阶段评审发现，返工计划 `docs/superpowers/plans/2026-07-17-t22-review-remediation.md`）：
+  - SPEC §7.4 未列出 `delivery_coverage_digest` 字段；PLAN T22 未列出 `ResultBuilder.build` / `DeliveryResult` 接口契约。
+  - `delivery.py` / `state.py` 的 `_is_link` 未同步 `workspace.py` 的 `AttributeError` fail-closed 修复。
+  - `write_knowledge` 未强制至少 1 条 item 有非空 `source_trace_id`（§10.21.4）。
+  - `write_deliverables` 缺 `result` 类型防御；blocker / next_steps 文案中英文混用；`_cell` 有冗余换行替换。
+- 返工修复（2026-07-17，按返工计划逐任务 TDD 执行）：
+  - Task 1（文档同步）：SPEC §7.4 示例新增 `delivery_coverage_digest` 字段与约束；PLAN T22 接口契约补充 `ResultBuilder.build` / `DeliveryResult` 签名与 `to_dict()` 14 个输出键。
+  - Task 2（fail-closed 对齐）：`delivery.py` 和 `state.py` 的 `_is_link` 异常子句从 `(OSError)` / `(OSError, RuntimeError)` 统一为 `(AttributeError, OSError, RuntimeError)`，与 `workspace.py` 一致。Red：`test_delivery_link_check_fails_closed_when_junction_probe_is_indeterminate` 和 `test_load_state_fails_closed_when_junction_probe_is_indeterminate` 因 `AttributeError` 传播失败；Green：对齐后 51 passed（delivery + state + workspace junction 回归）。
+  - Task 3（KNOWLEDGE 溯源）：`write_knowledge` 在分类完整性检查后新增 `source_trace_id` 非空守卫，`error_code="delivery_knowledge_provenance_required"`。Red：空 trace 集未抛错；Green：2 passed（新守卫 + 既有知识产物回归）。
+  - Task 4（输入边界 + 文案清理）：`write_deliverables` 首行新增 `AgentRunResult` 类型守卫，`error_code="delivery_result_invalid"`，断言 state 不变；`_delivery_blockers` coverage digest 不一致消息改为中文；`_next_steps` 两条英文建议翻译为中文；`_cell` 删除冗余 `.replace("\n", " ")`。Red：`test_write_deliverables_rejects_non_run_result` 因 `AttributeError` 失败；Green：27 passed（含文案断言更新）。
+  - #6 双重 state 加载保留为写入前重校验（fail-closed 边界），不删除。
+  - #9 三处 `_is_link` 重复实现已对齐异常语义；跨六模块共享 helper 抽取列为后续技术债，不在本返工扩大范围。
+
+### 2026-07-17 — T23 MockLLM 机制 Demo（实现与评审前验证）
+
+- 使用的技能：`brainstorming`、`writing-plans`、`executing-plans`、`test-driven-development`、`systematic-debugging`、`requesting-code-review`。
+- 任务范围：仅实现 `examples/broken_project/`、`scripts/demo_mock_loop.py` 与 `tests/test_mock_demo.py` 的离线、确定性机制演示；不改 AgentLoop/T21/T22 核心实现，不接真实 LLM、网络或凭据。
+- Red → Green 证据：
+  - 初始 `tests/test_mock_demo.py` 因 fixture 不存在失败；创建 fixture 后因 demo 脚本不存在再次失败。
+  - 初版集成触发 `trace_event_invalid`：`CheckpointManager` 会向持久 trace 追加事件，而单次 AgentLoop 的内存 trace 仍要求局部连续序号。经诊断，在 demo 边界加入 `_DemoTraceAppender`：持久化仍交给文件系统 trace appender，返回给 loop 的仅是本次子运行的局部连续序号；最终结果重新加载持久 trace。
+  - 初版 delivery 后仍是 `blocked`：T22 按 persisted state fail-closed，不会自动提升被阶段上限阻断的状态。demo 只在已完成恢复与测试之后显式进入 deliver，再调用 T22 写入器，保持 T22 既有边界不变。
+  - 新增“最终 TEST_REPORT 包含真实 unittest 输出 `Ran 1 test`”断言，初版因以 trace 状态合成 `OK` 而失败；`_record_test_evidence()` 改为返回本次 `ToolResult` 的真实分类报告，并直接传给交付写入器后通过。
+- 实现摘要：
+  - fixture 包含不可修改的 `assignment.md`、最初抛出异常的 `calculator.py` 与标准库 `unittest`。
+  - 固定 MockLLM 序列真实触发 protected-write policy denial、source-write checkpoint、两次失败测试、`assertion_failure` 反馈、retry budget 消耗与 rollback；随后以正确实现恢复并通过测试。
+  - `_DemoTestRunner` 用固定 argv、`shell=False`、2 秒超时执行本地 `unittest`；6 个 T22 交付物和最终 `ResultBuilder` 输出均来自该运行。
+  - 非 fixture 根目录返回 `mock_demo_fixture_required`；未预期异常收口为 `mock_demo_internal_error`，保留 trace 和 blocked state。
+- 评审前验证：
+  - `uv run --no-sync pytest tests/test_mock_demo.py -q -p no:cacheprovider --basetemp '.test-tmp-t23-r2-green'`：8 passed。
+  - `uv run --no-sync ruff check scripts/demo_mock_loop.py tests/test_mock_demo.py --no-cache`：通过。
+  - `MYPYPATH=src uv run --no-sync mypy scripts/demo_mock_loop.py tests/test_mock_demo.py --no-incremental`：no issues found in 2 source files。
+  - `uv run --no-sync python scripts/demo_mock_loop.py`：退出码 0，输出 `completed`，包含 6 个交付物、checkpoint、rollback 和 69 个持久 trace ID。
+- 待办：完成两阶段互相独立的新鲜评审、处理重要问题并做全量验证；尚未提交。
+
+- 两阶段新鲜评审与返工：
+  - 第一阶段发现任意 blocked→deliver 绕过、失败结果含虚拟 trace、fixture 可被篡改及 trace 因果测试不足。新增预期 delivery gate allowlist、失败只返回持久 trace、fixture SHA-256/链接/清单校验和对应 Red→Green 回归。
+  - 第二阶段进一步要求 gate 校验 `phase=review` 与 `denied_rule=max_steps_limit`；fixture 复制时排除 pytest bytecode cache、传入根仍严格拒绝额外文件；专项回归更新为 8 passed。
+  - 最终验证：全量 `uv run --no-sync pytest -q -p no:cacheprovider --basetemp '.test-tmp-t23-postreview-full'`：585 passed，10 skipped；ruff、mypy、离线 demo 与 `git diff --check` 均通过（见本条此前记录）。
+  - 状态：T23 已完成，尚未提交，等待开发者授权。
+
+### 2026-07-17 — M6 CI 跨平台 junction 测试夹具修正
+
+- Linux CI 的 `python -m pytest` 首次暴露两个测试夹具错误：Python 3.11 POSIX 的 `pathlib.Path` 没有 `is_junction`，测试在验证 fail-closed 行为前就因 monkeypatch 默认 `raising=True` 失败。
+- 将 `tests/test_delivery.py` 与 `tests/test_state.py` 的 `is_junction` monkeypatch 改为 `raising=False`，只在测试运行时注入缺失探针；生产代码仍通过 `getattr` 和异常捕获保持跨平台 fail-closed 语义。
+- 验证：两个 junction 回归测试 2 passed；全量 pytest 585 passed、10 skipped；ruff、mypy、`git diff --check` 通过。
