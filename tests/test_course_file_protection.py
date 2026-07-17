@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
-from hancode.agent_loop import AgentLoop
+from hancode.agent_loop import AgentLoop, InMemoryMutationGuard
 from hancode.actions import Action
+from hancode.checkpoints import CheckpointManifest, RollbackResult
 from hancode.config import HanCodeConfig, load_config
 from hancode.llm import MockLLM
 from hancode.models import Phase, TaskStatus
@@ -14,6 +16,7 @@ from hancode.path_policy import PathClassifier, PathZone
 from hancode.state import TaskState
 from hancode.tool_policy import ToolPolicy
 from hancode.tools import ToolResult
+from hancode.trace import TraceEvent
 from hancode.workspace import init_project_workspace
 
 
@@ -125,7 +128,11 @@ def test_protected_write_is_denied_before_registry_dispatch(
         tool_registry=registry,
         feedback_builder=StubFeedbackBuilder(),
         state_store=StubStateStore(_code_state()),
+        trace_appender=StubTraceAppender(),
+        checkpoint_manager=StubCheckpointManager(),
+        rollback_manager=StubRollbackManager(),
         max_steps=1,
+        mutation_guard=InMemoryMutationGuard(),
     )
 
     result = loop.run("task-001")
@@ -150,11 +157,47 @@ class StubStateStore:
         assert task_id == "task-001"
         return self._state
 
+    def save(self, task_id: str, state: TaskState) -> None:
+        assert task_id == state.task_id == "task-001"
+        self._state = state
+
+
+class StubTraceAppender:
+    def append(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        phase: Phase,
+        status: str,
+        action: Mapping[str, object] | None = None,
+        observation: Mapping[str, object] | None = None,
+        error_summary: str | None = None,
+        state_transition: Mapping[str, object] | None = None,
+    ) -> TraceEvent:
+        raise AssertionError("Read-only protection flow must not append trace events.")
+
+
+class StubCheckpointManager:
+    def create(
+        self, task_id: str, files: list[Path], reason: str
+    ) -> CheckpointManifest:
+        raise AssertionError("Read-only protection flow must not create checkpoints.")
+
+    def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest:
+        raise AssertionError("Read-only protection flow must not commit checkpoints.")
+
+
+class StubRollbackManager:
+    def rollback_last(self, task_id: str) -> RollbackResult:
+        raise AssertionError("Read-only protection flow must not roll back checkpoints.")
+
 
 @dataclass
 class PolicyDecisionView:
     allowed: bool
     reason: str
+    requires_checkpoint: bool
     denied_rule: str | None
     suggested_fix: str
 
@@ -172,6 +215,7 @@ class RealToolPolicyAdapter:
         return PolicyDecisionView(
             allowed=decision.allowed,
             reason=decision.reason,
+            requires_checkpoint=decision.requires_checkpoint,
             denied_rule=decision.denied_rule,
             suggested_fix=decision.suggested_fix,
         )
@@ -200,8 +244,14 @@ class StubFeedbackBuilder:
     def from_policy_denial(self, decision: object) -> object:
         return {"kind": "policy_denial"}
 
-    def from_tool_result(self, result: object) -> object:
+    def from_tool_result(self, result: object, *, phase: Phase) -> object:
         return {"kind": "tool_result"}
+
+    def from_checkpoint_manifest(self, manifest: CheckpointManifest) -> object:
+        return {"kind": "checkpoint"}
+
+    def from_rollback_result(self, result: RollbackResult, *, phase: Phase) -> object:
+        return {"kind": "rollback"}
 
 
 def _default_config(project_root: Path) -> HanCodeConfig:

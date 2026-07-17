@@ -144,6 +144,14 @@ def create_checkpoint(
         )
 
     config = load_config(project_root, state.task_id)
+    if state.checkpoint_seq >= config.max_checkpoints_per_task:
+        raise _checkpoint_error(
+            "checkpoint_limit_exceeded",
+            "The task checkpoint limit has been reached.",
+            state.current_phase,
+            "max_checkpoints_per_task",
+            "Review or rollback an existing checkpoint before creating another.",
+        )
     classifier = PathClassifier(config)
     targets = _normalise_targets(files, project_root, classifier, state.current_phase)
     checkpoint_id = f"ckpt-{state.checkpoint_seq + 1:03d}"
@@ -398,7 +406,19 @@ def commit_checkpoint(task_root: Path, checkpoint_id: str) -> CheckpointManifest
     return committed
 
 
-def rollback_last_checkpoint(task_root: Path) -> RollbackResult:
+def rollback_last_checkpoint(
+    task_root: Path, *, record_trace: bool = True
+) -> RollbackResult:
+    def _record_rollback_outcome(
+        outcome_root: Path, outcome_state: TaskState, result: RollbackResult
+    ) -> RollbackResult:
+        return _persist_rollback_outcome(
+            outcome_root,
+            outcome_state,
+            result,
+            record_trace=record_trace,
+        )
+
     try:
         state, project_root, project_metadata = _load_checkpoint_context(task_root)
     except HanCodeError as exc:
@@ -536,29 +556,30 @@ def rollback_last_checkpoint(task_root: Path) -> RollbackResult:
             ),
         )
 
-    try:
-        append_trace(
-            task_root,
-            event_type="rollback_started",
-            task_id=state.task_id,
-            phase=state.current_phase,
-            status="running",
-            observation={"checkpoint_id": checkpoint_id},
-        )
-    except HanCodeError:
-        return RollbackResult(
-            status=OperationStatus.FAILED,
-            checkpoint_id=checkpoint_id,
-            restored_files=(),
-            failed_files=(),
-            error=_rollback_error(
-                "rollback_trace_failed",
-                "Rollback start trace could not be persisted.",
-                state.current_phase,
-                "rollback_trace_required",
-                "Restore trace write access before retrying rollback.",
-            ).structured_error,
-        )
+    if record_trace:
+        try:
+            append_trace(
+                task_root,
+                event_type="rollback_started",
+                task_id=state.task_id,
+                phase=state.current_phase,
+                status="running",
+                observation={"checkpoint_id": checkpoint_id},
+            )
+        except HanCodeError:
+            return RollbackResult(
+                status=OperationStatus.FAILED,
+                checkpoint_id=checkpoint_id,
+                restored_files=(),
+                failed_files=(),
+                error=_rollback_error(
+                    "rollback_trace_failed",
+                    "Rollback start trace could not be persisted.",
+                    state.current_phase,
+                    "rollback_trace_required",
+                    "Restore trace write access before retrying rollback.",
+                ).structured_error,
+            )
 
     restored_files: list[str] = []
     for restore_target in restore_targets:
@@ -702,6 +723,14 @@ def rollback_last_checkpoint(task_root: Path) -> RollbackResult:
                 "Restore task state write access before retrying rollback.",
             ).structured_error,
             ),
+        )
+    if not record_trace:
+        return RollbackResult(
+            status=OperationStatus.SUCCEEDED,
+            checkpoint_id=checkpoint_id,
+            restored_files=tuple(restored_files),
+            failed_files=(),
+            error=None,
         )
     try:
         append_trace(
@@ -879,6 +908,8 @@ def _normalise_targets(
 ) -> list[tuple[str, Path]]:
     targets: dict[str, Path] = {}
     for file in files:
+        if not isinstance(file, Path):
+            raise _checkpoint_path_error(phase)
         try:
             target = (project_root / file).resolve() if not file.is_absolute() else file.resolve()
             relative_path = target.relative_to(project_root.resolve()).as_posix()
@@ -895,12 +926,30 @@ def _write_manifest(path: Path, manifest: CheckpointManifest, *, atomic: bool) -
     if not atomic:
         path.write_text(content, encoding="utf-8")
         return
-    temporary_path = path.with_suffix(".json.tmp")
+    descriptor: int | None = None
+    temporary_path: Path | None = None
     try:
-        temporary_path.write_text(content, encoding="utf-8")
+        descriptor, temporary_name = mkstemp(
+            prefix=".manifest-",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as temporary_file:
+            descriptor = None
+            temporary_file.write(content)
         temporary_path.replace(path)
     except OSError:
-        temporary_path.unlink(missing_ok=True)
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise
 
 
@@ -1086,7 +1135,9 @@ def _validate_before_snapshots(
 
 
 def _is_checkpoint_id(checkpoint_id: str) -> bool:
-    return bool(re.fullmatch(r"ckpt-[0-9]{3,}", checkpoint_id))
+    return isinstance(checkpoint_id, str) and bool(
+        re.fullmatch(r"ckpt-[0-9]{3,}", checkpoint_id)
+    )
 
 
 def _validate_manifest_path(checkpoint_dir: Path, manifest_path: Path, phase: Phase) -> None:
@@ -1220,9 +1271,15 @@ def _rollback_blocked(
     )
 
 
-def _record_rollback_outcome(
-    task_root: Path, state: TaskState, result: RollbackResult
+def _persist_rollback_outcome(
+    task_root: Path,
+    state: TaskState,
+    result: RollbackResult,
+    *,
+    record_trace: bool = True,
 ) -> RollbackResult:
+    if not record_trace:
+        return result
     try:
         append_trace(
             task_root,

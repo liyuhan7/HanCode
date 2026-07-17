@@ -70,7 +70,7 @@ HanCode 的核心交付不是 prompt、规则文件或宿主 Coding Agent 的能
 ### 3.2 post-MVP
 
 * 单 task 单活跃 runner 的并发锁。
-* blocked 后的 resume 断点续跑语义。
+* 跨会话 observation 恢复与完整上下文重放；T21 已提供显式 `run(task_id, resume=True)` 的 blocked 恢复入口，但恢复时重新构造上下文。
 * pending checkpoint 的启动崩溃恢复。
 * `confirm_before_write` 写前人工确认。
 * Docker demo image。
@@ -2075,7 +2075,7 @@ git diff --check
 
 | 元信息           | 值                       |
 | ------------- | ----------------------- |
-| 状态            | [ ] 未开始                 |
+| 状态            | [x] 已完成                 |
 | 依赖            | T2, T3, T4, T5, T16     |
 | 可并行           | 可与 T20 并行               |
 | Worktree / PR | `feature/M5`             |
@@ -2089,7 +2089,12 @@ git diff --check
 ### 涉及文件
 
 * `src/hancode/context.py`
+* `src/hancode/tool_policy.py`
+* `src/hancode/file_tools.py`
 * `tests/test_context_builder.py`
+* `tests/test_tool_policy.py`
+* `docs/系统架构.md`
+* `docs/AGENT_LOG.md`
 
 ### SPEC 依据
 
@@ -2101,13 +2106,28 @@ git diff --check
 ### 接口契约
 
 ```python
-def build_context(project_root: Path, task_id: str, phase: Phase, config: HanCodeConfig) -> dict[str, str]: ...
+def allowed_tools_for_phase(phase: Phase) -> tuple[str, ...]: ...
+
+def build_context(
+    project_root: Path,
+    task_id: str,
+    phase: Phase,
+    config: HanCodeConfig,
+    *,
+    state: TaskState | None = None,
+) -> dict[str, object]: ...
+
+class ContextBuilder:
+    def __init__(self, project_root: Path, config: HanCodeConfig) -> None: ...
+    def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]: ...
 ```
 
 输入：project root、task ID、phase、config。
 输出：结构化 context 字典。
 不变量：不得无条件加载全部历史；不得混入其他 task 的 trace、history、checkpoint。
-错误处理：code phase 缺 SPEC/PLAN 时返回 blocked context 或明确风险；context 超预算时按规则截断。
+错误处理：必需产物、checkpoint、trace 或 task/config 身份不合法时抛出结构化
+`HanCodeError`；可选上下文缺失时写入 `context_risks`；context 超预算时按规则省略或截断，
+无法容纳必需骨架时返回 `context_budget_too_small`。
 
 ### 预期失败测试
 
@@ -2117,13 +2137,16 @@ def build_context(project_root: Path, task_id: str, phase: Phase, config: HanCod
 * `test_deliver_phase_includes_required_artifacts`
 * `test_context_builder_does_not_mix_other_task_trace`
 * `test_context_builder_respects_max_context_chars`
+* `test_required_artifact_link_is_rejected`
 
 ### 实现要点
 
 * 优先加载课程要求和当前 phase 必需产物。
-* 其次加载 project memory / experience。
+* 其次加载 project memory / experience；plan 只暴露配置的 writable roots，不扫描全仓库。
 * trace 摘要最多取 `max_trace_events` 条。
-* 截断时保留课程规则、当前 phase 必需产物和最近失败信息。
+* 截断时保留课程规则、当前 phase 必需产物和最近失败信息；project memory / experience /
+  source snippets 等低优先级段先省略。
+* 读取的文本沿用文件工具脱敏规则；不得跟随可选文档、必需产物、checkpoint 或 trace 的链接。
 
 ### 验证步骤
 
@@ -2151,7 +2174,7 @@ uv run mypy src/hancode/context.py
 
 | 元信息           | 值                        |
 | ------------- | ------------------------ |
-| 状态            | [ ] 未开始                  |
+| 状态            | [x] 已完成                  |
 | 依赖            | T8, T11, T14, T18        |
 | 可并行           | 可与 T19 并行                |
 | Worktree / PR | `feature/M5`              |
@@ -2165,7 +2188,15 @@ uv run mypy src/hancode/context.py
 ### 涉及文件
 
 * `src/hancode/feedback.py`
+* `src/hancode/tools.py`
+* `src/hancode/agent_loop.py`
+* `src/hancode/file_tools.py`
 * `tests/test_feedback.py`
+* `tests/test_tool_registry.py`
+* `tests/test_agent_loop.py`
+* `tests/test_file_tools.py`
+* `docs/系统架构.md`
+* `docs/AGENT_LOG.md`
 
 ### SPEC 依据
 
@@ -2177,6 +2208,7 @@ uv run mypy src/hancode/context.py
 
 ```python
 class FailureCategory(str, Enum):
+    NONE = "none"
     SYNTAX_ERROR = "syntax_error"
     IMPORT_ERROR = "import_error"
     ASSERTION_FAILURE = "assertion_failure"
@@ -2184,8 +2216,25 @@ class FailureCategory(str, Enum):
     TIMEOUT_OR_CRASH = "timeout_or_crash"
     UNKNOWN = "unknown"
 
-def classify_test_output(output: str, exit_code: int, timed_out: bool = False) -> FeedbackReport: ...
-def build_observation(result: ToolResult | PolicyDecision | RollbackResult | ParseError) -> Observation: ...
+class ObservationKind(str, Enum): ...
+
+@dataclass(frozen=True)
+class Observation:
+    kind: ObservationKind
+    success: bool
+    phase: Phase
+    summary: str
+    next_action_hint: str
+    failure_category: FailureCategory | None
+    details: Mapping[str, object]
+
+def classify_test_output(
+    output: str, exit_code: int, timed_out: bool = False, *, max_observation_bytes: int = 8192
+) -> FeedbackReport: ...
+def build_observation(
+    result: ToolResult | PolicyDecision | CheckpointManifest | RollbackResult | ParseError,
+    *, phase: Phase | None = None, max_observation_bytes: int = 8192
+) -> Observation: ...
 ```
 
 输入：测试输出、退出码、工具结果、策略拒绝、rollback 结果、parse error。
@@ -2216,8 +2265,17 @@ def build_observation(result: ToolResult | PolicyDecision | RollbackResult | Par
   * error exception
   * unknown
 * 分类在完整输出上执行，摘要截断在分类之后执行。
-* policy denial observation 包含 `denied_rule`、`reason`、`suggested_fix`。
+* policy denial observation 包含 `denied_rule`、`reason`、`suggested_fix`；checkpoint 也必须可转为 observation。
+* `ToolResult.timed_out` 是显式超时信号；AgentLoop 调用工具反馈时显式传入当前 phase。
+* summary 在完整输出分类后统一脱敏和截断；整个 Observation 受 `max_observation_bytes` 约束。
 * 不调用 LLM 判断失败原因。
+
+### 实现结果
+
+* 新增 `feedback.py`：固定优先级分类完整测试输出，并将测试、通用工具、policy、parse、checkpoint 与 rollback 的确定性结果构造成冻结 `Observation`。
+* `ToolResult` 新增兼容默认值 `timed_out=False`；AgentLoop 仅在工具反馈构造时显式传递当前 `phase`，未进入 T21 的重试、回滚执行、状态或 trace 副作用。
+* Observation 的摘要、建议与 details 在写入前脱敏，包含裸 `Bearer` token；总 canonical JSON UTF-8 字节数受预算限制，不足以容纳元数据时返回结构化 `feedback_budget_too_small`。
+* 公开构造边界会将非法预算、phase 或非 JSON 工具输出转换为 `feedback_input_invalid`；分类优先级已与系统架构文档统一。
 
 ### 验证步骤
 
@@ -2226,6 +2284,8 @@ uv run pytest tests/test_feedback.py -v
 uv run ruff check src/hancode/feedback.py tests/test_feedback.py
 uv run mypy src/hancode/feedback.py
 ```
+
+实际验证：`pytest -q -p no:cacheprovider` 为 483 passed、9 skipped；`ruff check src tests` 与 `mypy src` 均通过。
 
 ### 完成判定
 
@@ -2245,12 +2305,12 @@ uv run mypy src/hancode/feedback.py
 
 | 元信息           | 值                                 |
 | ------------- | --------------------------------- |
-| 状态            | [ ] 未开始                           |
+| 状态            | [x] 已完成                              |
 | 依赖            | T10, T14, T16, T18, T20           |
 | 可并行           | 不并行；主贡献闭环任务                       |
 | Worktree / PR | `feature/M5`                         |
 | 主贡献相关         | 是，主贡献闭环核心                         |
-| Commit        | TODO                              |
+| Commit        | `375f735b535c115b2d897adc52da9ae7371bf1c8` |
 
 ### 目标
 
@@ -2259,7 +2319,21 @@ uv run mypy src/hancode/feedback.py
 ### 涉及文件
 
 * `src/hancode/agent_loop.py`
+* `src/hancode/tool_policy.py`
+* `src/hancode/router.py`
+* `src/hancode/feedback.py`
+* `src/hancode/file_tools.py`
+* `src/hancode/state.py`
+* `src/hancode/checkpoints.py`
+* `src/hancode/trace.py`
+* `src/hancode/workspace.py`
+* `tests/test_agent_loop.py`
+* `tests/test_agent_loop_adapters.py`
 * `tests/test_feedback_loop.py`
+* `tests/test_tool_policy.py`
+* `tests/test_course_file_protection.py`
+* `tests/test_router.py`
+* `tests/test_workspace.py`
 
 ### SPEC 依据
 
@@ -2293,13 +2367,19 @@ uv run mypy src/hancode/feedback.py
 * retry budget 耗尽时调用 rollback。
 * rollback 后保持 review / blocked，不直接 completed。
 * 每个关键事件写 trace。
+* blocked 状态默认 fail-closed，只有 `run(task_id, resume=True)` 才允许显式恢复；`failed` / `inconsistent` 不允许绕过修复门禁。
+* adapter 返回值、checkpoint 指针、rollback 状态和 trace 事件均在边界处结构化校验；上下文构造失败保留原始结构化错误。
+* source write 强制 checkpoint，artifact write 只更新 artifact 状态；测试执行追加 `tests_run` 审计记录。
+* 文件系统适配层拒绝 workspace 链接，并使用独占临时文件完成 state/manifest 原子替换；错误、反馈和 trace 统一脱敏。
+* 启动时通过文件系统适配层执行 artifact 漂移检查；不一致只在本次运行内 fail-closed，不自动回写 `state.json`。
+* source write 后状态持久化异常保留 `rollback_required`，仅允许显式 `resume=True` 进入受限 rollback 恢复通道；真实文件系统 rollback 的生命周期 trace 由 AgentLoop 统一记录。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_feedback_loop.py -v
-uv run ruff check src/hancode/agent_loop.py tests/test_feedback_loop.py
-uv run mypy src/hancode/agent_loop.py
+uv run --no-sync pytest tests/test_agent_loop.py tests/test_feedback_loop.py tests/test_feedback.py tests/test_router.py -q -p no:cacheprovider
+uv run --no-sync ruff check src tests --no-cache
+uv run --no-sync mypy src
 ```
 
 ### 完成判定
@@ -2307,12 +2387,62 @@ uv run mypy src/hancode/agent_loop.py
 * 主贡献闭环可在 MockLLM 下确定性复现。
 * 测试失败不会直接 completed。
 * retry 超限会强制 rollback。
+* blocked 恢复必须显式传入 `resume=True`，完成态不会因状态漂移再次执行工具。
+* persisted `completed` 状态仍需满足 `KNOWLEDGE.md` 与 `DELIVERABLES.md` 交付物完整性；缺失时 fail-closed 到 `deliver` blocked。
+* 适配器边界的坏类型、非法 checkpoint ID、trace 参数和文件系统 workspace 越界均返回结构化拒绝。
+* TraceAppender 返回的 tool event payload、artifact task 路径和 persisted completed 交付物完整性均在边界处再次校验。
 
 ### 非目标 / 边界
 
 * 不生成最终 Markdown 报告。
 * 不接真实 LLM。
 * 不做 CLI demo。
+* checkpoint 采用“单次 source write 前”粒度；一次 loop 内的多文件事务聚合、checkpoint pruning、跨进程锁和外部攻击者级 TOCTOU 防护留给后续任务。
+* resume 不跨会话持久化上一次 observation，也不重放完整生命周期 trace；当前仅复用持久化 state、checkpoint 与已有 trace 序列。
+* T21 补齐 feedback / retry / rollback 相关 trace 与边界事件；T21-R1 Task 2 追加 `phase_started` / `phase_completed` / `run_completed` 阶段生命周期事件。完整的 context / action 级生命周期事件矩阵仍不在本卡内重构。
+
+---
+
+## T21-R1：未覆盖缺陷安全、工具与恢复收尾
+
+| 元信息           | 值                                 |
+| ------------- | --------------------------------- |
+| 状态            | [~] 进行中（Task 1 安全边界、Task 2 错误优先级与生命周期审计已完成；组2内置工具待实现） |
+| 依赖            | T21                              |
+| 可并行           | 分组串行；先安全边界，再工具与恢复          |
+| Worktree / PR | `feature/M5`                       |
+| 主贡献相关         | 是，T21 收尾修复                     |
+| Commit        | Task 1 `b91ed75`；Task 2 待提交    |
+
+### 目标
+
+修复 T22-T27 未明确承接的 T21 缺陷：凭据路径边界、配置联动、资源上限、普通文件原子写入、Windows workspace junction、内置 edit/run 工具、默认工具装配、Trace 完整性与 pending checkpoint 恢复。
+
+### 修复边界
+
+* checkpoint / trace 达到上限时 fail-closed 拒绝新增，不自动 pruning。（Task 1 已实现）
+* policy denial 保留为主错误；trace 写失败作为审计风险，不得导致工具执行。（Task 2 已实现：`policy_denied` 主错误保留、trace 失败降级为 `Risk`）
+* 纯审计标记点（phase_started / phase_completed / run_completed / policy_denied）trace 写失败降级为 risk 不掩盖主错误；变更与工具执行点（tool_called / source_write_authorized / checkpoint）保持 fail-closed。（Task 2 已实现）
+* `edit_file` 使用恰好一次匹配规则和原子写入；`run_tests` 只执行配置命令，禁止 `shell=True`。（**待实现**：`tools.py` 目前仅有 `ToolRegistry` dispatch 骨架，无内置 edit/run 工具与默认装配工厂。**风险**：一旦接入真实 registry，`edit_file` / `run_tests` 调用会在 `src/hancode/tools.py:44` 命中 "Tool is not registered." 返回失败——当前仅测试用 stub registry 可跑通端到端。留给 T22-T27。）
+* PathClassifier / config 已覆盖 `*.key` / `*.pem`；证书类（`*.crt` / `*.cer`）与无扩展名、`.pdf`、`requirements.txt` 分类扩展**待评估**。
+* pending checkpoint 不自动猜测提交；无法确认时标记 inconsistent / rollback_required。（依赖 T21 既有 resume 通道）
+* 不接真实 LLM、真实凭据或网络 provider；不提前实现 T22-T27 的交付任务。
+
+### 涉及文件
+
+* `src/hancode/file_tools.py`
+* `src/hancode/workspace.py`
+* `src/hancode/checkpoints.py`
+* `src/hancode/trace.py`
+* `src/hancode/tools.py`
+* `src/hancode/agent_loop.py`
+* 对应 `tests/` 回归测试与本文件、`docs/AGENT_LOG.md`
+
+### 验证要求
+
+* 每组先新增失败测试，再实现最小修复。
+* 通过专项 pytest、全量 pytest、Ruff、MyPy、源码编译和 `git diff --check`。
+* 覆盖凭据路径、资源上限、原子写入、junction、工具执行、trace 生命周期/并发、错误优先级和 pending checkpoint 恢复。
 
 ---
 
@@ -2444,7 +2574,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult: ...
 * `test_mock_demo_trace_contains_policy_denial`
 * `test_mock_demo_trace_contains_feedback_generated`
 * `test_mock_demo_trace_contains_checkpoint_created`
-* `test_mock_demo_trace_contains_rollback_completed`
+* `test_mock_demo_trace_contains_rollback_performed`
 * `test_mock_demo_generates_knowledge_and_deliverables`
 
 ### 实现要点

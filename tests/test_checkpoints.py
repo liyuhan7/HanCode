@@ -102,6 +102,29 @@ def test_create_checkpoint_updates_state_and_trace(tmp_path: Path) -> None:
     assert trace["state_transition"] == {"latest_checkpoint": [None, "ckpt-001"]}
 
 
+def test_create_checkpoint_rejects_when_project_checkpoint_limit_is_reached(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    project_file = tmp_path / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["max_checkpoints_per_task"] = 1
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    source = tmp_path / "src" / "main.py"
+    source.write_text("before", encoding="utf-8")
+
+    create_checkpoint(task_root, [source], "first")
+    source.write_text("after", encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as error:
+        create_checkpoint(task_root, [source], "second")
+
+    assert error.value.structured_error.error_code == "checkpoint_limit_exceeded"
+    assert not (task_root / "checkpoints" / "ckpt-002").exists()
+    assert load_state(task_root).checkpoint_seq == 1
+
+
 @pytest.mark.parametrize(
     ("files", "reason", "error_code"),
     [

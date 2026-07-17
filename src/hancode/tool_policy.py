@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
 
 from hancode.actions import Action, ActionType
 from hancode.config import HanCodeConfig
@@ -24,6 +25,17 @@ _ALLOWED_TOOL_PHASES = {
 _WRITE_TOOLS = frozenset({"write_file", "edit_file"})
 
 
+def allowed_tools_for_phase(phase: Phase) -> tuple[str, ...]:
+    """Return the phase-eligible tool names from the policy's single rule table."""
+    return tuple(
+        sorted(
+            tool_name
+            for tool_name, allowed_phases in _ALLOWED_TOOL_PHASES.items()
+            if phase in allowed_phases
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PolicyDecision:
     """The deterministic outcome of evaluating an action."""
@@ -34,6 +46,7 @@ class PolicyDecision:
     requires_checkpoint: bool = False
     denied_rule: str | None = None
     suggested_fix: str = ""
+    target_zone: PathZone | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -42,6 +55,7 @@ class PolicyDecision:
             "error_code": None if self.allowed else "policy_denied",
             "message": self.reason,
             "phase": self.phase.value,
+            "target_zone": None if self.target_zone is None else self.target_zone.value,
             "denied_rule": self.denied_rule,
             "suggested_fix": self.suggested_fix,
         }
@@ -83,6 +97,21 @@ class ToolPolicy:
                 "tool_not_allowed_in_phase",
                 "Choose a tool allowed in the current phase.",
             )
+        if action.tool_name == "rollback_last_checkpoint":
+            if state.inconsistent or state.status is TaskStatus.INCONSISTENT:
+                return _denied(
+                    phase,
+                    "Rollback requires a consistent task state.",
+                    "state_must_be_consistent",
+                    "Reconcile task state before requesting rollback.",
+                )
+            if state.latest_checkpoint is None:
+                return _denied(
+                    phase,
+                    "Rollback requires a committed checkpoint.",
+                    "rollback_checkpoint_required",
+                    "Create and commit a checkpoint before requesting rollback.",
+                )
         if action.tool_name not in _WRITE_TOOLS:
             return _allowed(phase)
         if action.reason is None or not action.reason.strip():
@@ -101,6 +130,13 @@ class ToolPolicy:
                 "write_path_required",
                 "Provide a non-empty relative path.",
             )
+        if not _is_clean_relative_path(target):
+            return _denied(
+                phase,
+                "Target path contains unsupported path segments.",
+                "path_out_of_scope",
+                "Use a clean relative path without dot segments.",
+            )
         zone = self._path_classifier.classify(target)
         if zone is PathZone.PROTECTED:
             return _denied(
@@ -118,7 +154,7 @@ class ToolPolicy:
             )
         if zone is PathZone.ARTIFACT:
             if can_write_artifact(phase, _artifact_name(target)):
-                return _allowed(phase)
+                return _allowed(phase, target_zone=PathZone.ARTIFACT)
             return _denied(
                 phase,
                 "Artifact is not writable in the current phase.",
@@ -164,7 +200,11 @@ class ToolPolicy:
                 "plan_required_before_source_write",
                 "Generate PLAN.md before modifying source files.",
             )
-        return _allowed(phase, requires_checkpoint=True)
+        return _allowed(
+            phase,
+            requires_checkpoint=True,
+            target_zone=PathZone.SOURCE,
+        )
 
     @staticmethod
     def _evaluate_finish_phase(phase: Phase, state: TaskState) -> PolicyDecision:
@@ -210,12 +250,30 @@ def _artifact_name(target: str) -> str:
     return target.replace("\\", "/").rsplit("/", 1)[-1]
 
 
-def _allowed(phase: Phase, *, requires_checkpoint: bool = False) -> PolicyDecision:
+def _is_clean_relative_path(target: str) -> bool:
+    normalized = target.replace("\\", "/")
+    path = Path(normalized)
+    return (
+        not Path(target).is_absolute()
+        and not PureWindowsPath(target).is_absolute()
+        and not PureWindowsPath(target).drive
+        and path.as_posix() == normalized
+        and all(part not in {"", ".", ".."} for part in path.parts)
+    )
+
+
+def _allowed(
+    phase: Phase,
+    *,
+    requires_checkpoint: bool = False,
+    target_zone: PathZone | None = None,
+) -> PolicyDecision:
     return PolicyDecision(
         allowed=True,
         reason="Action is allowed.",
         phase=phase,
         requires_checkpoint=requires_checkpoint,
+        target_zone=target_zone,
     )
 
 

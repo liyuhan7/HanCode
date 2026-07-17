@@ -8,7 +8,45 @@ from hancode.actions import Action, ActionType
 from hancode.config import HanCodeConfig
 from hancode.models import Phase, TaskStatus
 from hancode.state import TaskState
-from hancode.tool_policy import PolicyDecision, ToolPolicy
+from hancode.path_policy import PathZone
+from hancode.tool_policy import PolicyDecision, ToolPolicy, allowed_tools_for_phase
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [
+        (
+            Phase.SPEC,
+            ("list_files", "read_file", "search_text", "write_file"),
+        ),
+        (
+            Phase.CODE,
+            (
+                "edit_file",
+                "list_files",
+                "read_file",
+                "run_tests",
+                "search_text",
+                "write_file",
+            ),
+        ),
+        (
+            Phase.REVIEW,
+            (
+                "list_files",
+                "read_file",
+                "rollback_last_checkpoint",
+                "run_tests",
+                "search_text",
+                "write_file",
+            ),
+        ),
+    ],
+)
+def test_allowed_tools_for_phase_returns_sorted_policy_matrix(
+    phase: Phase, expected: tuple[str, ...]
+) -> None:
+    assert allowed_tools_for_phase(phase) == expected
 
 
 def test_allows_code_source_write_and_requires_checkpoint(tmp_path: Path) -> None:
@@ -23,6 +61,7 @@ def test_allows_code_source_write_and_requires_checkpoint(tmp_path: Path) -> Non
         reason="Action is allowed.",
         phase=Phase.CODE,
         requires_checkpoint=True,
+        target_zone=PathZone.SOURCE,
         denied_rule=None,
         suggested_fix="",
     )
@@ -32,6 +71,7 @@ def test_allows_code_source_write_and_requires_checkpoint(tmp_path: Path) -> Non
         "error_code": None,
         "message": "Action is allowed.",
         "phase": "code",
+        "target_zone": "source",
         "denied_rule": None,
         "suggested_fix": "",
     }
@@ -90,6 +130,7 @@ def test_denial_serializes_structured_policy_error(tmp_path: Path) -> None:
         "error_code": "policy_denied",
         "message": "Target path is a protected course or credential file.",
         "phase": "code",
+        "target_zone": None,
         "denied_rule": "protected_path",
         "suggested_fix": "Modify allowed source code instead; do not change course evaluation or credential files.",
     }
@@ -100,6 +141,7 @@ def test_denial_serializes_structured_policy_error(tmp_path: Path) -> None:
     [
         ("assignment.md", "protected_path"),
         ("../outside.py", "path_out_of_scope"),
+        ("src/../src/main.py", "path_out_of_scope"),
     ],
 )
 def test_denies_protected_or_out_of_scope_write(
@@ -251,6 +293,17 @@ def test_denies_action_phase_mismatch(tmp_path: Path) -> None:
 
     assert decision.allowed is False
     assert decision.denied_rule == "action_phase_mismatch"
+
+
+def test_denies_rollback_without_checkpoint(tmp_path: Path) -> None:
+    decision = _policy(tmp_path).evaluate(
+        action=_action("rollback_last_checkpoint", Phase.REVIEW, {}, None),
+        phase=Phase.REVIEW,
+        state=_state(Phase.REVIEW),
+    )
+
+    assert decision.allowed is False
+    assert decision.denied_rule == "rollback_checkpoint_required"
 
 
 def _policy(project_root: Path) -> ToolPolicy:

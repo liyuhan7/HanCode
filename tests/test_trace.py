@@ -64,6 +64,58 @@ def test_trace_event_has_monotonic_seq(tmp_path: Path) -> None:
     assert (second.event_id, second.seq) == ("evt-000002", 2)
 
 
+def test_trace_rejects_append_when_project_event_limit_is_reached(tmp_path: Path) -> None:
+    task_root = _init_task(tmp_path)
+    project_file = tmp_path / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["max_trace_events"] = 1
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    append_trace(
+        task_root,
+        event_type="task_started",
+        task_id="task-001",
+        phase=Phase.SPEC,
+        status="running",
+    )
+
+    with pytest.raises(HanCodeError) as error:
+        append_trace(
+            task_root,
+            event_type="phase_started",
+            task_id="task-001",
+            phase=Phase.PLAN,
+            status="running",
+        )
+
+    assert error.value.structured_error.error_code == "trace_event_limit_exceeded"
+    assert len((task_root / "trace.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_trace_rejects_trace_path_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_root = _init_task(tmp_path)
+    trace_path = task_root / "trace.jsonl"
+    original_is_symlink = Path.is_symlink
+
+    def fake_is_symlink(path: Path) -> bool:
+        return path == trace_path or original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+
+    with pytest.raises(HanCodeError) as exc_info:
+        append_trace(
+            task_root,
+            event_type="task_started",
+            task_id="task-001",
+            phase=Phase.SPEC,
+            status="running",
+        )
+
+    assert exc_info.value.structured_error.error_code == "trace_path_link_not_allowed"
+
+
 def test_trace_redacts_nested_secret_like_values(tmp_path: Path) -> None:
     task_root = _init_task(tmp_path)
     action = {
@@ -285,6 +337,22 @@ def test_trace_redacts_cookie_aws_and_bearer_values(tmp_path: Path) -> None:
     assert "trace-cookie-secret" not in trace_text
     assert "trace-aws-secret" not in trace_text
     assert "trace-bearer-secret" not in trace_text
+
+
+def test_trace_redacts_quoted_secret_text_values(tmp_path: Path) -> None:
+    task_root = _init_task(tmp_path)
+
+    append_trace(
+        task_root,
+        event_type="task_started",
+        task_id="task-001",
+        phase=Phase.SPEC,
+        status="running",
+        error_summary='{"token": "trace-quoted-secret"}',
+    )
+
+    trace_text = (task_root / "trace.jsonl").read_text(encoding="utf-8")
+    assert "trace-quoted-secret" not in trace_text
 
 
 def test_trace_rejects_tool_event_without_auditable_action(tmp_path: Path) -> None:

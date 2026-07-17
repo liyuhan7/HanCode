@@ -228,6 +228,52 @@ def test_write_file_rejects_content_that_cannot_be_encoded_as_utf8(tmp_path: Pat
     assert not (tmp_path / "invalid.txt").exists()
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "credentials/local.json",
+        "secrets/config.yaml",
+        "private.key",
+        "server.crt",
+        "access.token",
+        "id_rsa",
+    ],
+)
+def test_file_tools_reject_common_credential_paths_consistently(
+    tmp_path: Path, path: str
+) -> None:
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("secret\n", encoding="utf-8")
+
+    assert read_file(tmp_path, path).error_summary == "Credential files cannot be accessed."
+    assert write_file(tmp_path, path, "new\n").error_summary == (
+        "Credential files cannot be accessed."
+    )
+    assert list_files(tmp_path, path if target.is_dir() else ".").success is True
+    searched = search_text(tmp_path, "secret")
+    assert searched.success is True
+    assert isinstance(searched.output, dict)
+    assert path not in str(searched.output.get("matches", []))
+
+
+def test_write_file_preserves_existing_bytes_when_atomic_replacement_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "answer.txt"
+    target.write_bytes(b"before")
+
+    def fail_replace(*_: object, **__: object) -> None:
+        raise OSError("simulated replacement failure")
+
+    monkeypatch.setattr("hancode.file_tools.os.replace", fail_replace)
+
+    result = write_file(tmp_path, "answer.txt", "after")
+
+    assert result.success is False
+    assert target.read_bytes() == b"before"
+
+
 def test_list_files_inside_workspace_is_recursive_and_sorted(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "z.txt").write_text("z\n", encoding="utf-8")

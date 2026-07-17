@@ -76,6 +76,17 @@ def test_tool_result_contains_action_name_success_and_error_summary() -> None:
     assert result.exit_code == 1
     assert result.stdout == "failed"
     assert result.stderr == "assertion error"
+    assert result.timed_out is False
+
+
+def test_tool_result_can_mark_a_timeout_explicitly() -> None:
+    result = ToolResult(
+        success=False,
+        action_name="run_tests",
+        timed_out=True,
+    )
+
+    assert result.timed_out is True
 
 
 def test_duplicate_registration_is_rejected() -> None:

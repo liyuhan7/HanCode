@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import mkstemp
 from typing import cast
 
 from hancode.tools import ToolResult
@@ -16,9 +18,21 @@ _QUOTED_ASSIGNMENT_SECRET = re.compile(
     r"(?im)\b((?:[A-Z][A-Z0-9_]*_)?(?:API_KEY|TOKEN|SECRET|PASSWORD))"
     r"(\s*=\s*)([\"'])[^\"']*\3"
 )
-_BEARER_SECRET = re.compile(r"(?im)(Authorization\s*:\s*Bearer\s+)[^\s]+")
+_BEARER_SECRET = re.compile(r"(?im)((?:Authorization\s*:\s*)?Bearer\s+)[^\s]+")
 _JSON_SECRET = re.compile(
-    r'(?i)(\"(?:api_key|token|secret|password)\"\s*:\s*\")[^\"]*(\")'
+    r'(?i)(\"(?:api_key|token|secret|password|authorization|cookie|credential|'
+    r'private[_-]?key|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)'
+    r'\"\s*:\s*)(\"(?:\\.|[^\"\\])*\"|\'(?:\\.|[^\'\\])*\')'
+)
+_QUOTED_GENERIC_SECRET = re.compile(
+    r"(?im)\b(authorization|api[_-]?key|token|secret|password|private[_-]?key|"
+    r"credential|cookie|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)"
+    r"(\s*[:=]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')"
+)
+_GENERIC_SECRET = re.compile(
+    r"(?im)\b(authorization|api[_-]?key|token|secret|password|private[_-]?key|"
+    r"credential|cookie|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)"
+    r"(\s*[:=]\s*)(?!bearer\b)[^\s,;\"']+"
 )
 _SK_SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]+\b")
 
@@ -46,7 +60,7 @@ def read_file(project_root: Path, path: str) -> ToolResult:
     except OSError as exc:
         return _failed("read_file", f"File operation failed: {type(exc).__name__}.")
 
-    redacted_content = _redact_text(content)
+    redacted_content = redact_text(content)
     return ToolResult(
         success=True,
         action_name="read_file",
@@ -74,10 +88,26 @@ def write_file(project_root: Path, path: str, content: str) -> ToolResult:
     except UnicodeEncodeError:
         return _failed("write_file", "Content is not valid UTF-8.")
 
+    temporary_path: Path | None = None
     try:
-        resolved.target.write_bytes(encoded_content)
+        file_descriptor, temporary_name = mkstemp(
+            prefix=f".{resolved.target.name}.", suffix=".tmp", dir=resolved.target.parent
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(file_descriptor, "wb") as temporary_file:
+            temporary_file.write(encoded_content)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, resolved.target)
+        temporary_path = None
     except OSError as exc:
         return _failed("write_file", f"File operation failed: {type(exc).__name__}.")
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
 
     return ToolResult(
         success=True,
@@ -159,7 +189,7 @@ def search_text(project_root: Path, query: str) -> ToolResult:
                         {
                             "path": safe_relative,
                             "line": line_number,
-                            "text": _redact_text(line),
+                            "text": redact_text(line),
                         }
                     )
     except OSError as exc:
@@ -175,7 +205,7 @@ def search_text(project_root: Path, query: str) -> ToolResult:
         success=True,
         action_name="search_text",
         output={
-            "query": _redact_text(query),
+            "query": redact_text(query),
             "matches": matches,
             "skipped_files": sorted(set(skipped_files)),
         },
@@ -217,18 +247,61 @@ def _lexical_relative(root: Path, candidate: Path) -> str | None:
 
 
 def _is_credential_path(path: str) -> bool:
-    return any(
-        part.casefold() == ".env" or part.casefold().startswith(".env.")
-        for part in Path(path).parts
-    )
+    normalized = path.replace("\\", "/")
+    parts = tuple(part.casefold() for part in normalized.split("/") if part)
+    if any(part == ".env" or part.startswith(".env.") for part in parts):
+        return True
+    if any(part in {"credentials", "secrets", "certificates", "keys"} for part in parts):
+        return True
+
+    filename = parts[-1] if parts else ""
+    if filename in {
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "credentials",
+        "credential",
+        "secrets",
+        "secret",
+        "api_key",
+        "apikey",
+        "access_token",
+        "token",
+        "private_key",
+        "privatekey",
+    }:
+        return True
+    return Path(filename).suffix.casefold() in {
+        ".key",
+        ".pem",
+        ".token",
+        ".crt",
+        ".cer",
+        ".der",
+        ".p12",
+        ".pfx",
+    }
 
 
-def _redact_text(text: str) -> str:
+def redact_text(text: str) -> str:
     redacted = _QUOTED_ASSIGNMENT_SECRET.sub(r"\1\2\3[REDACTED]\3", text)
     redacted = _ASSIGNMENT_SECRET.sub(r"\1\2[REDACTED]", redacted)
     redacted = _BEARER_SECRET.sub(r"\1[REDACTED]", redacted)
-    redacted = _JSON_SECRET.sub(r"\1[REDACTED]\2", redacted)
+    redacted = _QUOTED_GENERIC_SECRET.sub(_redact_quoted_generic, redacted)
+    redacted = _JSON_SECRET.sub(_redact_quoted_json, redacted)
+    redacted = _GENERIC_SECRET.sub(r"\1\2[REDACTED]", redacted)
     return _SK_SECRET.sub("[REDACTED]", redacted)
+
+
+def _redact_quoted_generic(match: re.Match[str]) -> str:
+    quoted_value = match.group(3)
+    return f"{match.group(1)}{match.group(2)}{quoted_value[0]}[REDACTED]{quoted_value[0]}"
+
+
+def _redact_quoted_json(match: re.Match[str]) -> str:
+    quoted_value = match.group(2)
+    return f"{match.group(1)}{quoted_value[0]}[REDACTED]{quoted_value[0]}"
 
 
 def _failed(action_name: str, error_summary: str) -> ToolResult:
