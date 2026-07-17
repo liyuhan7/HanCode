@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import mkstemp
 from typing import cast
 
 from hancode.tools import ToolResult
@@ -30,7 +32,7 @@ _QUOTED_GENERIC_SECRET = re.compile(
 _GENERIC_SECRET = re.compile(
     r"(?im)\b(authorization|api[_-]?key|token|secret|password|private[_-]?key|"
     r"credential|cookie|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)"
-    r"(\s*[:=]\s*)(?:bearer\s+)?[^\s,;\"']+"
+    r"(\s*[:=]\s*)(?!bearer\b)[^\s,;\"']+"
 )
 _SK_SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]+\b")
 
@@ -86,10 +88,26 @@ def write_file(project_root: Path, path: str, content: str) -> ToolResult:
     except UnicodeEncodeError:
         return _failed("write_file", "Content is not valid UTF-8.")
 
+    temporary_path: Path | None = None
     try:
-        resolved.target.write_bytes(encoded_content)
+        file_descriptor, temporary_name = mkstemp(
+            prefix=f".{resolved.target.name}.", suffix=".tmp", dir=resolved.target.parent
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(file_descriptor, "wb") as temporary_file:
+            temporary_file.write(encoded_content)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, resolved.target)
+        temporary_path = None
     except OSError as exc:
         return _failed("write_file", f"File operation failed: {type(exc).__name__}.")
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
 
     return ToolResult(
         success=True,
@@ -229,10 +247,41 @@ def _lexical_relative(root: Path, candidate: Path) -> str | None:
 
 
 def _is_credential_path(path: str) -> bool:
-    return any(
-        part.casefold() == ".env" or part.casefold().startswith(".env.")
-        for part in Path(path).parts
-    )
+    normalized = path.replace("\\", "/")
+    parts = tuple(part.casefold() for part in normalized.split("/") if part)
+    if any(part == ".env" or part.startswith(".env.") for part in parts):
+        return True
+    if any(part in {"credentials", "secrets", "certificates", "keys"} for part in parts):
+        return True
+
+    filename = parts[-1] if parts else ""
+    if filename in {
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "credentials",
+        "credential",
+        "secrets",
+        "secret",
+        "api_key",
+        "apikey",
+        "access_token",
+        "token",
+        "private_key",
+        "privatekey",
+    }:
+        return True
+    return Path(filename).suffix.casefold() in {
+        ".key",
+        ".pem",
+        ".token",
+        ".crt",
+        ".cer",
+        ".der",
+        ".p12",
+        ".pfx",
+    }
 
 
 def redact_text(text: str) -> str:

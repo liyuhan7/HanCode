@@ -29,6 +29,16 @@
 
 ## 记录条目
 
+### 2026-07-17 — T21-R1 Task 1 — 安全边界与资源上限
+
+- 使用的技能：test-driven-development。
+- 使用的智能体：OpenAI Codex。
+- 摘要：FileTools 统一拒绝凭据目录、`.env` 变体和常见密钥/证书文件；新任务读取项目 `retry_budget`；checkpoint 与 trace 达到配置上限时 fail-closed；普通 `write_file` 使用同目录临时文件原子替换；workspace 识别 Python 3.11 Windows reparse point。
+- 验证：专项 `tests/test_file_tools.py tests/test_workspace.py tests/test_checkpoints.py tests/test_trace.py` 为 `133 passed, 6 skipped`；Ruff 通过；5 个生产源文件 MyPy 通过。全量曾得 `542 passed, 9 skipped, 3 failed`，其中 2 项为既有 course-file protection trace stub 行为，已记录于任务报告。
+- 提交：`f2e5319`（报告/日志哈希记录随后 amend）。
+
+---
+
 ### 2026-07-13 — T16 — TraceLogger
 
 - 使用的技能：karpathy-guidelines；test-driven-development；verification-before-completion。

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Mapping
 
+from hancode.config import load_config
 from hancode.errors import HanCodeError, StructuredError
 from hancode.file_tools import redact_text
 from hancode.models import Phase
@@ -102,6 +103,11 @@ def append_trace(
     if _is_link(trace_path):
         raise _trace_path_link_error(phase)
     seq = _next_sequence(trace_path, phase, task_id)
+    resolved_task_root = task_root.resolve()
+    project_root = resolved_task_root.parent.parent.parent
+    config = load_config(project_root, task_id)
+    if seq > config.max_trace_events:
+        raise _trace_limit_error(phase)
     event = TraceEvent(
         event_id=f"evt-{seq:06d}",
         seq=seq,
@@ -347,6 +353,18 @@ def _invalid_trace_payload_error(phase: Phase) -> HanCodeError:
             phase=phase.value,
             denied_rule="valid_trace_payload_required",
             suggested_fix="Use JSON-compatible payload values and a string error summary.",
+        )
+    )
+
+
+def _trace_limit_error(phase: Phase) -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="trace_event_limit_exceeded",
+            message="The task trace event limit has been reached.",
+            phase=phase.value,
+            denied_rule="max_trace_events",
+            suggested_fix="Review the existing trace before appending another event.",
         )
     )
 

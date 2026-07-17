@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path, PureWindowsPath
+import stat
 
 from hancode.errors import HanCodeError, StructuredError
 
@@ -116,6 +118,11 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
         )
 
     load_project_metadata(workspace / "project.json")
+    # Load the validated project configuration so each new task starts with
+    # the configured retry budget rather than a duplicated hard-coded default.
+    from hancode.config import load_config
+
+    retry_budget = load_config(project_root).retry_budget
     task_workspace = task_path(project_root, task_id)
     checkpoints_dir = task_workspace / "checkpoints"
     if _is_link(checkpoints_dir):
@@ -146,7 +153,7 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
             "tests_run": [],
             "latest_test_status": "none",
             "test_status_consumed": False,
-            "retry_budget_remaining": 2,
+            "retry_budget_remaining": retry_budget,
             "inconsistent": False,
             "source_edits_this_phase": 0,
             "rollback_required": False,
@@ -180,8 +187,17 @@ def _workspace_paths(project_root: Path) -> tuple[Path, Path]:
 
 def _is_link(path: Path) -> bool:
     try:
+        if path.is_symlink():
+            return True
         is_junction = getattr(path, "is_junction", None)
-        return path.is_symlink() or bool(is_junction and is_junction())
+        if is_junction is not None and is_junction():
+            return True
+        try:
+            attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+        except FileNotFoundError:
+            return False
+        reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return bool(attributes & reparse_attribute)
     except (OSError, RuntimeError):
         return True
 

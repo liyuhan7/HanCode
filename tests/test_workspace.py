@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -35,6 +37,60 @@ def test_workspace_initializes_project_files(tmp_path: Path) -> None:
         "# Course Context\n"
     )
     assert (workspace / "experience.md").read_text(encoding="utf-8") == "# Experience\n"
+
+
+def test_new_task_uses_project_configured_retry_budget(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    metadata = json.loads((workspace / "project.json").read_text(encoding="utf-8"))
+    metadata["retry_budget"] = 7
+    (workspace / "project.json").write_text(
+        json.dumps(metadata), encoding="utf-8"
+    )
+
+    task_workspace = init_task_workspace(tmp_path, "task-001")
+
+    assert json.loads((task_workspace / "state.json").read_text(encoding="utf-8"))[
+        "retry_budget_remaining"
+    ] == 7
+
+
+@pytest.mark.parametrize("link_target", ["workspace", "tasks"])
+def test_workspace_rejects_windows_reparse_point_directory_on_python311(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_target: str
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    target = workspace if link_target == "workspace" else workspace / "tasks"
+    original_lstat = os.lstat
+
+    def fake_lstat(path: Any) -> Any:
+        if Path(path) == target:
+            return SimpleNamespace(st_file_attributes=0x400)
+        return original_lstat(path)
+
+    monkeypatch.setattr(os, "lstat", fake_lstat)
+
+    with pytest.raises(HanCodeError) as error:
+        init_project_workspace(
+            tmp_path,
+            project_id="course-project",
+            course_name="AI4SE",
+            assignment_name="Coding Agent Harness",
+        )
+
+    assert error.value.structured_error.error_code in {
+        "workspace_link_not_allowed",
+        "workspace_path_outside_project_root",
+    }
 
 
 def test_project_workspace_init_preserves_existing_files(tmp_path: Path) -> None:

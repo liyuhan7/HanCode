@@ -144,6 +144,14 @@ def create_checkpoint(
         )
 
     config = load_config(project_root, state.task_id)
+    if state.checkpoint_seq >= config.max_checkpoints_per_task:
+        raise _checkpoint_error(
+            "checkpoint_limit_exceeded",
+            "The task checkpoint limit has been reached.",
+            state.current_phase,
+            "max_checkpoints_per_task",
+            "Review or rollback an existing checkpoint before creating another.",
+        )
     classifier = PathClassifier(config)
     targets = _normalise_targets(files, project_root, classifier, state.current_phase)
     checkpoint_id = f"ckpt-{state.checkpoint_seq + 1:03d}"
