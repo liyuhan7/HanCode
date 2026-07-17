@@ -2454,12 +2454,12 @@ uv run --no-sync mypy src
 
 | 元信息           | 值                          |
 | ------------- | -------------------------- |
-| 状态            | [ ] 未开始                    |
+| 状态            | [x] 已完成（两阶段评审 + 返工修复 + 全量回归通过） |
 | 依赖            | T19, T20, T21              |
 | 可并行           | 不并行；交付产物依赖反馈与上下文           |
 | Worktree / PR | `feature/M6`                |
 | 主贡献相关         | 是，知识沉淀交付                   |
-| Commit        | TODO                       |
+| Commit        | TODO（等待开发者授权提交）           |
 
 ### 目标
 
@@ -2468,6 +2468,7 @@ uv run --no-sync mypy src
 ### 涉及文件
 
 * `src/hancode/delivery.py`
+* `src/hancode/state.py`
 * `tests/test_delivery.py`
 
 ### SPEC 依据
@@ -2483,13 +2484,32 @@ uv run --no-sync mypy src
 def write_test_report(task_root: Path, report: FeedbackReport, command: str) -> Path: ...
 def write_review(task_root: Path, coverage: list[RequirementCoverage], risks: list[str]) -> Path: ...
 def write_knowledge(task_root: Path, items: list[KnowledgeItem]) -> Path: ...
-def write_deliverables(task_root: Path, result: AgentRunResult) -> Path: ...
+def write_deliverables(
+    task_root: Path,
+    result: AgentRunResult,
+    coverage: Sequence[RequirementCoverage] = (),
+) -> Path: ...
+
+class ResultBuilder:
+    def build(
+        self,
+        task_root: Path,
+        run_result: AgentRunResult,
+        coverage: Sequence[RequirementCoverage] = (),
+        knowledge_items: Sequence[KnowledgeItem] = (),
+    ) -> DeliveryResult: ...
+
+@dataclass(frozen=True, slots=True)
+class DeliveryResult:
+    def to_dict(self) -> dict[str, object]: ...
 ```
 
-输入：task root、测试反馈、需求覆盖、风险、trace 摘要、最终结果。
+`DeliveryResult.to_dict()` 输出键：`status`、`task_id`、`course_project_summary`、`requirements_covered`、`files_changed`、`tests_run`、`test_status`、`checkpoints`、`rollback_performed`、`deliverables`、`knowledge_items`、`trace_event_ids`、`risks`、`next_steps`。
+
+输入：task root、测试反馈、需求覆盖、风险、trace 摘要、最终结果；`coverage` 为可选参数。写入 `DELIVERABLES.md` 时会将 coverage 的确定性摘要和最终状态持久化至 `state.json`；后续 `ResultBuilder` 必须提供相同 coverage，并只以持久化状态给出 completed。
 输出：四个 Markdown 产物。
 不变量：deliver phase 不修改业务代码。
-错误处理：缺少测试或 review 时在 `risks[]` 中说明；核心需求未覆盖或测试未通过时 blocked / failed。
+错误处理：缺少测试或 review 时在 `risks[]` 中说明；核心需求未覆盖、测试未通过或 coverage 与已持久化交付回执不一致时 blocked / failed。
 
 ### 预期失败测试
 
@@ -2500,6 +2520,9 @@ def write_deliverables(task_root: Path, result: AgentRunResult) -> Path: ...
 * `test_deliver_requires_knowledge_file`
 * `test_deliver_requires_deliverables_file`
 * `test_deliver_with_failed_tests_returns_blocked`
+* `test_delivery_result_to_dict_redacts_directly_constructed_values`
+* `test_result_builder_blocks_when_delivery_coverage_differs_from_receipt`
+* `test_delivery_status_is_persisted_and_not_overridden_by_stale_run_result`
 
 ### 实现要点
 
@@ -2507,13 +2530,14 @@ def write_deliverables(task_root: Path, result: AgentRunResult) -> Path: ...
 * REVIEW 至少包含需求、证据、状态、风险列。
 * KNOWLEDGE 至少包含课程知识点、设计决策、测试失败、错误修复、可复用模式。
 * DELIVERABLES 至少包含交付物清单、测试状态、风险、最终状态。
+* `state.json` 持久化 coverage 摘要与最终状态；Markdown 只作可读交付物，不能反向成为机器状态来源，`AgentRunResult.status` 也不能覆盖持久化状态。
 
 ### 验证步骤
 
 ```powershell
 uv run pytest tests/test_delivery.py -v
-uv run ruff check src/hancode/delivery.py tests/test_delivery.py
-uv run mypy src/hancode/delivery.py
+uv run ruff check src/hancode/delivery.py src/hancode/state.py tests/test_delivery.py
+uv run mypy src/hancode/delivery.py src/hancode/state.py
 ```
 
 ### 完成判定
@@ -2521,6 +2545,20 @@ uv run mypy src/hancode/delivery.py
 * Markdown 产物标题和结构稳定，可被测试断言。
 * deliver phase 不修改业务代码。
 * 缺测试 / 缺 review 时写入 risks。
+
+### 实际验证
+
+* 专项测试：`$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_delivery.py tests/test_state.py tests/test_workspace.py -q -p no:cacheprovider` 通过，75 passed。
+* Lint：`uv run --no-sync ruff check src/hancode/delivery.py src/hancode/state.py src/hancode/workspace.py tests/test_delivery.py tests/test_state.py tests/test_workspace.py` 通过。
+* Type check：`uv run --no-sync mypy src/hancode/delivery.py src/hancode/state.py src/hancode/workspace.py` 通过，no issues found in 3 source files。
+* 全量回归：`uv run --no-sync pytest -q -p no:cacheprovider` 通过，577 passed，9 skipped，0 failed。
+* 两阶段评审：第一阶段检查接口、状态一致性、SPEC/PLAN 同步和结构化错误；第二阶段检查链接 fail-closed、溯源、脱敏与全量验证证据；两阶段均无阻塞项。
+* 返工修复（`docs/superpowers/plans/2026-07-17-t22-review-remediation.md`）：
+  * SPEC §7.4 同步 `delivery_coverage_digest` 字段与约束；PLAN T22 补充 `ResultBuilder.build` / `DeliveryResult` 契约与 `to_dict()` 14 个输出键。
+  * `delivery.py` / `state.py` 的 `_is_link` 异常子句统一为 `(AttributeError, OSError, RuntimeError)`，与 `workspace.py` 一致。
+  * `write_knowledge` 新增 `source_trace_id` 非空守卫（`delivery_knowledge_provenance_required`）。
+  * `write_deliverables` 新增 `AgentRunResult` 类型守卫（`delivery_result_invalid`）；blocker / next_steps 文案统一中文；`_cell` 删除冗余换行替换。
+  * #6 双重 state 加载保留为写入前重校验；#9 三处 `_is_link` 共享 helper 抽取列为后续技术债。
 
 ### 非目标 / 边界
 

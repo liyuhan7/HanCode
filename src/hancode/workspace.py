@@ -198,7 +198,7 @@ def _is_link(path: Path) -> bool:
             return False
         reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         return bool(attributes & reparse_attribute)
-    except (OSError, RuntimeError):
+    except (AttributeError, OSError, RuntimeError):
         return True
 
 

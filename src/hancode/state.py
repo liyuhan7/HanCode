@@ -32,8 +32,10 @@ _STATE_FIELDS = frozenset(
         "rollback_done",
         "phase_completed",
         "artifacts",
+        "delivery_coverage_digest",
     }
 )
+_LEGACY_STATE_FIELDS = _STATE_FIELDS - {"delivery_coverage_digest"}
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
 _ARTIFACT_NAMES = frozenset(
     {
@@ -68,6 +70,7 @@ class TaskState:
     rollback_done: bool
     phase_completed: Mapping[str, bool]
     artifacts: Mapping[str, bool]
+    delivery_coverage_digest: str | None = None
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -113,6 +116,12 @@ class TaskState:
             raise _invalid_state_field("phase_completed")
         if not _is_bool_mapping(self.artifacts, _ARTIFACT_NAMES):
             raise _invalid_state_field("artifacts")
+        if self.delivery_coverage_digest is not None and (
+            not isinstance(self.delivery_coverage_digest, str)
+            or len(self.delivery_coverage_digest) != 64
+            or any(character not in "0123456789abcdef" for character in self.delivery_coverage_digest)
+        ):
+            raise _invalid_state_field("delivery_coverage_digest")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )
@@ -127,7 +136,7 @@ def load_state(task_root: Path) -> TaskState:
         data = json.loads(state_file.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("Task state must be a JSON object.")
-        if set(data) != _STATE_FIELDS:
+        if set(data) not in {_STATE_FIELDS, _LEGACY_STATE_FIELDS}:
             raise ValueError("Task state fields do not match schema version 1.")
 
         schema_version = _required_int(data, "schema_version")
@@ -157,6 +166,11 @@ def load_state(task_root: Path) -> TaskState:
                 data, "phase_completed", _PHASE_NAMES
             ),
             artifacts=_required_bool_mapping(data, "artifacts", _ARTIFACT_NAMES),
+            delivery_coverage_digest=(
+                None
+                if "delivery_coverage_digest" not in data
+                else _optional_str(data, "delivery_coverage_digest")
+            ),
         )
     except (OSError, UnicodeError, ValueError):
         raise _state_parse_error() from None
@@ -205,6 +219,7 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "rollback_done": state.rollback_done,
         "phase_completed": dict(state.phase_completed),
         "artifacts": dict(state.artifacts),
+        "delivery_coverage_digest": state.delivery_coverage_digest,
     }
     state_file = task_root / "state.json"
     if _is_link(state_file):
@@ -317,7 +332,7 @@ def _is_link(path: Path) -> bool:
     try:
         is_junction = getattr(path, "is_junction", None)
         return path.is_symlink() or bool(is_junction and is_junction())
-    except (OSError, RuntimeError):
+    except (AttributeError, OSError, RuntimeError):
         return True
 
 
