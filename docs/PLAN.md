@@ -3081,7 +3081,8 @@ README 至少包含：
 * TDD Red：收紧 README 契约测试后，专项结果为 `4 failed、1 passed`；失败原因是 README 缺少无真实凭据说明、真实 key 禁止提交、完整限制表述、Python 3.11+ 与 wheel 安装方式及 `.env` 明文风险。
 * TDD Green：补充 README 的 headless CLI、Harness 机制、源码/wheel 安装、MockLLM、凭据安全、已知限制和验证命令后，README 专项为 `6 passed`。
 * README 明确当前未提供 `hancode run`、REPL/TUI/WebUI、真实 Provider 执行和 Docker 必需分发路径；这些内容不作为当前功能承诺。
-* 全量回归、静态检查、wheel 独立环境 smoke、两阶段新鲜评审和最终清理在提交前执行并回填真实结果。
+* 第一阶段新鲜评审确认 README 与 CLI、凭据边界和范围要求一致，但指出测试存在性断言偏弱；新增分区正反断言和 secret-like 文本扫描后，先得到 `1 failed、7 passed`，补充 wheel 安装命令分区标题后 Green 为 `8 passed`。
+* 全量回归、静态检查、wheel 独立环境 smoke、第二阶段新鲜评审和最终清理在提交前执行并回填真实结果。
 
 ### 验证步骤
 

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 README = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+
+
+def _section(title: str) -> str:
+    start = README.index(title) + len(title)
+    next_heading = README.find("\n## ", start)
+    return README[start:] if next_heading == -1 else README[start:next_heading]
 
 
 def test_readme_contains_mock_demo_command() -> None:
@@ -53,3 +60,27 @@ def test_readme_documents_auth_commands_and_hidden_input() -> None:
     assert "hancode auth update --provider <provider>" in README
     assert "hancode auth clear --provider <provider>" in README
     assert "隐藏输入" in README
+
+
+def test_readme_scopes_available_and_installed_commands() -> None:
+    available_commands = _section("## 当前可用命令")
+    wheel_commands = _section("### wheel 安装后的命令")
+
+    assert "hancode run" not in available_commands
+    assert "REPL/TUI/WebUI" not in available_commands
+    assert "真实 Provider 执行" not in available_commands
+    assert "hancode --help" in wheel_commands
+    assert "hancode demo --provider mock" in wheel_commands
+
+
+def test_readme_contains_no_secret_like_literals() -> None:
+    forbidden_patterns = (
+        r"\bsk-[A-Za-z0-9]{16,}\b",
+        r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{16,}\b",
+        r"(?i)authorization:\s*bearer\s+\S+",
+    )
+
+    for pattern in forbidden_patterns:
+        assert re.search(pattern, README) is None
+    assert "OPENAI_API_KEY=" not in README
+    assert "ANTHROPIC_API_KEY=" not in README

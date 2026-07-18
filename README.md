@@ -102,6 +102,8 @@ uv run hancode --help
 uv run hancode demo --provider mock
 ```
 
+### wheel 安装后的命令
+
 wheel 安装后运行：
 
 ```powershell

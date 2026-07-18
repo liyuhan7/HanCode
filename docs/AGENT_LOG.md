@@ -1281,3 +1281,10 @@
 - TDD Green：README 增加 headless CLI 和 Harness 机制、实际 CLI 命令、Python 3.11+ 源码/wheel 安装、`uv tool install`、MockLLM 无真实凭据运行方式、keyring/env/dotenv 边界、`.env` 明文风险、已知限制和完整验证命令；专项结果为 `6 passed`。
 - 人工干预：首个实现子代理未返回验证报告，主代理检查其草稿后发现契约测试过弱，先补强测试取得 Red，再以最小文档变更转 Green；未扩大任务范围。
 - 当前状态：专项 Green 已取得；全量回归、Ruff、MyPy、build、独立 wheel smoke、两阶段新鲜评审和临时文件清理待完成后回填。
+
+### 2026-07-18 — T27 第一阶段评审与测试契约加固
+
+- 第一阶段新鲜评审：README 的 Spec Compliance 通过；Task quality 发现 1 个 Important，指出 README 测试主要是宽泛 substring 存在性断言，未验证 wheel 命令分区、未实现能力的区域边界和 secret-like 文本。
+- 返工 Red：新增分区解析、当前可用命令负向断言、wheel 裸命令正向断言和 secret-like 文本扫描后，专项结果为 `1 failed、7 passed`；失败原因是 README 尚无 `### wheel 安装后的命令` 分区标题。
+- 返工 Green：补充 wheel 安装命令分区标题，专项结果为 `8 passed`。
+- 范围：仅强化 README 测试和对应文档标题；未修改生产 Python、CI 或 SPEC 核心契约。第二阶段新鲜评审待执行。
