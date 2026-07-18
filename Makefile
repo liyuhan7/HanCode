@@ -1,12 +1,12 @@
 .PHONY: test lint typecheck check
 
 test:
-	python -m pytest
+	uv run pytest
 
 lint:
-	python -m ruff check src tests
+	uv run ruff check src tests scripts
 
 typecheck:
-	python -m mypy src
+	uv run mypy src
 
 check: lint typecheck test
