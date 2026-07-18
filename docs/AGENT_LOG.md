@@ -1240,7 +1240,7 @@
   - keyring 使用 service `hancode`、account `provider`；写入失败不回退写 `.env`；env/.env 只读，clear 对外部有效来源返回 `credential_external_source_requires_manual_clear`。
   - dotenv 拒绝 symlink/非普通文件、异常或非 Mapping/非字符串 loader 返回；底层异常不穿透，不回显路径、内容或异常文本。
   - CLI 的 provider 先校验再 prompt；prompt 和自定义 confirmation 写 stderr，机器结果保持 stdout 单一 JSON；不存在 `--secret` 明文参数。
-- 文档同步：更新 `docs/SPEC.md` 的 auth 命令形态与外部来源 clear 边界；更新 `docs/PLAN.md` T25 接口、测试、实现决策、评审和验证记录；本条提交 hash 在实现提交后回填。
+- 文档同步：更新 `docs/SPEC.md` 的 auth 命令形态与外部来源 clear 边界；更新 `docs/PLAN.md` T25 接口、测试、实现决策、评审和验证记录；实现提交为 `07f67af`。
 - 新鲜评审：第一阶段 4 个 Important；第二阶段 1 个 Critical + 4 个 Important + 2 个 Minor；返工后新鲜复核 Critical / Important / Minor 均 0，结论 clean。
 - 验证证据：
   - 专项：`uv run --no-sync pytest tests/test_credentials.py tests/test_cli.py -q -p no:cacheprovider` 等价本地命令最终 `41 passed, 1 skipped`。
@@ -1248,4 +1248,4 @@
   - 全量回归：串行 `pytest -q -p no:cacheprovider` 为 `632 passed, 12 skipped`；并行运行时既有 T23 demo 的固定 2 秒 subprocess 曾出现 1 个资源竞争超时，串行复验通过。
   - 其余门禁：`uv build` 成功生成 sdist/wheel；`.venv\Scripts\hancode.exe --help`、`auth --help` 返回 0；`hancode demo --provider mock` 在将 `TEMP/TMP` 指向 M7 可写 runtime 临时目录后返回 `completed`；`git diff --check` 通过。
 - 人工干预与剩余风险：当前 Windows 环境不允许创建 symlink 时 symlink 用例跳过；真实 OS keyring 不在测试中调用；env/.env 清除必须由用户在外部源手动完成；宿主用户 Temp ACL 会影响 T23 demo，需要可写 TEMP/TMP；ProviderAdapter/真实 LLM 凭据消费留给后续任务。
-- 提交：TODO（实现与文档最终验证后回填）。
+- 提交：`07f67af`（实现）；文档追踪提交待创建。

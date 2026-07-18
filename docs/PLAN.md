@@ -2802,7 +2802,7 @@ uv run hancode demo --provider mock
 | 可并行           | 可与 T26 部分并行         |
 | Worktree / PR | `feature/M7`        |
 | 主贡献相关         | 否，安全边界              |
-| Commit        | TODO（实现提交后回填） |
+| Commit        | `07f67af`           |
 
 ### 目标
 
