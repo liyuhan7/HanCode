@@ -3033,8 +3033,10 @@ uv run hancode demo --provider mock
 ### 涉及文件
 
 * `README.md`
+* `tests/test_readme.py`
 * `docs/AGENT_LOG.md`
 * `docs/SPEC_PROCESS.md`
+* `docs/PLAN.md`
 
 ### SPEC 依据
 
@@ -3064,6 +3066,8 @@ README 至少包含：
 * `test_readme_mentions_no_real_credentials`
 * `test_readme_documents_known_limitations`
 * `test_readme_documents_verification_commands`
+* `test_readme_documents_source_and_wheel_installation`
+* `test_readme_documents_auth_commands_and_hidden_input`
 
 ### 实现要点
 
@@ -3071,6 +3075,13 @@ README 至少包含：
 * 所有命令必须与 CLI 实际命令一致。
 * AGENT_LOG 记录实现过程、验证命令和人工干预。
 * SPEC_PROCESS 记录冷启动验证结果和修订。
+
+### 当前实现记录
+
+* TDD Red：收紧 README 契约测试后，专项结果为 `4 failed、1 passed`；失败原因是 README 缺少无真实凭据说明、真实 key 禁止提交、完整限制表述、Python 3.11+ 与 wheel 安装方式及 `.env` 明文风险。
+* TDD Green：补充 README 的 headless CLI、Harness 机制、源码/wheel 安装、MockLLM、凭据安全、已知限制和验证命令后，README 专项为 `6 passed`。
+* README 明确当前未提供 `hancode run`、REPL/TUI/WebUI、真实 Provider 执行和 Docker 必需分发路径；这些内容不作为当前功能承诺。
+* 全量回归、静态检查、wheel 独立环境 smoke、两阶段新鲜评审和最终清理在提交前执行并回填真实结果。
 
 ### 验证步骤
 

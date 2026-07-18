@@ -1273,3 +1273,11 @@
   - `git diff --check`：通过；构建、wheel、pytest、uv cache 临时目录已清理。
 - 人工干预与环境说明：普通沙箱在 setuptools editable/wheel 构建及 pytest 临时目录清理时返回 `PermissionError`；使用位于 worktree 的受控临时目录并以非沙箱复验成功。该环境限制未改变 package、CI 或安全边界。
 - 提交：`e18c71f`（实现）；文档追踪提交待创建。
+
+### 2026-07-18 — T27 README 运行与分发文档实施
+
+- 范围：仅更新 README、README 契约测试和过程文档；不修改生产 Python、CI、SPEC 核心契约、`.env.example`、真实 Provider、REPL/TUI、WebUI 或 Docker。
+- TDD Red：新增并收紧 `tests/test_readme.py` 后，使用工作树内 `UV_CACHE_DIR` 执行专项，结果为 `4 failed、1 passed`。宿主默认 uv cache 首次因 ACL 返回 `拒绝访问`，改用 `.t27-runtime/uv-cache` 后进入 pytest，失败原因符合预期。
+- TDD Green：README 增加 headless CLI 和 Harness 机制、实际 CLI 命令、Python 3.11+ 源码/wheel 安装、`uv tool install`、MockLLM 无真实凭据运行方式、keyring/env/dotenv 边界、`.env` 明文风险、已知限制和完整验证命令；专项结果为 `6 passed`。
+- 人工干预：首个实现子代理未返回验证报告，主代理检查其草稿后发现契约测试过弱，先补强测试取得 Red，再以最小文档变更转 Green；未扩大任务范围。
+- 当前状态：专项 Green 已取得；全量回归、Ruff、MyPy、build、独立 wheel smoke、两阶段新鲜评审和临时文件清理待完成后回填。
