@@ -448,3 +448,7 @@ README 的已知限制明确记录当前没有 `hancode run`、REPL/TUI/WebUI、
 T27 已取得 README 专项 TDD Red（`4 failed、1 passed`）和 Green（`6 passed`）证据；全量验证、独立 wheel 冷启动 smoke、两阶段新鲜评审和最终清理结果由实现完成后继续回填。
 
 第一阶段新鲜评审进一步指出，仅检查关键词存在不足以保护文档承诺。T27 因此新增了按 README 分区的正反断言和 secret-like 文本扫描：当前可用命令区域不得承诺未实现能力，wheel 区域必须包含安装后的裸 CLI 命令。新增断言先得到 `1 failed、7 passed`，补充 `### wheel 安装后的命令` 标题后得到 `8 passed`；第二阶段评审和全量门禁仍待完成。
+
+第二阶段冷启动评审在受限 Windows 沙箱执行 MockLLM demo 时触发 `TemporaryDirectory` 的 Temp ACL 拒绝。通过读取完整 traceback、复现默认 Temp 和工作树 Temp、再以受控权限运行对照命令，确认这是环境限制：正常可写 Temp 下 demo 返回 `status=completed`，代码行为无需扩大 T27 修改范围。README 因此明确 `TEMP/TMP` 必须可写，并说明 `cli_internal_error` 的排查方向。
+
+同一阶段还促使 README 契约测试覆盖 Anthropic 风格 secret-like 前缀、非空环境变量赋值、init/export 行为边界；测试最终 Green 为 `10 passed`。T27 当前状态为进行中，待完成全量质量门禁、最终复审和清理后再标记完成。

@@ -3019,7 +3019,7 @@ uv run hancode demo --provider mock
 
 | 元信息           | 值                            |
 | ------------- | ---------------------------- |
-| 状态            | [ ] 未开始                      |
+| 状态            | [~] 进行中（待最终验证）          |
 | 依赖            | T23, T24, T25, T26           |
 | 可并行           | 最终文档任务                       |
 | Worktree / PR | `feature/M7`                   |
@@ -3068,6 +3068,10 @@ README 至少包含：
 * `test_readme_documents_verification_commands`
 * `test_readme_documents_source_and_wheel_installation`
 * `test_readme_documents_auth_commands_and_hidden_input`
+* `test_readme_scopes_available_and_installed_commands`
+* `test_readme_contains_no_secret_like_literals`
+* `test_readme_documents_runtime_temp_boundary`
+* `test_readme_documents_init_and_export_boundaries`
 
 ### 实现要点
 
@@ -3082,7 +3086,9 @@ README 至少包含：
 * TDD Green：补充 README 的 headless CLI、Harness 机制、源码/wheel 安装、MockLLM、凭据安全、已知限制和验证命令后，README 专项为 `6 passed`。
 * README 明确当前未提供 `hancode run`、REPL/TUI/WebUI、真实 Provider 执行和 Docker 必需分发路径；这些内容不作为当前功能承诺。
 * 第一阶段新鲜评审确认 README 与 CLI、凭据边界和范围要求一致，但指出测试存在性断言偏弱；新增分区正反断言和 secret-like 文本扫描后，先得到 `1 failed、7 passed`，补充 wheel 安装命令分区标题后 Green 为 `8 passed`。
-* 全量回归、静态检查、wheel 独立环境 smoke、第二阶段新鲜评审和最终清理在提交前执行并回填真实结果。
+* 第二阶段冷启动复核确认受限沙箱的系统 Temp ACL 会导致 Demo 返回 `cli_internal_error`；同一命令在受控可写环境中返回 `status=completed`，因此将 `TEMP/TMP` 可写前提和该环境风险写入 README，不修改生产 Demo。
+* 第二阶段建议已转为测试和文档修正：补充 Anthropic secret-like 前缀、非空环境变量赋值扫描、init/export 行为边界；README 专项最终为 `10 passed`。
+* 全量回归、静态检查、wheel 独立环境 smoke、第二阶段复审结论和最终清理在提交前执行并回填真实结果。
 
 ### 验证步骤
 

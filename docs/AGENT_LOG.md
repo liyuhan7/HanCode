@@ -1288,3 +1288,12 @@
 - 返工 Red：新增分区解析、当前可用命令负向断言、wheel 裸命令正向断言和 secret-like 文本扫描后，专项结果为 `1 failed、7 passed`；失败原因是 README 尚无 `### wheel 安装后的命令` 分区标题。
 - 返工 Green：补充 wheel 安装命令分区标题，专项结果为 `8 passed`。
 - 范围：仅强化 README 测试和对应文档标题；未修改生产 Python、CI 或 SPEC 核心契约。第二阶段新鲜评审待执行。
+
+### 2026-07-18 — T27 第二阶段评审、Temp ACL 诊断与修正
+
+- 第二阶段新鲜评审发现：在当前受限沙箱按 README 执行 `uv run --no-sync hancode demo --provider mock` 返回 `cli_internal_error`，并指出 PLAN 状态仍为“未开始”、Anthropic secret-like 扫描不足、init/export 行为边界说明不足。
+- 根因调查：默认系统 Temp 和工作树临时目录中的 Python `TemporaryDirectory` 都能创建目录但不能写入/清理内容，复现 `PermissionError: [Errno 13]` / `WinError 5`；这是宿主沙箱 ACL，不是 Demo 命令或 fixture 逻辑错误。
+- 对照验证：以受控权限运行同一 MockLLM 命令返回结构化 `status=completed`，证明正常可写 Temp 环境下 README 命令可用；未越界修改 `src/hancode/demo.py`。README 增加 `TEMP/TMP` 可写前提、`cli_internal_error` 诊断提示和已知环境限制。
+- TDD Red：加入运行环境与 init/export 文档契约后专项为 `2 failed、8 passed`；修正 Markdown 反引号测试断言后再次得到 `1 failed、9 passed`；补齐文档后 Green 为 `10 passed`。
+- 修正内容：secret 扫描加入 `sk-ant-`，环境变量检查改为禁止带值赋值；README 增加 init/export 的实际边界；PLAN 状态改为 `[~] 进行中（待最终验证）`。
+- 第二阶段复审结论：此前的环境阻塞已通过“明确前提 + 正常权限对照验证”处理；全量门禁、最终复审复核、临时清理和最终提交 hash待完成。

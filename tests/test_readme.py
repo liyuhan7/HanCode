@@ -76,11 +76,24 @@ def test_readme_scopes_available_and_installed_commands() -> None:
 def test_readme_contains_no_secret_like_literals() -> None:
     forbidden_patterns = (
         r"\bsk-[A-Za-z0-9]{16,}\b",
+        r"\bsk-ant-[A-Za-z0-9_-]{8,}\b",
         r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{16,}\b",
         r"(?i)authorization:\s*bearer\s+\S+",
     )
 
     for pattern in forbidden_patterns:
         assert re.search(pattern, README) is None
-    assert "OPENAI_API_KEY=" not in README
-    assert "ANTHROPIC_API_KEY=" not in README
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        assert re.search(rf"{name}\s*=\s*\S+", README) is None
+
+
+def test_readme_documents_runtime_temp_boundary() -> None:
+    assert "TEMP/TMP" in README
+    assert "可写" in README
+    assert "cli_internal_error" in README
+
+
+def test_readme_documents_init_and_export_boundaries() -> None:
+    assert "`init` 只初始化项目级 `.hancode` 工作区" in README
+    assert "`export` 只复制 state 声明的交付物" in README
+    assert "不能覆盖已有目录" in README
