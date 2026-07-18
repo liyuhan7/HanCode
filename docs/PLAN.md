@@ -2677,7 +2677,7 @@ uv run mypy src
 | 可并行           | 可先实现 help / init，demo 命令等 T23 后接入 |
 | Worktree / PR | `feature/M7`                      |
 | 主贡献相关         | 否，交付入口                            |
-| Commit        | TODO                              |
+| Commit        | `e272991` — `feat: 完成 T24 CLI 最小入口` |
 
 ### 目标
 

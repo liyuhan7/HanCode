@@ -1224,3 +1224,4 @@
 - wheel 初次构建发现宽泛 package-data glob 会收集 fixture 测试产生的 `__pycache__`；改为 `_demo_fixture/*.md`、`_demo_fixture/src/*.py`、`_demo_fixture/tests/*.py` 三类明确模式后重新构建，无 warning，wheel 未包含缓存文件。
 - 最终复验：全量 `pytest` `600 passed、11 skipped`；Ruff、Mypy 和 wheel 构建均通过。
 - 范围：T24 仅实现 `help/init/demo/export`；`auth` 留给 T25，通用 `run`、REPL/TUI 和真实 provider 不在本任务范围。
+- 提交：`e272991`（`feat: 完成 T24 CLI 最小入口`）；随后以文档提交补齐本任务的 hash 追踪。
