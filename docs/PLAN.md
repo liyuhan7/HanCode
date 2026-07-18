@@ -3019,12 +3019,12 @@ uv run hancode demo --provider mock
 
 | 元信息           | 值                            |
 | ------------- | ---------------------------- |
-| 状态            | [~] 进行中（待最终验证）          |
+| 状态            | [x] 已完成                      |
 | 依赖            | T23, T24, T25, T26           |
 | 可并行           | 最终文档任务                       |
 | Worktree / PR | `feature/M7`                   |
 | 主贡献相关         | 否，最终交付文档                     |
-| Commit        | TODO                         |
+| Commit        | `81151dc`（实现与评审修正）       |
 
 ### 目标
 
@@ -3088,7 +3088,19 @@ README 至少包含：
 * 第一阶段新鲜评审确认 README 与 CLI、凭据边界和范围要求一致，但指出测试存在性断言偏弱；新增分区正反断言和 secret-like 文本扫描后，先得到 `1 failed、7 passed`，补充 wheel 安装命令分区标题后 Green 为 `8 passed`。
 * 第二阶段冷启动复核确认受限沙箱的系统 Temp ACL 会导致 Demo 返回 `cli_internal_error`；同一命令在受控可写环境中返回 `status=completed`，因此将 `TEMP/TMP` 可写前提和该环境风险写入 README，不修改生产 Demo。
 * 第二阶段建议已转为测试和文档修正：补充 Anthropic secret-like 前缀、非空环境变量赋值扫描、init/export 行为边界；README 专项最终为 `10 passed`。
-* 全量回归、静态检查、wheel 独立环境 smoke、第二阶段复审结论和最终清理在提交前执行并回填真实结果。
+* 全量回归、静态检查、wheel 独立环境 smoke 和第二阶段复审均已完成；最终清理后由文档追踪提交回填本任务证据。
+
+### 最终验证记录
+
+* `uv lock --check`：通过，解析 39 个锁定依赖。
+* README 专项：`10 passed`。
+* 全量 pytest：`653 passed、12 skipped`。
+* Ruff：`All checks passed!`；MyPy：`Success: no issues found in 24 source files`。
+* `uv build`：成功生成 `dist/hancode-0.1.0.tar.gz` 和 `dist/hancode-0.1.0-py3-none-any.whl`。
+* 源码环境 `hancode --help` 和 `hancode demo --provider mock` 均返回 0，Demo `status=completed`。
+* 独立 Python 3.11.15 wheel 环境安装 wheel 后，裸 `hancode --help` 和 `hancode demo --provider mock` 均返回 0，Demo `status=completed`。
+* 两阶段新鲜评审：第一阶段初评 Important 已修复并复审通过；第二阶段初评的 Temp ACL 环境阻塞、状态同步和测试/文档问题已修复，复审 Critical/Important/Minor 均为 0。
+* `git diff --check`：通过；验证生成的 build、dist、wheel venv、uv cache、pytest 临时目录和 `.superpowers` 过程文件已清理。
 
 ### 验证步骤
 

@@ -1297,3 +1297,13 @@
 - TDD Red：加入运行环境与 init/export 文档契约后专项为 `2 failed、8 passed`；修正 Markdown 反引号测试断言后再次得到 `1 failed、9 passed`；补齐文档后 Green 为 `10 passed`。
 - 修正内容：secret 扫描加入 `sk-ant-`，环境变量检查改为禁止带值赋值；README 增加 init/export 的实际边界；PLAN 状态改为 `[~] 进行中（待最终验证）`。
 - 第二阶段复审结论：此前的环境阻塞已通过“明确前提 + 正常权限对照验证”处理；全量门禁、最终复审复核、临时清理和最终提交 hash待完成。
+
+### 2026-07-18 — T27 最终验证与完成
+
+- 最终 README 专项：`uv run --no-sync pytest tests/test_readme.py -q -p no:cacheprovider`，`10 passed`。
+- 全量回归：`uv lock --check` 通过；全量 pytest 为 `653 passed、12 skipped`。
+- 质量门禁：Ruff `All checks passed!`；MyPy `Success: no issues found in 24 source files`；`git diff --check` 通过。
+- 分发验证：`uv build` 成功生成 wheel/sdist；源码环境和独立 Python 3.11.15 wheel venv 均通过 `hancode --help` 与 `hancode demo --provider mock`，Demo 返回 `status=completed`。wheel 安装阶段仅出现上游依赖元数据版本规范化 warning，无命令失败。
+- 两阶段评审：第一阶段 Important 已返工并复审通过；第二阶段评审提出的 Temp ACL、PLAN 状态、secret 扫描和 init/export 文档边界均已修正，第二阶段复审最终 Critical/Important/Minor 均为 0。
+- 清理：删除本任务生成的 `.t27-runtime`、`.t27-final-runtime`、`.superpowers`、build/dist/egg-info 和缓存文件；工作树最终只保留提交内容。
+- T27 主实现与修正提交：`f0a1d29`、`187365b`、`81151dc`；最终文档追踪提交另行记录。
