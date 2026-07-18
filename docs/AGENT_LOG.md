@@ -1307,3 +1307,31 @@
 - 两阶段评审：第一阶段 Important 已返工并复审通过；第二阶段评审提出的 Temp ACL、PLAN 状态、secret 扫描和 init/export 文档边界均已修正，第二阶段复审最终 Critical/Important/Minor 均为 0。
 - 清理：删除本任务生成的 `.t27-runtime`、`.t27-final-runtime`、`.superpowers`、build/dist/egg-info 和缓存文件；工作树最终只保留提交内容。
 - T27 主实现与修正提交：`f0a1d29`、`187365b`、`81151dc`；最终文档追踪提交另行记录。
+
+### 2026-07-18 — T21-R1 内置工具与 pending 恢复收尾（评审前）
+
+- 任务边界：继续在 `feature/M7` 实现 T21-R1；不实现真实 Provider、REPL/TUI、`hancode run`、Docker、通用 shell、pruning、多 checkpoint 事务或多文件 patch。实现由主 agent 完成，子代理只保留给后续两阶段新鲜评审。
+- Task 1 文档契约：`docs/PLAN.md` 回填 Task 2 提交 `78acbe7`，切换到 `feature/M7` 并补充 T21-R1 接口；`docs/SPEC.md` 与 `docs/系统架构.md` 同步 `aborted` 生命周期、显式 `resume=True` 恢复边界和当前受限测试执行契约。
+- Task 2 Red→Green：共享 `path_security.py` 由 FileTools、PathClassifier、CheckpointManager 共用，新增 certificates/keys、证书后缀和精确凭据名回归；路径别名先 Red 后收紧为 lexical + canonical 双重保护。路径与课程文件专项通过。
+- Task 3 Red→Green：新增 `abort_pending_checkpoint()`、`reconcile_pending_checkpoint()` 和 `pending | committed | rolled_back | aborted` manifest 状态；未修改 pending 自动 abort，已变化 pending 普通启动进入 `inconsistent + rollback_required`，显式恢复只处理已预检快照，成功后保持 `blocked` 等待本次 resume。补充快照 hash、manifest、snapshot link 损坏时零业务文件写入与 recovery trace。
+- Task 4 Red→Green：新增精确 `edit_file()`，唯一匹配、UTF-8、路径/凭据/目录边界和同目录原子替换；`write_file()` / `edit_file()` 的失败 mutation 标记区分 `False` 与替换阶段不确定的 `None`，并验证 CRLF 字节保持。
+- Task 5 Red→Green：新增受限 `run_tests()` 和 `build_default_tool_registry()`，仅使用配置命令、固定 argv/cwd、`shell=False`、捕获输出和 120 秒超时；命令/stdout/stderr 脱敏；默认注册 read/list/search/write/edit/run 六个工具，Mock Demo 通过注入测试工具复用装配。
+- Task 6 Red→Green：AgentLoop 接入显式 pending 恢复授权、abort 补偿和状态重载；可证明未写入的 checkpointed tool failure 会 abort 并继续反馈，`mutation_applied=None/True`、abort 或 state reload 失败均保持 inconsistent；run_tests 的脱敏配置命令进入 state.tests_run 和 trace。
+- 过程修正证据：变更专项首次暴露旧的 `ToolResult` 断言、无关 inconsistent 状态被误清除、create-only checkpoint 缺少 `files/` 目录和工作树初始化断言未包含新 state 字段；均按 Red→Green 修正并回归。
+- 评审前新鲜验证：变更专项 `tests/test_checkpoints.py tests/test_file_tools.py tests/test_feedback_loop.py` 为 `138 passed、7 skipped`；全量 `uv run --no-sync pytest -q -p no:cacheprovider` 为 `711 passed、13 skipped`；Ruff 全量通过；MyPy `src` 无问题；`compileall` 和 `git diff --check` 通过。
+- 当前状态：实现与门禁已完成，第一阶段新鲜评审、修复后的专项复验、第二阶段新鲜评审、最终清理和 T21-R1 提交尚未完成。
+
+### 2026-07-18 — T21-R1 评审返工：隐藏凭据后缀与 PEM 脱敏
+
+- 根因：`PurePosixPath(".pem").suffix` 为空，导致 `.pem`、`.key`、`.crt` 等后缀本身作为文件名时未命中敏感路径规则；`redact_text()` 既没有 PEM 私钥块规则，也没有移除私钥正文和 BEGIN/END 标记。
+- Red：新增 PathClassifier/FileTools 对隐藏凭据后缀的拒绝测试，以及 `PRIVATE KEY`、`RSA PRIVATE KEY`、`OPENSSH PRIVATE KEY`、`ENCRYPTED PRIVATE KEY` 的 PEM 脱敏测试；修复前直接专项结果为 `4 failed`。
+- Green：敏感路径判定增加“文件名等于敏感后缀”的分支；`redact_text()` 在其他通用规则前完整替换 PEM 私钥块；新增安全回归结果为 `7 passed`。
+- 环境记录：带 `tmp_path` 的专项测试受宿主 Windows Temp ACL 阻断，曾出现 pytest 临时目录 `PermissionError`；未将该环境错误当作代码结果，完整专项和最终门禁仍待在可写临时目录中重新验证。
+
+### 2026-07-18 — T21-R1 评审返工后全量验证
+
+- 开发者在 `feature/M7` 使用独立可写临时目录 `C:\Temp\HanCode-t21r1` 重新执行全量门禁。
+- 安全专项：`7 passed`。
+- 全量 pytest：`724 passed, 13 skipped in 30.69s`。
+- 质量门禁：Ruff `All checks passed!`；MyPy `Success: no issues found in 27 source files`；compileall 退出码 0；`git diff --check` 通过。Git 输出的 LF/CRLF 为行尾转换提示，不是 diff 错误。
+- 当前状态：代码修复及全量验证已有证据；两阶段新鲜评审、评审结论回填、最终清理和 T21-R1 提交仍待完成。

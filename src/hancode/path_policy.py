@@ -7,6 +7,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path, PureWindowsPath
 
 from hancode.config import HanCodeConfig
+from hancode.path_security import is_sensitive_path
 
 
 class PathZone(str, Enum):
@@ -52,8 +53,13 @@ class PathClassifier:
             return PathZone.OUT_OF_SCOPE
 
         task_root = self._resolve_task_root(workspace_root)
-        if self._matches_protected(lexical_relative, canonical_relative) or self._is_machine_file(
+        if (
+            is_sensitive_path(lexical_relative)
+            or is_sensitive_path(canonical_relative)
+            or self._matches_protected(lexical_relative, canonical_relative)
+            or self._is_machine_file(
             task_root, canonical_candidate
+            )
         ):
             return PathZone.PROTECTED
         if self._is_artifact(task_root, canonical_candidate):

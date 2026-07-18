@@ -158,6 +158,7 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
             "source_edits_this_phase": 0,
             "rollback_required": False,
             "rollback_done": False,
+            "pending_checkpoint_recovery_id": None,
             "phase_completed": {
                 "spec": False,
                 "plan": False,

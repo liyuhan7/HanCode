@@ -2407,25 +2407,27 @@ uv run --no-sync mypy src
 
 | 元信息           | 值                                 |
 | ------------- | --------------------------------- |
-| 状态            | [~] 进行中（Task 1 安全边界、Task 2 错误优先级与生命周期审计已完成；组2内置工具待实现） |
+| 状态            | [~] 进行中（Task 1-6 已实现；Task 7 门禁、两阶段评审与最终收口中） |
 | 依赖            | T21                              |
 | 可并行           | 分组串行；先安全边界，再工具与恢复          |
-| Worktree / PR | `feature/M5`                       |
+| Worktree / PR | `feature/M7`                       |
 | 主贡献相关         | 是，T21 收尾修复                     |
-| Commit        | Task 1 `b91ed75`；Task 2 待提交    |
+| Commit        | Task 1 `b91ed75`；Task 2 `78acbe7`；T21-R1 收口待提交 |
 
 ### 目标
 
-修复 T22-T27 未明确承接的 T21 缺陷：凭据路径边界、配置联动、资源上限、普通文件原子写入、Windows workspace junction、内置 edit/run 工具、默认工具装配、Trace 完整性与 pending checkpoint 恢复。
+在 `feature/M7` 完成 T21-R1 剩余机制：凭据路径保护一致性、精确文件编辑、受限测试执行、默认工具装配，以及 pending checkpoint 的可审计 abort / 恢复。保持 Mock/stub 可替换、禁止通用 shell，并通过 TDD、结构化错误和证据化验证收口。
 
 ### 修复边界
 
 * checkpoint / trace 达到上限时 fail-closed 拒绝新增，不自动 pruning。（Task 1 已实现）
 * policy denial 保留为主错误；trace 写失败作为审计风险，不得导致工具执行。（Task 2 已实现：`policy_denied` 主错误保留、trace 失败降级为 `Risk`）
 * 纯审计标记点（phase_started / phase_completed / run_completed / policy_denied）trace 写失败降级为 risk 不掩盖主错误；变更与工具执行点（tool_called / source_write_authorized / checkpoint）保持 fail-closed。（Task 2 已实现）
-* `edit_file` 使用恰好一次匹配规则和原子写入；`run_tests` 只执行配置命令，禁止 `shell=True`。（**待实现**：`tools.py` 目前仅有 `ToolRegistry` dispatch 骨架，无内置 edit/run 工具与默认装配工厂。**风险**：一旦接入真实 registry，`edit_file` / `run_tests` 调用会在 `src/hancode/tools.py:44` 命中 "Tool is not registered." 返回失败——当前仅测试用 stub registry 可跑通端到端。留给 T22-T27。）
-* PathClassifier / config 已覆盖 `*.key` / `*.pem`；证书类（`*.crt` / `*.cer`）与无扩展名、`.pdf`、`requirements.txt` 分类扩展**待评估**。
-* pending checkpoint 不自动猜测提交；无法确认时标记 inconsistent / rollback_required。（依赖 T21 既有 resume 通道）
+* `edit_file` 使用恰好一次匹配规则和原子写入；失败在可证明未写入时返回 `mutation_applied=False`，原子替换阶段不确定时返回 `None`。
+* `run_tests` 只执行配置提供的命令：用 `shlex.split` 固定拆分 argv，固定 `cwd=project_root`、`shell=False`、`capture_output=True`、`check=False`，默认超时 120 秒；命令和输出先脱敏再进入结果、state 和 trace。
+* 凭据路径由 `src/hancode/path_security.py` 统一判定，覆盖 `.env*`、credentials/secrets/certificates/keys 目录、`id_rsa` 等精确文件名及 `.key/.pem/.token/.crt/.cer/.der/.p12/.pfx` 后缀；后缀本身作为隐藏文件名（如 `.pem`、`.key`、`.crt`）时同样拒绝；FileTools、PathClassifier 和 CheckpointManager 共用该边界。
+* `redact_text()` 在通用规则前完整替换 PEM 私钥块（包括 `PRIVATE KEY`、`RSA PRIVATE KEY`、`OPENSSH PRIVATE KEY` 和 `ENCRYPTED PRIVATE KEY`），不将私钥正文、BEGIN/END 标记写入工具结果、state 或 trace。
+* pending checkpoint 状态只允许 `pending | committed | rolled_back | aborted`。普通启动对未修改 pending 自动 abort；发现源文件变化时保存 `inconsistent + rollback_required` 并 fail-closed；只有 `resume=True` 才恢复已校验的 before snapshot。恢复成功后状态为 `blocked`，由显式 resume 转为 running；manifest、快照、hash、symlink/junction 无法验证时不写业务文件。
 * 不接真实 LLM、真实凭据或网络 provider；不提前实现 T22-T27 的交付任务。
 
 ### 涉及文件
@@ -2436,13 +2438,71 @@ uv run --no-sync mypy src
 * `src/hancode/trace.py`
 * `src/hancode/tools.py`
 * `src/hancode/agent_loop.py`
+* `src/hancode/path_security.py`
+* `src/hancode/test_tools.py`
+* `src/hancode/tool_factory.py`
 * 对应 `tests/` 回归测试与本文件、`docs/AGENT_LOG.md`
 
 ### 验证要求
 
 * 每组先新增失败测试，再实现最小修复。
 * 通过专项 pytest、全量 pytest、Ruff、MyPy、源码编译和 `git diff --check`。
-* 覆盖凭据路径、资源上限、原子写入、junction、工具执行、trace 生命周期/并发、错误优先级和 pending checkpoint 恢复。
+* 覆盖凭据路径、原子写入、junction、精确编辑、受限测试执行、默认工具装配、trace 生命周期/并发、错误优先级和 pending checkpoint 恢复。
+
+### 实现与评审前验证
+
+* 变更专项：`uv run --no-sync pytest tests/test_checkpoints.py tests/test_file_tools.py tests/test_feedback_loop.py -q -p no:cacheprovider` → `138 passed, 7 skipped`。
+* 全量回归：`uv run --no-sync pytest -q -p no:cacheprovider` → `711 passed, 13 skipped`。
+* 质量门禁：`uv run --no-sync ruff check src tests`、`uv run --no-sync mypy src`、`uv run --no-sync python -m compileall -q src tests` 和 `git diff --check` 均通过。
+* 当前仅完成评审前验证；两阶段新鲜评审、评审返工后的最终门禁、临时文件清理和提交号待回填。
+* 评审返工安全回归：隐藏凭据后缀与 PEM 私钥脱敏测试 `7 passed`；首次受宿主 Windows Temp ACL 阻断，已改用可写临时目录重新取得完整门禁。
+* 修复后全量验证（开发者本地 PowerShell）：`uv run --no-sync pytest -q -p no:cacheprovider --basetemp C:\Temp\HanCode-t21r1\pytest` → `724 passed, 13 skipped in 30.69s`；Ruff、MyPy（27 个源文件）、compileall 和 `git diff --check` 均通过。
+
+### 接口与状态契约
+
+```python
+@dataclass(frozen=True, slots=True)
+class ToolResult:
+    command: str | None = None
+    mutation_applied: bool | None = None
+
+def edit_file(
+    project_root: Path,
+    path: str,
+    old_string: str,
+    new_string: str,
+) -> ToolResult: ...
+
+def run_tests(
+    project_root: Path,
+    command: str | None,
+    *,
+    runner: Callable[..., CompletedProcess[str]] | None = None,
+    timeout_seconds: float = 120.0,
+) -> ToolResult: ...
+
+def build_default_tool_registry(
+    config: HanCodeConfig,
+    *,
+    run_tests_tool: Callable[[], ToolResult] | None = None,
+) -> ToolRegistry: ...
+
+def abort_pending_checkpoint(
+    task_root: Path,
+    checkpoint_id: str,
+    *,
+    restore_files: bool,
+) -> CheckpointManifest: ...
+
+def reconcile_pending_checkpoint(
+    task_root: Path,
+    state: TaskState,
+    *,
+    recover: bool,
+) -> TaskState: ...
+```
+
+`CheckpointManifest.status` 的生命周期为 `pending | committed | rolled_back | aborted`。`FilesystemStateStore.reconcile()` 接收 `recover_pending`，AgentLoop 只在调用方显式传入 `resume=True` 时授权 pending 恢复；不接受 LLM 提供的任意测试命令，也不提供通用 shell 或多文件 patch。
 
 ---
 

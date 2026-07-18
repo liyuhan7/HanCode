@@ -8,8 +8,6 @@ import hashlib
 from importlib import resources
 import json
 from pathlib import Path
-import subprocess
-import sys
 from tempfile import TemporaryDirectory
 from typing import Mapping, Sequence, cast
 
@@ -37,9 +35,10 @@ from hancode.delivery import (
 from hancode.errors import HanCodeError, StructuredError
 from hancode.feedback import FeedbackBuilder as RealFeedbackBuilder
 from hancode.feedback import FeedbackReport, classify_test_output
-from hancode.file_tools import write_file
 from hancode.llm import MockLLM
 from hancode.models import Phase, TaskStatus
+from hancode.test_tools import run_tests
+from hancode.tool_factory import build_default_tool_registry
 from hancode.state import load_state, save_state
 from hancode.tool_policy import ToolPolicy
 from hancode.tools import ToolRegistry, ToolResult
@@ -107,36 +106,11 @@ class _DemoTestRunner:
         self.results: list[ToolResult] = []
 
     def run_tests(self) -> ToolResult:
-        try:
-            completed = subprocess.run(
-                [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-q"],
-                cwd=self._project_root,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=_TEST_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            result = ToolResult(
-                success=False,
-                action_name="run_tests",
-                error_summary="Demo test command timed out.",
-                stdout=_output_text(exc.stdout),
-                stderr=_output_text(exc.stderr),
-                timed_out=True,
-            )
-        else:
-            result = ToolResult(
-                success=completed.returncode == 0,
-                action_name="run_tests",
-                error_summary=(
-                    None if completed.returncode == 0 else "Demo test command failed."
-                ),
-                exit_code=completed.returncode,
-                stdout=completed.stdout,
-                stderr=completed.stderr,
-            )
+        result = run_tests(
+            self._project_root,
+            _DEMO_TEST_COMMAND,
+            timeout_seconds=_TEST_TIMEOUT_SECONDS,
+        )
         self.results.append(result)
         return result
 
@@ -152,9 +126,8 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
 
     config = load_config(root, TASK_ID)
     ports = FilesystemAgentLoopPorts.from_project_root(root)
-    registry = _tool_registry(root)
     test_runner = _DemoTestRunner(root)
-    registry.register("run_tests", test_runner.run_tests)
+    registry = _tool_registry(config, test_runner)
     timeline: list[TraceEvent] = []
     runs: list[AgentRunResult] = []
     timeline.append(_append(task_root, "task_started", Phase.SPEC, "running"))
@@ -285,14 +258,11 @@ def _run_stage(
     return loop.run(TASK_ID, resume=resume)
 
 
-def _tool_registry(project_root: Path) -> ToolRegistry:
-    registry = ToolRegistry()
-
-    def demo_write_file(*, path: str, content: str) -> ToolResult:
-        return write_file(project_root, path, content)
-
-    registry.register("write_file", demo_write_file)
-    return registry
+def _tool_registry(config: HanCodeConfig, test_runner: _DemoTestRunner) -> ToolRegistry:
+    return build_default_tool_registry(
+        config,
+        run_tests_tool=test_runner.run_tests,
+    )
 
 
 def _first_actions() -> tuple[dict[str, object], ...]:
@@ -730,12 +700,6 @@ def _is_link(path: Path) -> bool:
         return path.is_symlink() or (bool(junction_probe()) if callable(junction_probe) else False)
     except (AttributeError, OSError, RuntimeError):
         return True
-
-
-def _output_text(value: str | bytes | None) -> str | None:
-    if value is None or isinstance(value, str):
-        return value
-    return value.decode("utf-8", errors="replace")
 
 
 def _copy_packaged_fixture(destination: Path) -> None:

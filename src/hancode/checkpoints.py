@@ -23,6 +23,7 @@ _MANIFEST_SCHEMA_VERSION = 1
 _PENDING: Literal["pending"] = "pending"
 _COMMITTED: Literal["committed"] = "committed"
 _ROLLED_BACK: Literal["rolled_back"] = "rolled_back"
+_ABORTED: Literal["aborted"] = "aborted"
 _SENSITIVE_REASON_PATTERN = re.compile(
     r"(authorization|api[_-]?key|token|secret|password|private[_-]?key|credential|"
     r"cookie|aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key)"
@@ -59,7 +60,7 @@ class CheckpointManifest:
     phase: Phase
     reason: str
     created_at: datetime
-    status: Literal["pending", "committed", "rolled_back"]
+    status: Literal["pending", "committed", "rolled_back", "aborted"]
     files: tuple[CheckpointFile, ...]
     rollback_available: bool
 
@@ -107,6 +108,14 @@ class _RollbackTarget:
     target: Path
     before_content: bytes | None
     current_content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingRecoveryTarget:
+    file: CheckpointFile
+    target: Path
+    before_content: bytes | None
+    current_content: bytes | None
 
 
 def create_checkpoint(
@@ -231,6 +240,7 @@ def create_checkpoint(
         if temporary_checkpoint_dir.exists():
             raise OSError("Checkpoint temporary directory already exists.")
         temporary_checkpoint_dir.mkdir(parents=True)
+        (temporary_checkpoint_dir / "files").mkdir()
         for snapshot_path, content in snapshots:
             (temporary_checkpoint_dir / snapshot_path).parent.mkdir(parents=True, exist_ok=True)
             (temporary_checkpoint_dir / snapshot_path).write_bytes(content)
@@ -404,6 +414,302 @@ def commit_checkpoint(task_root: Path, checkpoint_id: str) -> CheckpointManifest
             "Restore trace write access before continuing with source changes.",
         ) from exc
     return committed
+
+
+def reconcile_pending_checkpoint(
+    task_root: Path, state: TaskState, *, recover: bool
+) -> TaskState:
+    persisted_state, project_root, project_metadata = _load_checkpoint_context(task_root)
+    if not isinstance(state, TaskState) or state.task_id != persisted_state.task_id:
+        raise _checkpoint_manifest_error(persisted_state.current_phase)
+    if persisted_state.latest_checkpoint is None:
+        return persisted_state
+    if not _is_checkpoint_id(persisted_state.latest_checkpoint):
+        raise _checkpoint_manifest_error(persisted_state.current_phase)
+
+    task_root = task_root.resolve()
+    checkpoint_id = persisted_state.latest_checkpoint
+    checkpoint_dir = _checkpoint_directory(
+        _checkpoints_root(task_root, persisted_state.current_phase),
+        checkpoint_id,
+        persisted_state.current_phase,
+    )
+    manifest_path = checkpoint_dir / "manifest.json"
+    try:
+        if not manifest_path.is_file():
+            raise _checkpoint_not_found_error(persisted_state.current_phase)
+        _validate_manifest_path(checkpoint_dir, manifest_path, persisted_state.current_phase)
+        manifest = _load_manifest(manifest_path, persisted_state.current_phase)
+        _validate_manifest_identity(
+            manifest,
+            checkpoint_id,
+            persisted_state,
+            _required_project_id(project_metadata, persisted_state.current_phase),
+        )
+    except HanCodeError as exc:
+        _record_pending_recovery_failure(
+            task_root,
+            persisted_state,
+            checkpoint_id,
+            persisted_state.current_phase,
+            exc.structured_error,
+        )
+        raise
+    if manifest.status != _PENDING:
+        return persisted_state
+
+    config = load_config(project_root, persisted_state.task_id)
+    classifier = PathClassifier(config)
+    try:
+        _validate_before_snapshots(checkpoint_dir, manifest.files, persisted_state.current_phase)
+        recovery_targets = _pending_recovery_targets(
+            manifest,
+            checkpoint_dir,
+            project_root,
+            classifier,
+            persisted_state.current_phase,
+        )
+    except HanCodeError as exc:
+        _record_pending_recovery_failure(
+            task_root,
+            persisted_state,
+            checkpoint_id,
+            manifest.phase,
+            exc.structured_error,
+        )
+        raise
+    has_source_change = any(
+        target.current_content is None
+        if target.file.action == "modify"
+        else target.current_content is not None
+        or target.target.is_dir()
+        for target in recovery_targets
+    ) or any(
+        target.file.action == "modify"
+        and target.current_content is not None
+        and sha256(target.current_content).hexdigest() != target.file.before_sha256
+        for target in recovery_targets
+    )
+    if has_source_change and not recover:
+        inconsistent_state = replace(
+            persisted_state,
+            status=TaskStatus.INCONSISTENT,
+            inconsistent=True,
+            rollback_required=True,
+            pending_checkpoint_recovery_id=checkpoint_id,
+        )
+        try:
+            save_state(task_root, inconsistent_state)
+        except HanCodeError as exc:
+            raise _checkpoint_error(
+                "pending_checkpoint_state_update_failed",
+                "Pending checkpoint recovery state could not be saved.",
+                persisted_state.current_phase,
+                "pending_checkpoint_state_persistence_required",
+                "Restore state.json write access before resuming the task.",
+            ) from exc
+        try:
+            append_trace(
+                task_root,
+                event_type="checkpoint_recovery_required",
+                task_id=persisted_state.task_id,
+                phase=manifest.phase,
+                status="blocked",
+                observation={"checkpoint_id": checkpoint_id},
+                error_summary="Pending checkpoint recovery requires explicit resume.",
+            )
+        except HanCodeError as exc:
+            _mark_rollback_inconsistent(task_root, inconsistent_state)
+            raise _checkpoint_error(
+                "pending_checkpoint_trace_failed",
+                "Pending checkpoint recovery trace could not be persisted.",
+                persisted_state.current_phase,
+                "checkpoint_trace_required",
+                "Restore trace storage before retrying pending checkpoint recovery.",
+            ) from exc
+        raise _checkpoint_error(
+            "pending_checkpoint_recovery_required",
+            "A pending checkpoint may have changed source files.",
+            persisted_state.current_phase,
+            "explicit_pending_checkpoint_recovery_required",
+            "Resume with explicit recovery to restore verified before snapshots.",
+        )
+
+    latest_checkpoint = _latest_rollbackable_checkpoint(
+        task_root,
+        persisted_state,
+        _required_project_id(project_metadata, persisted_state.current_phase),
+    )
+    aborted = replace(manifest, status=_ABORTED, rollback_available=False)
+    recovery_id = persisted_state.pending_checkpoint_recovery_id
+    recovery_lock_matches = recovery_id is None or recovery_id == checkpoint_id
+    resolved_pending_recovery = recovery_lock_matches and (
+        (recover and has_source_change)
+        or (recovery_id == checkpoint_id and (not has_source_change or recover))
+    )
+    reconciled_state = replace(
+        persisted_state,
+        status=(
+            TaskStatus.BLOCKED
+            if resolved_pending_recovery
+            else persisted_state.status
+        ),
+        latest_checkpoint=latest_checkpoint,
+        inconsistent=False if resolved_pending_recovery else persisted_state.inconsistent,
+        rollback_required=(
+            False if resolved_pending_recovery else persisted_state.rollback_required
+        ),
+        pending_checkpoint_recovery_id=(
+            None
+            if persisted_state.pending_checkpoint_recovery_id == checkpoint_id
+            else persisted_state.pending_checkpoint_recovery_id
+        ),
+    )
+    restored: list[_PendingRecoveryTarget] = []
+    if has_source_change:
+        try:
+            for recovery_target in recovery_targets:
+                _restore_pending_recovery_target(recovery_target)
+                restored.append(recovery_target)
+        except OSError as exc:
+            try:
+                append_trace(
+                    task_root,
+                    event_type="checkpoint_recovery_failed",
+                    task_id=persisted_state.task_id,
+                    phase=manifest.phase,
+                    status="failed",
+                    observation={"checkpoint_id": checkpoint_id},
+                    error_summary="Pending checkpoint source files could not be restored.",
+                )
+            except HanCodeError as trace_exc:
+                _mark_rollback_inconsistent(task_root, persisted_state)
+                raise _checkpoint_error(
+                    "pending_checkpoint_trace_failed",
+                    "Pending checkpoint recovery trace could not be persisted.",
+                    persisted_state.current_phase,
+                    "checkpoint_trace_required",
+                    "Restore trace storage before retrying pending checkpoint recovery.",
+                ) from trace_exc
+            if not _compensate_pending_recovery_targets(restored):
+                _mark_rollback_inconsistent(task_root, persisted_state)
+                raise _checkpoint_compensation_error(persisted_state.current_phase) from exc
+            raise _checkpoint_error(
+                "pending_checkpoint_restore_failed",
+                "Pending checkpoint source files could not be restored.",
+                persisted_state.current_phase,
+                "pending_checkpoint_restore_required",
+                "Restore source file write access before retrying explicit recovery.",
+            ) from exc
+
+    try:
+        _write_manifest(manifest_path, aborted, atomic=True)
+        save_state(task_root, reconciled_state)
+        append_trace(
+            task_root,
+            event_type="checkpoint_aborted",
+            task_id=persisted_state.task_id,
+            phase=manifest.phase,
+            status="succeeded",
+            observation={"checkpoint_id": checkpoint_id},
+            state_transition={
+                "latest_checkpoint": [
+                    persisted_state.latest_checkpoint,
+                    latest_checkpoint,
+                ]
+            },
+        )
+    except (HanCodeError, OSError) as exc:
+        compensated = _compensate_pending_abort(
+            task_root,
+            persisted_state,
+            manifest_path,
+            manifest,
+            restored,
+        )
+        try:
+            append_trace(
+                task_root,
+                event_type="checkpoint_abort_failed",
+                task_id=persisted_state.task_id,
+                phase=manifest.phase,
+                status="failed",
+                observation={"checkpoint_id": checkpoint_id},
+                error_summary="Pending checkpoint abort could not be persisted.",
+            )
+        except HanCodeError as trace_exc:
+            _mark_rollback_inconsistent(task_root, persisted_state)
+            raise _checkpoint_error(
+                "pending_checkpoint_trace_failed",
+                "Pending checkpoint abort trace could not be persisted.",
+                persisted_state.current_phase,
+                "checkpoint_trace_required",
+                "Restore trace storage before retrying pending checkpoint recovery.",
+            ) from trace_exc
+        if not compensated:
+            _mark_rollback_inconsistent(task_root, persisted_state)
+            raise _checkpoint_compensation_error(persisted_state.current_phase) from exc
+        raise _checkpoint_error(
+            "pending_checkpoint_abort_failed",
+            "Pending checkpoint could not be safely aborted.",
+            persisted_state.current_phase,
+            "pending_checkpoint_abort_persistence_required",
+            "Restore task workspace write access before retrying recovery.",
+        ) from exc
+    return reconciled_state
+
+
+def abort_pending_checkpoint(
+    task_root: Path,
+    checkpoint_id: str,
+    *,
+    restore_files: bool,
+) -> CheckpointManifest:
+    """Abort one pending checkpoint after applying its selected recovery policy."""
+    state, _project_root, project_metadata = _load_checkpoint_context(task_root)
+    if not isinstance(restore_files, bool):
+        raise _checkpoint_manifest_error(state.current_phase)
+    if not _is_checkpoint_id(checkpoint_id) or state.latest_checkpoint != checkpoint_id:
+        raise _checkpoint_not_found_error(state.current_phase)
+
+    task_root = task_root.resolve()
+    checkpoint_dir = _checkpoint_directory(
+        _checkpoints_root(task_root, state.current_phase),
+        checkpoint_id,
+        state.current_phase,
+    )
+    manifest_path = checkpoint_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise _checkpoint_not_found_error(state.current_phase)
+    _validate_manifest_path(checkpoint_dir, manifest_path, state.current_phase)
+    manifest = _load_manifest(manifest_path, state.current_phase)
+    _validate_manifest_identity(
+        manifest,
+        checkpoint_id,
+        state,
+        _required_project_id(project_metadata, state.current_phase),
+    )
+    if manifest.status != _PENDING:
+        raise _checkpoint_error(
+            "checkpoint_not_pending",
+            "Checkpoint is not pending.",
+            state.current_phase,
+            "pending_checkpoint_required",
+            "Abort each pending checkpoint only once before continuing.",
+        )
+
+    reconcile_pending_checkpoint(task_root, state, recover=restore_files)
+    final_state = load_state(task_root)
+    final_manifest = _load_manifest(manifest_path, final_state.current_phase)
+    if final_manifest.status != _ABORTED:
+        raise _checkpoint_error(
+            "pending_checkpoint_abort_failed",
+            "Pending checkpoint did not reach the aborted state.",
+            final_state.current_phase,
+            "pending_checkpoint_abort_persistence_required",
+            "Repair the checkpoint manifest and task state before continuing.",
+        )
+    return final_manifest
 
 
 def rollback_last_checkpoint(
@@ -829,6 +1135,117 @@ def _restore_rollback_target(restore_target: _RollbackTarget) -> None:
     )
 
 
+def _pending_recovery_targets(
+    manifest: CheckpointManifest,
+    checkpoint_dir: Path,
+    project_root: Path,
+    classifier: PathClassifier,
+    phase: Phase,
+) -> list[_PendingRecoveryTarget]:
+    targets: list[_PendingRecoveryTarget] = []
+    for file in manifest.files:
+        relative_path, target = _normalise_targets(
+            [Path(file.path)], project_root, classifier, phase
+        )[0]
+        if relative_path != file.path:
+            raise _checkpoint_manifest_error(phase)
+        try:
+            current_content = None if not target.is_file() else target.read_bytes()
+            before_content = (
+                None
+                if file.before_snapshot is None
+                else (checkpoint_dir / file.before_snapshot).read_bytes()
+            )
+        except OSError:
+            raise _checkpoint_manifest_error(phase) from None
+        targets.append(
+            _PendingRecoveryTarget(
+                file=file,
+                target=target,
+                before_content=before_content,
+                current_content=current_content,
+            )
+        )
+    return targets
+
+
+def _restore_pending_recovery_target(target: _PendingRecoveryTarget) -> None:
+    if target.file.action == "create":
+        if target.target.is_dir():
+            raise OSError("Pending checkpoint create target is a directory.")
+        target.target.unlink(missing_ok=True)
+        return
+    if target.before_content is None or target.target.is_dir():
+        raise OSError("Pending checkpoint modify target is invalid.")
+    _replace_file_contents(
+        target.target,
+        target.before_content,
+        ".pending-recovery.tmp",
+    )
+
+
+def _compensate_pending_recovery_targets(
+    restored: list[_PendingRecoveryTarget],
+) -> bool:
+    try:
+        for target in reversed(restored):
+            if target.current_content is None:
+                target.target.unlink(missing_ok=True)
+            else:
+                _replace_file_contents(
+                    target.target,
+                    target.current_content,
+                    ".pending-recovery-compensate.tmp",
+                )
+    except OSError:
+        return False
+    return True
+
+
+def _compensate_pending_abort(
+    task_root: Path,
+    state: TaskState,
+    manifest_path: Path,
+    manifest: CheckpointManifest,
+    restored: list[_PendingRecoveryTarget],
+) -> bool:
+    try:
+        save_state(task_root, state)
+        _write_manifest(manifest_path, manifest, atomic=True)
+    except (HanCodeError, OSError):
+        return False
+    return _compensate_pending_recovery_targets(restored)
+
+
+def _latest_rollbackable_checkpoint(
+    task_root: Path,
+    state: TaskState,
+    project_id: str,
+) -> str | None:
+    checkpoints_root = _checkpoints_root(task_root, state.current_phase)
+    candidates: list[str] = []
+    try:
+        checkpoint_dirs = tuple(checkpoints_root.iterdir())
+    except OSError:
+        raise _checkpoint_manifest_error(state.current_phase) from None
+    for checkpoint_dir in checkpoint_dirs:
+        checkpoint_id = checkpoint_dir.name
+        if not _is_checkpoint_id(checkpoint_id):
+            continue
+        if _is_link(checkpoint_dir) or not checkpoint_dir.is_dir():
+            raise _checkpoint_manifest_error(state.current_phase)
+        manifest_path = checkpoint_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise _checkpoint_manifest_error(state.current_phase)
+        _validate_manifest_path(checkpoint_dir, manifest_path, state.current_phase)
+        manifest = _load_manifest(manifest_path, state.current_phase)
+        _validate_manifest_identity(manifest, checkpoint_id, state, project_id)
+        _validate_before_snapshots(checkpoint_dir, manifest.files, state.current_phase)
+        if manifest.status == _COMMITTED and manifest.rollback_available:
+            candidates.append(checkpoint_id)
+    return max(candidates, key=lambda checkpoint_id: int(checkpoint_id.removeprefix("ckpt-")), default=None)
+
+
 def _compensate_rollback_files(
     restore_targets: list[_RollbackTarget], restored_files: list[str]
 ) -> bool:
@@ -871,6 +1288,34 @@ def _mark_rollback_inconsistent(task_root: Path, state: TaskState) -> None:
         )
     except HanCodeError:
         pass
+
+
+def _record_pending_recovery_failure(
+    task_root: Path,
+    state: TaskState,
+    checkpoint_id: str,
+    phase: Phase,
+    error: StructuredError,
+) -> None:
+    try:
+        append_trace(
+            task_root,
+            event_type="checkpoint_recovery_failed",
+            task_id=state.task_id,
+            phase=phase,
+            status="failed",
+            observation={"checkpoint_id": checkpoint_id},
+            error_summary=error.message,
+        )
+    except HanCodeError as trace_exc:
+        _mark_rollback_inconsistent(task_root, state)
+        raise _checkpoint_error(
+            "pending_checkpoint_trace_failed",
+            "Pending checkpoint recovery trace could not be persisted.",
+            phase,
+            "checkpoint_trace_required",
+            "Restore trace storage before retrying pending checkpoint recovery.",
+        ) from trace_exc
 
 
 def _replace_file_contents(target: Path, content: bytes, temporary_suffix: str) -> None:
@@ -964,9 +1409,9 @@ def _load_manifest(path: Path, phase: Phase) -> CheckpointManifest:
         parsed_files = tuple(_parse_checkpoint_file(file) for file in files)
         created_at = datetime.fromisoformat(_required_str(payload, "created_at"))
         raw_status = _required_str(payload, "status")
-        if raw_status not in {_PENDING, _COMMITTED, _ROLLED_BACK}:
+        if raw_status not in {_PENDING, _COMMITTED, _ROLLED_BACK, _ABORTED}:
             raise ValueError
-        status: Literal["pending", "committed", "rolled_back"] = raw_status
+        status: Literal["pending", "committed", "rolled_back", "aborted"] = raw_status
         rollback_available = _required_bool(payload, "rollback_available")
         if not parsed_files or (status == _PENDING and rollback_available):
             raise ValueError
@@ -978,6 +1423,10 @@ def _load_manifest(path: Path, phase: Phase) -> CheckpointManifest:
             raise ValueError
         if status == _ROLLED_BACK and (
             rollback_available or any(file.after_sha256 is None for file in parsed_files)
+        ):
+            raise ValueError
+        if status == _ABORTED and (
+            rollback_available or any(file.after_sha256 is not None for file in parsed_files)
         ):
             raise ValueError
         return CheckpointManifest(
@@ -1110,6 +1559,7 @@ def _validate_before_snapshots(
         snapshots_root = files_root.resolve()
         if (
             _is_link(files_root)
+            or not files_root.is_dir()
             or snapshots_root.parent != resolved_checkpoint_dir
             or snapshots_root.name != "files"
         ):
@@ -1122,7 +1572,10 @@ def _validate_before_snapshots(
         if file.before_snapshot is None or file.before_sha256 is None:
             raise _checkpoint_manifest_error(phase)
         try:
-            snapshot_path = (checkpoint_dir / file.before_snapshot).resolve()
+            raw_snapshot_path = checkpoint_dir / file.before_snapshot
+            if _is_link(raw_snapshot_path):
+                raise ValueError
+            snapshot_path = raw_snapshot_path.resolve()
             relative_snapshot = snapshot_path.relative_to(checkpoint_dir.resolve()).as_posix()
             snapshot_path.relative_to(snapshots_root)
             if relative_snapshot != file.before_snapshot or not snapshot_path.is_file():
@@ -1149,8 +1602,11 @@ def _validate_manifest_path(checkpoint_dir: Path, manifest_path: Path, phase: Ph
 
 
 def _is_link(path: Path) -> bool:
-    is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(is_junction and is_junction())
+    try:
+        is_junction = getattr(path, "is_junction", None)
+        return path.is_symlink() or bool(is_junction and is_junction())
+    except (AttributeError, OSError, RuntimeError):
+        return True
 
 
 def _sanitize_reason(reason: str) -> str:

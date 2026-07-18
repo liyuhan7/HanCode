@@ -67,6 +67,31 @@ def test_default_protection_covers_nested_course_and_credential_files(
     assert classifier.classify(target) is PathZone.PROTECTED
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        "credentials/local.json",
+        "secrets/config.yaml",
+        "certificates/client.pem",
+        "keys/id_rsa",
+        "private.key",
+        "server.crt",
+        "client.cer",
+        "bundle.der",
+        "identity.p12",
+        "identity.pfx",
+        "access.token",
+        "id_rsa",
+    ],
+)
+def test_default_protection_matches_file_tool_credential_paths(
+    tmp_path: Path, target: str
+) -> None:
+    classifier = PathClassifier(_default_config(tmp_path))
+
+    assert classifier.classify(target) is PathZone.PROTECTED
+
+
 def test_default_protection_normalizes_case_and_backslashes(tmp_path: Path) -> None:
     classifier = PathClassifier(_default_config(tmp_path))
 

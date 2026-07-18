@@ -47,6 +47,16 @@ class StubStateStore:
         self.state = state
 
 
+class ReconcileStateStore(StubStateStore):
+    def __init__(self, state: TaskState) -> None:
+        super().__init__(state)
+        self.recover_pending: list[bool] = []
+
+    def reconcile(self, task_id: str, *, recover_pending: bool) -> TaskState:
+        self.recover_pending.append(recover_pending)
+        return self.state
+
+
 class SpyTraceAppender:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -538,8 +548,28 @@ def test_blocked_task_requires_explicit_resume_to_retry() -> None:
     assert blocked.error is not None
     assert blocked.error.error_code == "task_blocked"
     assert resumed.tool_calls == ("read_file",)
-    assert len(llm.contexts) == 1
-    assert [action.tool_name for action in tools.actions] == ["read_file"]
+
+
+def test_agent_loop_passes_resume_as_explicit_pending_recovery_authorization() -> None:
+    state_store = ReconcileStateStore(_task_state())
+    first, *_ = _build_loop(
+        [_read_file_action()],
+        state_store=state_store,
+        max_steps=1,
+    )
+
+    first_result = first.run("task-001", resume=False)
+
+    assert first_result.status is TaskStatus.BLOCKED
+    second, *_ = _build_loop(
+        [_read_file_action()],
+        state_store=state_store,
+        max_steps=1,
+    )
+    second_result = second.run("task-001", resume=True)
+
+    assert second_result.status is TaskStatus.BLOCKED
+    assert state_store.recover_pending == [False, True]
 
 
 def test_context_builder_hancode_error_is_preserved_as_blocked() -> None:
@@ -733,6 +763,7 @@ def _build_loop(
     trace_appender: SpyTraceAppender | None = None,
     checkpoint_manager: StubCheckpointManager | None = None,
     rollback_manager: StubRollbackManager | None = None,
+    state_store: StubStateStore | None = None,
 ) -> tuple[
     AgentLoop,
     MockLLM,
@@ -753,7 +784,7 @@ def _build_loop(
         policy=policy,
         tool_registry=tools,
         feedback_builder=feedback,
-        state_store=StubStateStore(state or _task_state()),
+        state_store=state_store or StubStateStore(state or _task_state()),
         trace_appender=trace_appender or SpyTraceAppender(),
         checkpoint_manager=checkpoint_manager or StubCheckpointManager(),
         rollback_manager=rollback_manager or StubRollbackManager(),

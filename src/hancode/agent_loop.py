@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
+import inspect
 import os
 from pathlib import Path
 import re
@@ -14,8 +15,10 @@ from hancode.checkpoints import (
     CheckpointFile,
     CheckpointManifest,
     RollbackResult,
+    abort_pending_checkpoint,
     commit_checkpoint,
     create_checkpoint,
+    reconcile_pending_checkpoint,
     rollback_last_checkpoint,
 )
 from hancode.errors import HanCodeError, StructuredError
@@ -55,6 +58,10 @@ class CheckpointManager(Protocol):
     def create(self, task_id: str, files: list[Path], reason: str) -> CheckpointManifest: ...
 
     def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest: ...
+
+    def abort(
+        self, task_id: str, checkpoint_id: str, *, restore_files: bool
+    ) -> CheckpointManifest: ...
 
 
 class RollbackManager(Protocol):
@@ -117,9 +124,10 @@ class FilesystemStateStore(_FilesystemTaskAdapter):
     def save(self, task_id: str, state: TaskState) -> None:
         save_state(self._task_root(task_id), state)
 
-    def reconcile(self, task_id: str) -> TaskState:
+    def reconcile(self, task_id: str, *, recover_pending: bool = False) -> TaskState:
         root = self._task_root(task_id)
         state = load_state(root)
+        state = reconcile_pending_checkpoint(root, state, recover=recover_pending)
         return reconcile_state(root, state)
 
 
@@ -155,6 +163,15 @@ class FilesystemCheckpointManager(_FilesystemTaskAdapter):
 
     def commit(self, task_id: str, checkpoint_id: str) -> CheckpointManifest:
         return commit_checkpoint(self._task_root(task_id), checkpoint_id)
+
+    def abort(
+        self, task_id: str, checkpoint_id: str, *, restore_files: bool
+    ) -> CheckpointManifest:
+        return abort_pending_checkpoint(
+            self._task_root(task_id),
+            checkpoint_id,
+            restore_files=restore_files,
+        )
 
 
 class FilesystemRollbackManager(_FilesystemTaskAdapter):
@@ -482,7 +499,15 @@ class AgentLoop:
 
         reconcile = getattr(self._state_store, "reconcile", None)
         if callable(reconcile):
-            reconciled_state = reconcile(task_id)
+            try:
+                sig = inspect.signature(reconcile)
+                accepts_recover_pending = "recover_pending" in sig.parameters
+            except (ValueError, TypeError):
+                accepts_recover_pending = False
+            if accepts_recover_pending:
+                reconciled_state = reconcile(task_id, recover_pending=resume)
+            else:
+                reconciled_state = reconcile(task_id)
             if not _is_valid_task_state(reconciled_state, task_id):
                 raise HanCodeError(_state_adapter_error(state.current_phase))
             reconciliation_changed = reconciled_state != state
@@ -490,10 +515,16 @@ class AgentLoop:
                 task_id,
                 trace_events,
                 event_type=(
-                    "state_inconsistent" if reconciliation_changed else "state_reconciled"
+                    "state_inconsistent"
+                    if reconciled_state.inconsistent and reconciliation_changed
+                    else "state_reconciled"
                 ),
-                phase=state.current_phase,
-                status="failed" if reconciliation_changed else "succeeded",
+                phase=reconciled_state.current_phase,
+                status=(
+                    "failed"
+                    if reconciled_state.inconsistent and reconciliation_changed
+                    else "succeeded"
+                ),
                 observation={"changed": reconciliation_changed},
             )
             if trace_error is not None:
@@ -871,6 +902,7 @@ class AgentLoop:
                             state,
                         )
                 checkpoint: CheckpointManifest | None = None
+                checkpoint_aborted = False
                 requires_checkpoint = decision.requires_checkpoint or source_write
                 if requires_checkpoint:
                     path_value = action.args.get("path")
@@ -1225,110 +1257,267 @@ class AgentLoop:
                 tool_calls.append(action.tool_name)
                 if requires_checkpoint:
                     if not tool_result.success:
-                        fallback_error = _checkpoint_guard_error(
-                            "checkpointed_write_failed",
-                            "Checkpointed source write failed; task state is inconsistent.",
-                            routing.phase,
-                            "checkpointed_write_must_be_reconciled",
-                            "Inspect the source file and checkpoint before continuing.",
-                        )
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, fallback_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                            risks=(_checkpoint_failure_risk(),),
-                        )
-                    if checkpoint is None:
-                        state, state_error = self._mark_inconsistent(
-                            task_id,
-                            state,
-                            _checkpoint_guard_error(
-                                "checkpoint_manifest_missing",
-                                "A checkpoint manifest is required before committing the source write.",
+                        if tool_result.mutation_applied is False:
+                            if checkpoint is None:
+                                state, state_error = self._mark_inconsistent(
+                                    task_id,
+                                    state,
+                                    _checkpoint_guard_error(
+                                        "checkpoint_manifest_missing",
+                                        "A checkpoint manifest is required before aborting the source write.",
+                                        routing.phase,
+                                        "checkpoint_manifest_required",
+                                        "Repair checkpoint creation before retrying the source write.",
+                                    ),
+                                    rollback_required=True,
+                                )
+                                return _result(
+                                    TaskStatus.INCONSISTENT,
+                                    step,
+                                    tuple(tool_calls),
+                                    observation,
+                                    state_error,
+                                    state,
+                                    risks=(_checkpoint_failure_risk(),),
+                                )
+                            try:
+                                aborted = self._checkpoint_manager.abort(
+                                    task_id,
+                                    checkpoint.checkpoint_id,
+                                    restore_files=False,
+                                )
+                            except HanCodeError as exc:
+                                state, state_error = self._mark_inconsistent(
+                                    task_id,
+                                    state,
+                                    exc.structured_error,
+                                    rollback_required=True,
+                                )
+                                return _result(
+                                    TaskStatus.INCONSISTENT,
+                                    step,
+                                    tuple(tool_calls),
+                                    observation,
+                                    state_error,
+                                    state,
+                                    risks=(_checkpoint_failure_risk(),),
+                                )
+                            except Exception:
+                                state, state_error = self._mark_inconsistent(
+                                    task_id,
+                                    state,
+                                    _checkpoint_guard_error(
+                                        "pending_checkpoint_abort_failed",
+                                        "Pending checkpoint could not be safely aborted.",
+                                        routing.phase,
+                                        "pending_checkpoint_abort_persistence_required",
+                                        "Repair checkpoint storage before retrying the source write.",
+                                    ),
+                                    rollback_required=True,
+                                )
+                                return _result(
+                                    TaskStatus.INCONSISTENT,
+                                    step,
+                                    tuple(tool_calls),
+                                    observation,
+                                    state_error,
+                                    state,
+                                    risks=(_checkpoint_failure_risk(),),
+                                )
+                            if not _is_aborted_checkpoint_for(
+                                aborted,
+                                task_id,
                                 routing.phase,
-                                "checkpoint_manifest_required",
-                                "Repair checkpoint creation before retrying the source write.",
-                            ),
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                            risks=(_checkpoint_failure_risk(),),
-                        )
-                    try:
-                        committed = self._checkpoint_manager.commit(
-                            task_id, checkpoint.checkpoint_id
-                        )
-                    except HanCodeError as exc:
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, exc.structured_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                            risks=(_checkpoint_failure_risk(),),
-                        )
-                    except Exception:
-                        fallback_error = _checkpoint_guard_error(
-                            "checkpoint_commit_failed",
-                            "Checkpoint could not be committed after the source write.",
+                                Path(path),
+                                checkpoint.checkpoint_id,
+                            ):
+                                state, state_error = self._mark_inconsistent(
+                                    task_id,
+                                    state,
+                                    _checkpoint_guard_error(
+                                        "checkpoint_manifest_invalid",
+                                        "Checkpoint manager returned an invalid aborted manifest.",
+                                        routing.phase,
+                                        "aborted_checkpoint_manifest_required",
+                                        "Repair checkpoint abort persistence before retrying the source write.",
+                                    ),
+                                    rollback_required=True,
+                                )
+                                return _result(
+                                    TaskStatus.INCONSISTENT,
+                                    step,
+                                    tuple(tool_calls),
+                                    observation,
+                                    state_error,
+                                    state,
+                                    risks=(_checkpoint_failure_risk(),),
+                                )
+                            try:
+                                reloaded_state = self._state_store.load(task_id)
+                            except HanCodeError as exc:
+                                state, state_error = self._mark_inconsistent(
+                                    task_id,
+                                    state,
+                                    exc.structured_error,
+                                    rollback_required=True,
+                                )
+                                return _result(
+                                    TaskStatus.INCONSISTENT,
+                                    step,
+                                    tuple(tool_calls),
+                                    observation,
+                                    state_error,
+                                    state,
+                                    risks=(_checkpoint_failure_risk(),),
+                                )
+                            except Exception:
+                                state, state_error = self._mark_inconsistent(
+                                    task_id,
+                                    state,
+                                    _state_persistence_error(routing.phase),
+                                    rollback_required=True,
+                                )
+                                return _result(
+                                    TaskStatus.INCONSISTENT,
+                                    step,
+                                    tuple(tool_calls),
+                                    observation,
+                                    state_error,
+                                    state,
+                                    risks=(_checkpoint_failure_risk(),),
+                                )
+                            if not _is_valid_task_state(reloaded_state, task_id):
+                                state, state_error = self._mark_inconsistent(
+                                    task_id,
+                                    state,
+                                    _checkpoint_guard_error(
+                                        "checkpoint_state_invalid",
+                                        "Task state is invalid after aborting the pending checkpoint.",
+                                        routing.phase,
+                                        "consistent_checkpoint_state_required",
+                                        "Reconcile task state before retrying the source write.",
+                                    ),
+                                    rollback_required=True,
+                                )
+                                return _result(
+                                    TaskStatus.INCONSISTENT,
+                                    step,
+                                    tuple(tool_calls),
+                                    observation,
+                                    state_error,
+                                    state,
+                                    risks=(_checkpoint_failure_risk(),),
+                                )
+                            state = reloaded_state
+                            checkpoint_aborted = True
+                        else:
+                            fallback_error = _checkpoint_guard_error(
+                                "checkpointed_write_failed",
+                                "Checkpointed source write failed; task state is inconsistent.",
+                                routing.phase,
+                                "checkpointed_write_must_be_reconciled",
+                                "Inspect the source file and checkpoint before continuing.",
+                            )
+                            state, state_error = self._mark_inconsistent(
+                                task_id, state, fallback_error, rollback_required=True
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                                risks=(_checkpoint_failure_risk(),),
+                            )
+                    if checkpoint is None:
+                        if not checkpoint_aborted:
+                            state, state_error = self._mark_inconsistent(
+                                task_id,
+                                state,
+                                _checkpoint_guard_error(
+                                    "checkpoint_manifest_missing",
+                                    "A checkpoint manifest is required before committing the source write.",
+                                    routing.phase,
+                                    "checkpoint_manifest_required",
+                                    "Repair checkpoint creation before retrying the source write.",
+                                ),
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                                risks=(_checkpoint_failure_risk(),),
+                            )
+                    if not checkpoint_aborted:
+                        assert checkpoint is not None
+                        try:
+                            committed = self._checkpoint_manager.commit(
+                                task_id, checkpoint.checkpoint_id
+                            )
+                        except HanCodeError as exc:
+                            state, state_error = self._mark_inconsistent(
+                                task_id, state, exc.structured_error
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                                risks=(_checkpoint_failure_risk(),),
+                            )
+                        except Exception:
+                            fallback_error = _checkpoint_guard_error(
+                                "checkpoint_commit_failed",
+                                "Checkpoint could not be committed after the source write.",
+                                routing.phase,
+                                "checkpoint_commit_required",
+                                "Reconcile the source file and checkpoint before continuing.",
+                            )
+                            state, state_error = self._mark_inconsistent(
+                                task_id, state, fallback_error
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                                risks=(_checkpoint_failure_risk(),),
+                            )
+                        if not _is_committed_checkpoint_for(
+                            committed,
+                            task_id,
                             routing.phase,
-                            "checkpoint_commit_required",
-                            "Reconcile the source file and checkpoint before continuing.",
-                        )
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, fallback_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                            risks=(_checkpoint_failure_risk(),),
-                        )
-                    if not _is_committed_checkpoint_for(
-                        committed,
-                        task_id,
-                        routing.phase,
-                        Path(path),
-                        checkpoint.checkpoint_id,
-                        pending_checkpoint=checkpoint,
-                    ):
-                        fallback_error = _checkpoint_guard_error(
-                            "checkpoint_manifest_invalid",
-                            "Committed checkpoint metadata does not match the source write.",
-                            routing.phase,
-                            "committed_checkpoint_manifest_required",
-                            "Repair the checkpoint manager before continuing.",
-                        )
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, fallback_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                            risks=(_checkpoint_failure_risk(),),
-                        )
+                            Path(path),
+                            checkpoint.checkpoint_id,
+                            pending_checkpoint=checkpoint,
+                        ):
+                            fallback_error = _checkpoint_guard_error(
+                                "checkpoint_manifest_invalid",
+                                "Committed checkpoint metadata does not match the source write.",
+                                routing.phase,
+                                "committed_checkpoint_manifest_required",
+                                "Repair the checkpoint manager before continuing.",
+                            )
+                            state, state_error = self._mark_inconsistent(
+                                task_id, state, fallback_error
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                                risks=(_checkpoint_failure_risk(),),
+                            )
                 previous_state = state
                 updated_state = _state_after_tool(
                     state,
@@ -2652,7 +2841,10 @@ def _state_after_tool(
         phase_completed[Phase.TEST.value] = False
         return replace(
             state,
-            tests_run=(*state.tests_run, "run_tests"),
+            tests_run=(
+                *state.tests_run,
+                redact_text(result.command) if result.command else "run_tests",
+            ),
             latest_test_status="passed" if result.success else "failed",
             test_status_consumed=False,
             phase_completed=phase_completed,
@@ -2782,6 +2974,10 @@ def _is_valid_tool_result(result: object, action: Action) -> bool:
         not isinstance(result.exit_code, int) or isinstance(result.exit_code, bool)
     ):
         return False
+    if result.command is not None and not isinstance(result.command, str):
+        return False
+    if result.mutation_applied is not None and not isinstance(result.mutation_applied, bool):
+        return False
     return isinstance(result.timed_out, bool)
 
 
@@ -2790,6 +2986,8 @@ def _tool_trace_observation(result: ToolResult) -> dict[str, object]:
         "action_name": result.action_name,
         "exit_code": result.exit_code,
         "timed_out": result.timed_out,
+        "command": None if result.command is None else redact_text(result.command),
+        "mutation_applied": result.mutation_applied,
         "stdout_chars": None if result.stdout is None else len(result.stdout),
         "stderr_chars": None if result.stderr is None else len(result.stderr),
     }
@@ -2945,6 +3143,25 @@ def _is_pending_checkpoint_for(
     )
 
 
+def _is_aborted_checkpoint_for(
+    checkpoint: CheckpointManifest,
+    task_id: str,
+    phase: Phase,
+    expected_path: Path,
+    expected_checkpoint_id: str,
+) -> bool:
+    return _is_checkpoint_manifest_for(
+        checkpoint,
+        task_id=task_id,
+        phase=phase,
+        expected_path=expected_path,
+        expected_status="aborted",
+        expected_rollback_available=False,
+        expected_checkpoint_id=expected_checkpoint_id,
+        require_after_sha256=False,
+    )
+
+
 def _is_committed_checkpoint_for(
     checkpoint: CheckpointManifest,
     task_id: str,
@@ -3034,7 +3251,7 @@ def _is_checkpoint_manifest_for(
             return False
         if not _is_optional_sha256(file.after_sha256):
             return False
-        if expected_status == "pending" and file.after_sha256 is not None:
+        if expected_status in {"pending", "aborted"} and file.after_sha256 is not None:
             return False
         if require_after_sha256 and not _is_sha256(file.after_sha256):
             return False

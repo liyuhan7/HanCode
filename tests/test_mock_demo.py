@@ -51,6 +51,25 @@ def test_mock_demo_runs_without_real_credentials_and_generates_delivery_artifact
     assert "Ran 1 test" in test_report
 
 
+def test_mock_demo_reuses_default_registry_with_injected_test_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: list[object] = []
+    original = demo.build_default_tool_registry
+
+    def build_registry(config: object, *, run_tests_tool: object = None) -> object:
+        captured.append(run_tests_tool)
+        return original(config, run_tests_tool=run_tests_tool)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(demo, "build_default_tool_registry", build_registry)
+
+    result = demo.run_mock_demo(_copy_fixture(tmp_path))
+
+    assert result.status is TaskStatus.COMPLETED
+    assert len(captured) == 1
+    assert callable(captured[0])
+
+
 def test_mock_demo_trace_proves_the_required_control_flow(tmp_path: Path) -> None:
     project_root = _copy_fixture(tmp_path)
     result = demo.run_mock_demo(project_root)

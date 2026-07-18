@@ -119,6 +119,35 @@ def test_filesystem_adapters_delegate_against_one_task_root(
     ]
 
 
+def test_filesystem_state_store_passes_explicit_pending_recovery_authorization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task_root = tmp_path / ".hancode" / "tasks" / "task-001"
+    state = cast(TaskState, object())
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(agent_loop_module, "task_path", lambda root, task_id: task_root)
+    monkeypatch.setattr(agent_loop_module, "load_state", lambda root: state)
+    monkeypatch.setattr(
+        agent_loop_module,
+        "reconcile_pending_checkpoint",
+        lambda root, value, *, recover: calls.append(("pending", recover)) or value,
+    )
+    monkeypatch.setattr(
+        agent_loop_module,
+        "reconcile_state",
+        lambda root, value: calls.append(("state", value)) or value,
+    )
+
+    result = FilesystemStateStore(tmp_path).reconcile(
+        "task-001",
+        recover_pending=True,
+    )
+
+    assert result is state
+    assert calls == [("pending", True), ("state", state)]
+
+
 def test_filesystem_mutation_guard_is_exclusive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
