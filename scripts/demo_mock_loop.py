@@ -659,7 +659,7 @@ def _validate_fixture(project_root: Path) -> Path:
         or any(_is_link(entry) for entry in entries)
         or files != set(_FIXTURE_DIGESTS)
         or any(
-            hashlib.sha256((root / relative_path).read_bytes()).hexdigest() != digest
+            _fixture_digest(root / relative_path) != digest
             for relative_path, digest in _FIXTURE_DIGESTS.items()
         )
     ):
@@ -668,6 +668,12 @@ def _validate_fixture(project_root: Path) -> Path:
             "Mock demo requires a clean copy of examples/broken_project.",
         )
     return root
+
+
+def _fixture_digest(path: Path) -> str:
+    """Hash fixture text canonically so Git newline conversion is not semantic drift."""
+    normalized = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def _configure_demo(project_root: Path) -> None:

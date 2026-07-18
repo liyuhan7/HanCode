@@ -1203,3 +1203,11 @@
 - Linux CI 的 `python -m pytest` 首次暴露两个测试夹具错误：Python 3.11 POSIX 的 `pathlib.Path` 没有 `is_junction`，测试在验证 fail-closed 行为前就因 monkeypatch 默认 `raising=True` 失败。
 - 将 `tests/test_delivery.py` 与 `tests/test_state.py` 的 `is_junction` monkeypatch 改为 `raising=False`，只在测试运行时注入缺失探针；生产代码仍通过 `getattr` 和异常捕获保持跨平台 fail-closed 语义。
 - 验证：两个 junction 回归测试 2 passed；全量 pytest 585 passed、10 skipped；ruff、mypy、`git diff --check` 通过。
+
+### 2026-07-18 — M7 基线 fixture 换行摘要修正
+
+- Red：M7 基线验证发现 T23 的 6 个测试失败，结果为 6 failed、579 passed、10 skipped；失败点均为 `scripts/demo_mock_loop.py::_validate_fixture` 的 fixture SHA-256 校验。
+- 根因：Windows 工作树启用了 `core.autocrlf=true`，Git 将 fixture 的 LF 转换为 CRLF；校验直接对原始字节摘要，因换行差异将合法工作树误判为 fixture 被篡改。
+- Green：`scripts/demo_mock_loop.py` 新增 `_fixture_digest`，在计算摘要前将 CRLF 规范化为 LF；保留既有 canonical digest，不改变 fixture 内容、安全边界或 demo 行为。
+- 验证：T23 专项 8 passed；全量 pytest 585 passed、10 skipped；ruff、mypy、`git diff --check` 均通过。
+- 范围：仅修正跨平台 fixture 校验兼容性；未扩展 M7 功能范围。
