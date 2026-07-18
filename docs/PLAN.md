@@ -2917,12 +2917,12 @@ uv run mypy src/hancode/credentials.py src/hancode/cli.py
 
 | 元信息           | 值                  |
 | ------------- | ------------------ |
-| 状态            | [ ] 未开始            |
+| 状态            | [x] 已完成            |
 | 依赖            | T24, T25           |
 | 可并行           | 不并行；交付验证任务         |
 | Worktree / PR | `feature/M7`       |
 | 主贡献相关         | 否，交付质量保障           |
-| Commit        | TODO               |
+| Commit        | `e18c71f`          |
 
 ### 目标
 
@@ -2991,6 +2991,15 @@ uv build
 uv run hancode --help
 uv run hancode demo --provider mock
 ```
+
+### 实施与评审记录
+
+* TDD Red：新增 package / CI 配置契约后，初始专项为 6 failed、2 passed；失败准确指向缺失 `uv.lock`、Makefile 未使用 uv、GitHub CI 未运行 uv 门禁与缺失 GitLab `unit-test` job。
+* Green：生成 `uv.lock`，将 Makefile 收敛为 `uv run` 门禁；GitHub Actions 与 GitLab CI 均固定 Python 3.11、`uv==0.11.8`、`uv sync --locked --extra dev`，并执行测试、lint、type check、build、源码 CLI 与 Mock Demo。
+* 第一阶段新鲜评审发现：仅 `uv build` 后运行 editable CLI 不能证明 wheel 可安装。新增 CI 契约测试先 Red，再让两个 CI 都在独立 Python 3.11 venv 安装 `dist/*.whl` 后运行 `hancode --help` 与 `hancode demo --provider mock`。
+* 第二阶段新鲜评审发现两个 Minor：wheel venv 位于工作区、配置测试未锁定命令顺序。修复后 wheel venv 分别位于 `$RUNNER_TEMP` / `$CI_BUILDS_DIR`，测试断言 `uv sync` 先于质量门禁、`uv build` 先于 wheel 安装。
+* 最终验证：配置专项 11 passed；全量 `pytest` 为 643 passed、12 skipped；Ruff 通过；MyPy 为 24 个 source files 无问题；`uv lock --check`、`uv sync --locked --extra dev`、`uv build`、源码 CLI / Mock Demo 以及独立 Python 3.11 wheel CLI / Mock Demo 全部通过。
+* 本机普通沙箱会拒绝 setuptools / pytest 临时目录写入；在受控临时目录以非沙箱方式复验成功。该限制未写入产品配置，也不影响 Linux CI。
 
 ### 完成判定
 

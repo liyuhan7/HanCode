@@ -1249,3 +1249,27 @@
   - 其余门禁：`uv build` 成功生成 sdist/wheel；`.venv\Scripts\hancode.exe --help`、`auth --help` 返回 0；`hancode demo --provider mock` 在将 `TEMP/TMP` 指向 M7 可写 runtime 临时目录后返回 `completed`；`git diff --check` 通过。
 - 人工干预与剩余风险：当前 Windows 环境不允许创建 symlink 时 symlink 用例跳过；真实 OS keyring 不在测试中调用；env/.env 清除必须由用户在外部源手动完成；宿主用户 Temp ACL 会影响 T23 demo，需要可写 TEMP/TMP；ProviderAdapter/真实 LLM 凭据消费留给后续任务。
 - 提交：`07f67af`（实现）；文档追踪提交待创建。
+
+### 2026-07-18 — T26 Package Build 与 CI
+
+- 使用的技能：`writing-plans`、`executing-plans`、`subagent-driven-development`、`test-driven-development`、`systematic-debugging`、`requesting-code-review`。
+- 任务范围：仅完成 Python package 锁文件、Makefile uv 命令、GitHub/GitLab CI、配置契约测试和过程证据；不实现 Docker、真实 LLM smoke、部署、README 或 Harness Core 变更。
+- TDD Red → Green：
+  - 新增 `tests/test_package_metadata.py` 与 `tests/test_ci_config.py` 后，初始专项为 6 failed、2 passed：缺 `uv.lock`、Makefile 仍调用系统 Python、GitHub CI 使用 pip editable 安装、GitLab CI 缺失。
+  - 最小实现生成 `uv.lock`，Makefile 切换到 `uv run`，两个 CI 使用 Python 3.11、固定 `uv==0.11.8`、`uv sync --locked --extra dev`，并运行 pytest、Ruff、MyPy、build、源码 CLI 与离线 Mock Demo；专项转为 9 passed。
+  - 第一阶段新鲜评审指出 `uv build` 后的 `uv run hancode` 仍是源码 editable 安装，不能覆盖 wheel 目标机安装。新增 wheel smoke 配置断言先 Red，随后两个 CI 都创建独立 Python 3.11 venv、安装 `dist/*.whl` 并运行 help / Mock Demo，专项转为 10 passed。
+  - 第二阶段新鲜评审提出 wheel venv 不应落在工作区、配置测试应校验命令顺序。新断言先因 CI 使用 `.ci-wheel-venv` 失败；最小修复改用 `$RUNNER_TEMP` / `$CI_BUILDS_DIR`，并断言 `uv sync` 在质量门禁前、`uv build` 在 wheel 安装前，专项转为 11 passed。
+- 两阶段新鲜评审：
+  - 第一阶段 Important：wheel 未真实安装验证、`.t26-runtime/` 未清理；前者以独立 wheel venv CI smoke 修复，后者在最终验证后定点删除。
+  - 第二阶段：Critical 0 / Important 0 / Minor 2；两个 Minor 均已按 TDD 处理为 CI 临时目录和顺序契约，随后由最终全量验证确认。
+- 验证证据：
+  - `uv lock --check` 与 `uv sync --locked --extra dev`：通过，检查 31 个 package。
+  - `uv run --no-sync pytest tests/test_package_metadata.py tests/test_ci_config.py -q -p no:cacheprovider`：11 passed。
+  - 全量 `uv run --no-sync pytest -q -p no:cacheprovider --basetemp '.t26-final-runtime\\pytest'`：643 passed、12 skipped。
+  - `uv run --no-sync ruff check src tests scripts`：All checks passed。
+  - `uv run --no-sync mypy src`：Success: no issues found in 24 source files。
+  - `uv build`：成功生成 `hancode-0.1.0.tar.gz` 与 `hancode-0.1.0-py3-none-any.whl`。
+  - 源码环境和独立 Python 3.11 wheel 环境均通过 `hancode --help` 与 `hancode demo --provider mock`，Demo 返回 `status=completed`。
+  - `git diff --check`：通过；构建、wheel、pytest、uv cache 临时目录已清理。
+- 人工干预与环境说明：普通沙箱在 setuptools editable/wheel 构建及 pytest 临时目录清理时返回 `PermissionError`；使用位于 worktree 的受控临时目录并以非沙箱复验成功。该环境限制未改变 package、CI 或安全边界。
+- 提交：`e18c71f`（实现）；文档追踪提交待创建。
