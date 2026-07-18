@@ -1211,3 +1211,16 @@
 - Green：`scripts/demo_mock_loop.py` 新增 `_fixture_digest`，在计算摘要前将 CRLF 规范化为 LF；保留既有 canonical digest，不改变 fixture 内容、安全边界或 demo 行为。
 - 验证：T23 专项 8 passed；全量 pytest 585 passed、10 skipped；ruff、mypy、`git diff --check` 均通过。
 - 范围：仅修正跨平台 fixture 校验兼容性；未扩展 M7 功能范围。
+
+### 2026-07-18 — T24 CLI 最小入口实施、评审与返工
+
+- 前置：基线 fixture 换行修复已独立提交为 `a48d57d`，T23 专项复验 `8 passed`。
+- Task 1 Red→Green：测试首次导入 `hancode.demo` 得到预期模块缺失；runner 迁入 `src/hancode/demo.py`，固定 fixture 放入 `src/hancode/_demo_fixture` 并声明为 package data，`scripts/demo_mock_loop.py` 改为薄入口；T23 demo 专项 `9 passed`。
+- Task 2 Red→Green：CLI 首次导入 `hancode.cli` 得到预期模块缺失；新增 Typer `help/init/demo`、结构化 JSON 输出和稳定退出码；修正 `typer.Exit` 被宽泛异常捕获的问题；CLI 专项 `9 passed`。
+- Task 3 Red→Green：export 首次导入 `hancode.export` 得到预期模块缺失；新增 state 驱动的六类 delivery artifact 导出、staging 原子目录、防覆盖和 fail-closed 错误；CLI + export 联合专项 `13 passed`。
+- 第二阶段评审发现 export 目标父目录 symlink/junction 未被检查；新增逐级路径组件检查与回归测试，先 Red 后 Green（父目录链接测试 `1 passed`），关闭 Important。补充 JSON 键顺序和 Typer 缺参 exit code 回归。
+- 分发验证：`uv build --wheel` 成功，wheel 包含 `hancode/cli.py`、`hancode/demo.py`、`hancode/export.py` 和三份 `_demo_fixture`。
+- 最终验证：T24 三模块专项 `23 passed`；全量 `pytest` `598 passed、11 skipped`；Ruff 全量通过；Mypy `src scripts/demo_mock_loop.py` 为 `Success: no issues found in 24 source files`；help 与脚本 demo 冒烟均返回 0；`git diff --check` 通过。
+- wheel 初次构建发现宽泛 package-data glob 会收集 fixture 测试产生的 `__pycache__`；改为 `_demo_fixture/*.md`、`_demo_fixture/src/*.py`、`_demo_fixture/tests/*.py` 三类明确模式后重新构建，无 warning，wheel 未包含缓存文件。
+- 最终复验：全量 `pytest` `600 passed、11 skipped`；Ruff、Mypy 和 wheel 构建均通过。
+- 范围：T24 仅实现 `help/init/demo/export`；`auth` 留给 T25，通用 `run`、REPL/TUI 和真实 provider 不在本任务范围。

@@ -28,6 +28,13 @@ hancode = "hancode.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+hancode = [
+    "_demo_fixture/*.md",
+    "_demo_fixture/src/*.py",
+    "_demo_fixture/tests/*.py",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -35,3 +42,4 @@ target-version = "py311"
 [tool.mypy]
 python_version = "3.11"
 strict = true
+exclude = ["^src/hancode/_demo_fixture/"]

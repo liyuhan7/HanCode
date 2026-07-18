@@ -2672,7 +2672,7 @@ uv run mypy src
 
 | 元信息           | 值                                 |
 | ------------- | --------------------------------- |
-| 状态            | [ ] 未开始                           |
+| 状态            | [x] 已完成（TDD、两阶段新鲜评审、静态门禁、全量回归与 wheel 验证通过） |
 | 依赖            | T2, T23                           |
 | 可并行           | 可先实现 help / init，demo 命令等 T23 后接入 |
 | Worktree / PR | `feature/M7`                      |
@@ -2686,7 +2686,14 @@ uv run mypy src
 ### 涉及文件
 
 * `src/hancode/cli.py`
+* `src/hancode/demo.py`
+* `src/hancode/export.py`
+* `src/hancode/_demo_fixture/`
+* `scripts/demo_mock_loop.py`
 * `tests/test_cli.py`
+* `tests/test_export.py`
+* `tests/test_mock_demo.py`
+* `pyproject.toml`
 
 ### SPEC 依据
 
@@ -2698,25 +2705,48 @@ uv run mypy src
 
 ```text
 hancode --help
-hancode init
+hancode init [PROJECT_ROOT]
 hancode demo --provider mock
-hancode run "<goal>" --provider mock
-hancode auth status --provider openai
 hancode export --task task-001 --out deliverables/
 ```
 
 输入：CLI 参数、workspace 路径、provider 参数。
 输出：稳定 exit code、结构化文本输出、必要产物。
-不变量：CLI 只调用 core，不绕过 policy、workspace、demo runner。
+本任务实际实现：`help`、`init`、`demo --provider mock`、`export`；`auth` 留给 T25，通用 `run` 等待 TaskController 对应任务卡。
+不变量：CLI 只调用 core，不绕过 policy、workspace、state 或 demo runner；demo runner 与 fixture 同时包含在源码和 package data 中。
 错误处理：provider 未知 exit code 1；配置错误 exit code 2；trace/checkpoint 不可恢复错误 exit code 3。
+
+### 接口契约
+
+```python
+def run_packaged_mock_demo() -> DeliveryResult: ...
+
+def export_task_artifacts(
+    project_root: Path,
+    task_id: str,
+    output_dir: Path,
+) -> ExportResult: ...
+```
+
+`ExportResult.to_dict()` 输出 `task_id`、`output_dir` 和按稳定顺序排列的 `artifacts`。
+export 只复制 state 声明存在的 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`，不覆盖已有目录，不导出 state、trace、checkpoint 或凭据。
 
 ### 预期失败测试
 
-* `test_cli_help_displays_commands`
-* `test_cli_init_creates_workspace`
+* `test_cli_help_displays_supported_commands`
+* `test_cli_init_creates_workspace_with_deterministic_defaults`
+* `test_cli_init_accepts_explicit_project_metadata`
 * `test_cli_demo_runs_with_mock_provider_without_credentials`
 * `test_cli_unknown_provider_returns_clear_error`
-* `test_cli_exit_code_for_config_error_is_stable`
+* `test_cli_config_error_uses_stable_exit_code`
+* `test_cli_trace_error_uses_unrecoverable_exit_code`
+* `test_cli_export_copies_declared_artifacts`
+* `test_export_copies_only_declared_delivery_artifacts`
+* `test_export_rejects_inconsistent_task_state`
+* `test_export_rejects_existing_output_without_overwriting`
+* `test_export_rejects_task_path_escape`
+* `test_export_rejects_linked_output_parent`
+* `test_packaged_mock_demo_runs_without_repository_fixture`
 
 ### 实现要点
 
@@ -2724,21 +2754,36 @@ hancode export --task task-001 --out deliverables/
 * `demo --provider mock` 不要求真实凭据。
 * CLI 输出状态必须明确：completed / blocked / failed。
 * 不在命令行参数中接收明文 key。
+* demo runner 从 `scripts/` 迁入 `src/hancode/`，脚本仅保留薄入口；固定 fixture 作为 package data，确保 wheel 安装后仍可运行。
+* init 默认当前目录、目录名项目 ID、稳定非空课程/作业占位值；显式参数可以覆盖默认值。
+* export 通过 `task_path`、`load_state` 和 `reconcile_state` 使用权威 task state；目标目录使用临时目录完成后再重命名。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_cli.py -v
-uv run ruff check src/hancode/cli.py tests/test_cli.py
-uv run mypy src/hancode/cli.py
+uv run pytest tests/test_mock_demo.py tests/test_cli.py tests/test_export.py -v
+uv run ruff check src/hancode/demo.py src/hancode/cli.py src/hancode/export.py scripts/demo_mock_loop.py tests/test_mock_demo.py tests/test_cli.py tests/test_export.py
+uv run mypy src/hancode/demo.py src/hancode/cli.py src/hancode/export.py scripts/demo_mock_loop.py
 uv run hancode --help
+uv run hancode demo --provider mock
 ```
+
+### 实际验证
+
+* Red：迁移测试首次导入 `hancode.demo` 时因模块不存在得到预期 `ImportError`；CLI 测试首次导入 `hancode.cli` 时得到预期 `ImportError`；export 测试首次调用 `hancode.export` 时得到预期 `ModuleNotFoundError`。
+* Green：T23 demo 专项迁移后 `9 passed`；CLI 专项 `9 passed`；CLI + export 联合专项 `13 passed`；T24 三模块专项合计 `23 passed`。
+* 分发：`uv build --wheel` 成功，wheel 包含 `hancode/cli.py`、`hancode/demo.py`、`hancode/export.py` 和三份 `_demo_fixture` 文件。
+* 全量：`uv run --no-sync pytest -q -p no:cacheprovider` 为 `600 passed、11 skipped`；Ruff 全量通过；Mypy `src scripts/demo_mock_loop.py` 为 `Success: no issues found in 24 source files`。
+* 入口：`uv run --no-sync hancode --help` 显示 `init`、`demo`、`export`；`uv run --no-sync python scripts/demo_mock_loop.py` 返回码 0。
+* 两阶段新鲜评审：第一阶段确认 CLI 退出码、demo 包资源和 export 白名单方向正确，并要求确认 wheel package data；`uv build --wheel` 已证明资源进入 wheel。第二阶段发现 export 未检查父目录 symlink/junction；新增回归测试先 Red、补充逐级链路检查后 Green，专项 `13 passed`。随后补充 JSON 键顺序和 Typer 缺参 exit code 回归；无 Critical/Important 未解决项。最终将 package-data 从宽泛 glob 收窄为三类明确文件模式，避免 pytest `__pycache__` 进入 wheel。
 
 ### 完成判定
 
 * CLI help 可用。
 * init 能创建 workspace。
 * mock demo 可通过 CLI 运行。
+* export 只导出允许的 delivery artifacts，并对不一致 state、链接和已存在目标 fail-closed。
+* T23 回归、专项 lint/type check、全量门禁和两阶段新鲜评审通过。
 
 ### 非目标 / 边界
 
