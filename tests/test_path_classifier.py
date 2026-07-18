@@ -6,6 +6,7 @@ import pytest
 
 from hancode.config import HanCodeConfig
 from hancode.path_policy import PathClassifier, PathZone
+from hancode.path_security import is_sensitive_path
 
 
 _DEFAULT_TASK_ROOT = object()
@@ -54,6 +55,41 @@ def test_classifies_course_file_as_protected(tmp_path: Path, target: str) -> Non
     result = classifier.classify(target)
 
     assert result is PathZone.PROTECTED
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "credentials/local.json",
+        "secrets/config.yaml",
+        "certificates/client.pem",
+        "keys/id_rsa",
+        "private.key",
+        "server.crt",
+        "client.cer",
+        "bundle.der",
+        "identity.p12",
+        "identity.pfx",
+        "access.token",
+        "id_rsa",
+        ".pem",
+        ".key",
+        ".crt",
+    ],
+)
+def test_classifies_file_tool_credential_paths_as_protected(
+    tmp_path: Path, target: str
+) -> None:
+    classifier = PathClassifier(
+        _config(tmp_path, writable_roots=(tmp_path.resolve(),))
+    )
+
+    assert classifier.classify(target) is PathZone.PROTECTED
+
+
+@pytest.mark.parametrize("target", [".pem", ".key", ".crt"])
+def test_sensitive_path_rejects_hidden_credential_suffix_name(target: str) -> None:
+    assert is_sensitive_path(target) is True
 
 
 def test_protected_pattern_overrides_writable_root(tmp_path: Path) -> None:

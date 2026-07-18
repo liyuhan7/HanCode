@@ -1,0 +1,23 @@
+image: python:3.11-slim
+
+stages:
+  - test
+
+unit-test:
+  stage: test
+  before_script:
+    - python -m pip install --disable-pip-version-check "uv==0.11.8"
+    - uv sync --locked --extra dev
+  script:
+    - uv run pytest
+    - uv run ruff check src tests scripts
+    - uv run mypy src
+    - uv build
+    - uv run hancode --help
+    - uv run hancode demo --provider mock
+    - |
+      wheel_venv="$CI_BUILDS_DIR/hancode-wheel-venv"
+      uv venv "$wheel_venv" --python 3.11
+      uv pip install --python "$wheel_venv/bin/python" dist/*.whl
+      "$wheel_venv/bin/hancode" --help
+      "$wheel_venv/bin/hancode" demo --provider mock

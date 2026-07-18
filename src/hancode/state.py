@@ -33,9 +33,21 @@ _STATE_FIELDS = frozenset(
         "phase_completed",
         "artifacts",
         "delivery_coverage_digest",
+        "pending_checkpoint_recovery_id",
     }
 )
-_LEGACY_STATE_FIELDS = _STATE_FIELDS - {"delivery_coverage_digest"}
+_OPTIONAL_STATE_FIELDS = frozenset(
+    {"delivery_coverage_digest", "pending_checkpoint_recovery_id"}
+)
+_ACCEPTED_STATE_FIELD_SETS = frozenset(
+    _STATE_FIELDS - omitted_fields
+    for omitted_fields in (
+        frozenset(),
+        frozenset({"delivery_coverage_digest"}),
+        frozenset({"pending_checkpoint_recovery_id"}),
+        _OPTIONAL_STATE_FIELDS,
+    )
+)
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
 _ARTIFACT_NAMES = frozenset(
     {
@@ -71,6 +83,7 @@ class TaskState:
     phase_completed: Mapping[str, bool]
     artifacts: Mapping[str, bool]
     delivery_coverage_digest: str | None = None
+    pending_checkpoint_recovery_id: str | None = None
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -122,6 +135,11 @@ class TaskState:
             or any(character not in "0123456789abcdef" for character in self.delivery_coverage_digest)
         ):
             raise _invalid_state_field("delivery_coverage_digest")
+        if self.pending_checkpoint_recovery_id is not None and (
+            not isinstance(self.pending_checkpoint_recovery_id, str)
+            or not self.pending_checkpoint_recovery_id
+        ):
+            raise _invalid_state_field("pending_checkpoint_recovery_id")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )
@@ -136,7 +154,7 @@ def load_state(task_root: Path) -> TaskState:
         data = json.loads(state_file.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("Task state must be a JSON object.")
-        if set(data) not in {_STATE_FIELDS, _LEGACY_STATE_FIELDS}:
+        if frozenset(data) not in _ACCEPTED_STATE_FIELD_SETS:
             raise ValueError("Task state fields do not match schema version 1.")
 
         schema_version = _required_int(data, "schema_version")
@@ -170,6 +188,11 @@ def load_state(task_root: Path) -> TaskState:
                 None
                 if "delivery_coverage_digest" not in data
                 else _optional_str(data, "delivery_coverage_digest")
+            ),
+            pending_checkpoint_recovery_id=(
+                None
+                if "pending_checkpoint_recovery_id" not in data
+                else _optional_str(data, "pending_checkpoint_recovery_id")
             ),
         )
     except (OSError, UnicodeError, ValueError):
@@ -220,6 +243,7 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "phase_completed": dict(state.phase_completed),
         "artifacts": dict(state.artifacts),
         "delivery_coverage_digest": state.delivery_coverage_digest,
+        "pending_checkpoint_recovery_id": state.pending_checkpoint_recovery_id,
     }
     state_file = task_root / "state.json"
     if _is_link(state_file):

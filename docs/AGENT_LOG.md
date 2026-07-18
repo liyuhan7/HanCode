@@ -1203,3 +1203,135 @@
 - Linux CI 的 `python -m pytest` 首次暴露两个测试夹具错误：Python 3.11 POSIX 的 `pathlib.Path` 没有 `is_junction`，测试在验证 fail-closed 行为前就因 monkeypatch 默认 `raising=True` 失败。
 - 将 `tests/test_delivery.py` 与 `tests/test_state.py` 的 `is_junction` monkeypatch 改为 `raising=False`，只在测试运行时注入缺失探针；生产代码仍通过 `getattr` 和异常捕获保持跨平台 fail-closed 语义。
 - 验证：两个 junction 回归测试 2 passed；全量 pytest 585 passed、10 skipped；ruff、mypy、`git diff --check` 通过。
+
+### 2026-07-18 — M7 基线 fixture 换行摘要修正
+
+- Red：M7 基线验证发现 T23 的 6 个测试失败，结果为 6 failed、579 passed、10 skipped；失败点均为 `scripts/demo_mock_loop.py::_validate_fixture` 的 fixture SHA-256 校验。
+- 根因：Windows 工作树启用了 `core.autocrlf=true`，Git 将 fixture 的 LF 转换为 CRLF；校验直接对原始字节摘要，因换行差异将合法工作树误判为 fixture 被篡改。
+- Green：`scripts/demo_mock_loop.py` 新增 `_fixture_digest`，在计算摘要前将 CRLF 规范化为 LF；保留既有 canonical digest，不改变 fixture 内容、安全边界或 demo 行为。
+- 验证：T23 专项 8 passed；全量 pytest 585 passed、10 skipped；ruff、mypy、`git diff --check` 均通过。
+- 范围：仅修正跨平台 fixture 校验兼容性；未扩展 M7 功能范围。
+
+### 2026-07-18 — T24 CLI 最小入口实施、评审与返工
+
+- 前置：基线 fixture 换行修复已独立提交为 `a48d57d`，T23 专项复验 `8 passed`。
+- Task 1 Red→Green：测试首次导入 `hancode.demo` 得到预期模块缺失；runner 迁入 `src/hancode/demo.py`，固定 fixture 放入 `src/hancode/_demo_fixture` 并声明为 package data，`scripts/demo_mock_loop.py` 改为薄入口；T23 demo 专项 `9 passed`。
+- Task 2 Red→Green：CLI 首次导入 `hancode.cli` 得到预期模块缺失；新增 Typer `help/init/demo`、结构化 JSON 输出和稳定退出码；修正 `typer.Exit` 被宽泛异常捕获的问题；CLI 专项 `9 passed`。
+- Task 3 Red→Green：export 首次导入 `hancode.export` 得到预期模块缺失；新增 state 驱动的六类 delivery artifact 导出、staging 原子目录、防覆盖和 fail-closed 错误；CLI + export 联合专项 `13 passed`。
+- 第二阶段评审发现 export 目标父目录 symlink/junction 未被检查；新增逐级路径组件检查与回归测试，先 Red 后 Green（父目录链接测试 `1 passed`），关闭 Important。补充 JSON 键顺序和 Typer 缺参 exit code 回归。
+- 分发验证：`uv build --wheel` 成功，wheel 包含 `hancode/cli.py`、`hancode/demo.py`、`hancode/export.py` 和三份 `_demo_fixture`。
+- 最终验证：T24 三模块专项 `23 passed`；全量 `pytest` `598 passed、11 skipped`；Ruff 全量通过；Mypy `src scripts/demo_mock_loop.py` 为 `Success: no issues found in 24 source files`；help 与脚本 demo 冒烟均返回 0；`git diff --check` 通过。
+- wheel 初次构建发现宽泛 package-data glob 会收集 fixture 测试产生的 `__pycache__`；改为 `_demo_fixture/*.md`、`_demo_fixture/src/*.py`、`_demo_fixture/tests/*.py` 三类明确模式后重新构建，无 warning，wheel 未包含缓存文件。
+- 最终复验：全量 `pytest` `600 passed、11 skipped`；Ruff、Mypy 和 wheel 构建均通过。
+- 范围：T24 仅实现 `help/init/demo/export`；`auth` 留给 T25，通用 `run`、REPL/TUI 和真实 provider 不在本任务范围。
+- 提交：`e272991`（`feat: 完成 T24 CLI 最小入口`）；随后以文档提交补齐本任务的 hash 追踪。
+
+### 2026-07-18 — T25 CredentialProvider 实施、两阶段评审与返工
+
+- 采用规范：用户指定的 M6 `AGENTS.md`、`karpathy-guidelines`、`test-driven-development`、`requesting-code-review`；工作区为 `feature/M7`，只处理 T25，不实现 T26/T27、真实 Provider、TUI/REPL 或企业级 secret manager。
+- 目标与边界：建立 `CredentialProvider` 作为唯一凭据访问边界；支持 `keyring → env → dotenv → missing` 状态优先级；keyring-only 写入/清除；CLI `auth status/login/update/clear --provider`；所有 status、错误、stdout/stderr 均不输出真实 secret。
+- TDD Red → Green：
+  - 核心测试先因 `hancode.credentials` 不存在而在 collection 阶段失败；新增最小 `CredentialStatus`、`SecretStore`、`CredentialProvider` 与三个 wrapper 后专项转绿（12 passed）。
+  - CLI 测试先因 root help 缺 `auth`、模块无可替换 provider 和命令不存在得到 8 项失败；接入 auth 子命令后核心+CLI 为 29 passed。
+  - 第一阶段评审问题逐项先 Red 后 Green：keyring 读取故障结构化、unknown/mock/local 在 prompt 前拒绝、clear confirmation 与 env/dotenv 外部来源保护、真实 dotenv symlink/解码边界；34 passed、1 skipped。
+  - 第二阶段对抗评审问题逐项先 Red 后 Green：`PasswordDeleteError` 不再误报成功、loader 异常统一脱敏、Unicode 控制字符 mask、真实 prompt/confirm 输出通道；最终专项 41 passed、1 skipped。
+- 实现摘要：
+  - `CredentialStatus` 使用 frozen slots dataclass，status 只返回 `configured/provider/source/masked_id`；mask 仅保留最后四个安全可打印字符。
+  - keyring 使用 service `hancode`、account `provider`；写入失败不回退写 `.env`；env/.env 只读，clear 对外部有效来源返回 `credential_external_source_requires_manual_clear`。
+  - dotenv 拒绝 symlink/非普通文件、异常或非 Mapping/非字符串 loader 返回；底层异常不穿透，不回显路径、内容或异常文本。
+  - CLI 的 provider 先校验再 prompt；prompt 和自定义 confirmation 写 stderr，机器结果保持 stdout 单一 JSON；不存在 `--secret` 明文参数。
+- 文档同步：更新 `docs/SPEC.md` 的 auth 命令形态与外部来源 clear 边界；更新 `docs/PLAN.md` T25 接口、测试、实现决策、评审和验证记录；实现提交为 `07f67af`。
+- 新鲜评审：第一阶段 4 个 Important；第二阶段 1 个 Critical + 4 个 Important + 2 个 Minor；返工后新鲜复核 Critical / Important / Minor 均 0，结论 clean。
+- 验证证据：
+  - 专项：`uv run --no-sync pytest tests/test_credentials.py tests/test_cli.py -q -p no:cacheprovider` 等价本地命令最终 `41 passed, 1 skipped`。
+  - 静态检查：Ruff T25 文件通过；MyPy `credentials.py` / `cli.py` 通过。
+  - 全量回归：串行 `pytest -q -p no:cacheprovider` 为 `632 passed, 12 skipped`；并行运行时既有 T23 demo 的固定 2 秒 subprocess 曾出现 1 个资源竞争超时，串行复验通过。
+  - 其余门禁：`uv build` 成功生成 sdist/wheel；`.venv\Scripts\hancode.exe --help`、`auth --help` 返回 0；`hancode demo --provider mock` 在将 `TEMP/TMP` 指向 M7 可写 runtime 临时目录后返回 `completed`；`git diff --check` 通过。
+- 人工干预与剩余风险：当前 Windows 环境不允许创建 symlink 时 symlink 用例跳过；真实 OS keyring 不在测试中调用；env/.env 清除必须由用户在外部源手动完成；宿主用户 Temp ACL 会影响 T23 demo，需要可写 TEMP/TMP；ProviderAdapter/真实 LLM 凭据消费留给后续任务。
+- 提交：`07f67af`（实现）；文档追踪提交待创建。
+
+### 2026-07-18 — T26 Package Build 与 CI
+
+- 使用的技能：`writing-plans`、`executing-plans`、`subagent-driven-development`、`test-driven-development`、`systematic-debugging`、`requesting-code-review`。
+- 任务范围：仅完成 Python package 锁文件、Makefile uv 命令、GitHub/GitLab CI、配置契约测试和过程证据；不实现 Docker、真实 LLM smoke、部署、README 或 Harness Core 变更。
+- TDD Red → Green：
+  - 新增 `tests/test_package_metadata.py` 与 `tests/test_ci_config.py` 后，初始专项为 6 failed、2 passed：缺 `uv.lock`、Makefile 仍调用系统 Python、GitHub CI 使用 pip editable 安装、GitLab CI 缺失。
+  - 最小实现生成 `uv.lock`，Makefile 切换到 `uv run`，两个 CI 使用 Python 3.11、固定 `uv==0.11.8`、`uv sync --locked --extra dev`，并运行 pytest、Ruff、MyPy、build、源码 CLI 与离线 Mock Demo；专项转为 9 passed。
+  - 第一阶段新鲜评审指出 `uv build` 后的 `uv run hancode` 仍是源码 editable 安装，不能覆盖 wheel 目标机安装。新增 wheel smoke 配置断言先 Red，随后两个 CI 都创建独立 Python 3.11 venv、安装 `dist/*.whl` 并运行 help / Mock Demo，专项转为 10 passed。
+  - 第二阶段新鲜评审提出 wheel venv 不应落在工作区、配置测试应校验命令顺序。新断言先因 CI 使用 `.ci-wheel-venv` 失败；最小修复改用 `$RUNNER_TEMP` / `$CI_BUILDS_DIR`，并断言 `uv sync` 在质量门禁前、`uv build` 在 wheel 安装前，专项转为 11 passed。
+- 两阶段新鲜评审：
+  - 第一阶段 Important：wheel 未真实安装验证、`.t26-runtime/` 未清理；前者以独立 wheel venv CI smoke 修复，后者在最终验证后定点删除。
+  - 第二阶段：Critical 0 / Important 0 / Minor 2；两个 Minor 均已按 TDD 处理为 CI 临时目录和顺序契约，随后由最终全量验证确认。
+- 验证证据：
+  - `uv lock --check` 与 `uv sync --locked --extra dev`：通过，检查 31 个 package。
+  - `uv run --no-sync pytest tests/test_package_metadata.py tests/test_ci_config.py -q -p no:cacheprovider`：11 passed。
+  - 全量 `uv run --no-sync pytest -q -p no:cacheprovider --basetemp '.t26-final-runtime\\pytest'`：643 passed、12 skipped。
+  - `uv run --no-sync ruff check src tests scripts`：All checks passed。
+  - `uv run --no-sync mypy src`：Success: no issues found in 24 source files。
+  - `uv build`：成功生成 `hancode-0.1.0.tar.gz` 与 `hancode-0.1.0-py3-none-any.whl`。
+  - 源码环境和独立 Python 3.11 wheel 环境均通过 `hancode --help` 与 `hancode demo --provider mock`，Demo 返回 `status=completed`。
+  - `git diff --check`：通过；构建、wheel、pytest、uv cache 临时目录已清理。
+- 人工干预与环境说明：普通沙箱在 setuptools editable/wheel 构建及 pytest 临时目录清理时返回 `PermissionError`；使用位于 worktree 的受控临时目录并以非沙箱复验成功。该环境限制未改变 package、CI 或安全边界。
+- 提交：`e18c71f`（实现）；文档追踪提交待创建。
+
+### 2026-07-18 — T27 README 运行与分发文档实施
+
+- 范围：仅更新 README、README 契约测试和过程文档；不修改生产 Python、CI、SPEC 核心契约、`.env.example`、真实 Provider、REPL/TUI、WebUI 或 Docker。
+- TDD Red：新增并收紧 `tests/test_readme.py` 后，使用工作树内 `UV_CACHE_DIR` 执行专项，结果为 `4 failed、1 passed`。宿主默认 uv cache 首次因 ACL 返回 `拒绝访问`，改用 `.t27-runtime/uv-cache` 后进入 pytest，失败原因符合预期。
+- TDD Green：README 增加 headless CLI 和 Harness 机制、实际 CLI 命令、Python 3.11+ 源码/wheel 安装、`uv tool install`、MockLLM 无真实凭据运行方式、keyring/env/dotenv 边界、`.env` 明文风险、已知限制和完整验证命令；专项结果为 `6 passed`。
+- 人工干预：首个实现子代理未返回验证报告，主代理检查其草稿后发现契约测试过弱，先补强测试取得 Red，再以最小文档变更转 Green；未扩大任务范围。
+- 当前状态：专项 Green 已取得；全量回归、Ruff、MyPy、build、独立 wheel smoke、两阶段新鲜评审和临时文件清理待完成后回填。
+
+### 2026-07-18 — T27 第一阶段评审与测试契约加固
+
+- 第一阶段新鲜评审：README 的 Spec Compliance 通过；Task quality 发现 1 个 Important，指出 README 测试主要是宽泛 substring 存在性断言，未验证 wheel 命令分区、未实现能力的区域边界和 secret-like 文本。
+- 返工 Red：新增分区解析、当前可用命令负向断言、wheel 裸命令正向断言和 secret-like 文本扫描后，专项结果为 `1 failed、7 passed`；失败原因是 README 尚无 `### wheel 安装后的命令` 分区标题。
+- 返工 Green：补充 wheel 安装命令分区标题，专项结果为 `8 passed`。
+- 范围：仅强化 README 测试和对应文档标题；未修改生产 Python、CI 或 SPEC 核心契约。第二阶段新鲜评审待执行。
+
+### 2026-07-18 — T27 第二阶段评审、Temp ACL 诊断与修正
+
+- 第二阶段新鲜评审发现：在当前受限沙箱按 README 执行 `uv run --no-sync hancode demo --provider mock` 返回 `cli_internal_error`，并指出 PLAN 状态仍为“未开始”、Anthropic secret-like 扫描不足、init/export 行为边界说明不足。
+- 根因调查：默认系统 Temp 和工作树临时目录中的 Python `TemporaryDirectory` 都能创建目录但不能写入/清理内容，复现 `PermissionError: [Errno 13]` / `WinError 5`；这是宿主沙箱 ACL，不是 Demo 命令或 fixture 逻辑错误。
+- 对照验证：以受控权限运行同一 MockLLM 命令返回结构化 `status=completed`，证明正常可写 Temp 环境下 README 命令可用；未越界修改 `src/hancode/demo.py`。README 增加 `TEMP/TMP` 可写前提、`cli_internal_error` 诊断提示和已知环境限制。
+- TDD Red：加入运行环境与 init/export 文档契约后专项为 `2 failed、8 passed`；修正 Markdown 反引号测试断言后再次得到 `1 failed、9 passed`；补齐文档后 Green 为 `10 passed`。
+- 修正内容：secret 扫描加入 `sk-ant-`，环境变量检查改为禁止带值赋值；README 增加 init/export 的实际边界；PLAN 状态改为 `[~] 进行中（待最终验证）`。
+- 第二阶段复审结论：此前的环境阻塞已通过“明确前提 + 正常权限对照验证”处理；全量门禁、最终复审复核、临时清理和最终提交 hash待完成。
+
+### 2026-07-18 — T27 最终验证与完成
+
+- 最终 README 专项：`uv run --no-sync pytest tests/test_readme.py -q -p no:cacheprovider`，`10 passed`。
+- 全量回归：`uv lock --check` 通过；全量 pytest 为 `653 passed、12 skipped`。
+- 质量门禁：Ruff `All checks passed!`；MyPy `Success: no issues found in 24 source files`；`git diff --check` 通过。
+- 分发验证：`uv build` 成功生成 wheel/sdist；源码环境和独立 Python 3.11.15 wheel venv 均通过 `hancode --help` 与 `hancode demo --provider mock`，Demo 返回 `status=completed`。wheel 安装阶段仅出现上游依赖元数据版本规范化 warning，无命令失败。
+- 两阶段评审：第一阶段 Important 已返工并复审通过；第二阶段评审提出的 Temp ACL、PLAN 状态、secret 扫描和 init/export 文档边界均已修正，第二阶段复审最终 Critical/Important/Minor 均为 0。
+- 清理：删除本任务生成的 `.t27-runtime`、`.t27-final-runtime`、`.superpowers`、build/dist/egg-info 和缓存文件；工作树最终只保留提交内容。
+- T27 主实现与修正提交：`f0a1d29`、`187365b`、`81151dc`；最终文档追踪提交另行记录。
+
+### 2026-07-18 — T21-R1 内置工具与 pending 恢复收尾（评审前）
+
+- 任务边界：继续在 `feature/M7` 实现 T21-R1；不实现真实 Provider、REPL/TUI、`hancode run`、Docker、通用 shell、pruning、多 checkpoint 事务或多文件 patch。实现由主 agent 完成，子代理只保留给后续两阶段新鲜评审。
+- Task 1 文档契约：`docs/PLAN.md` 回填 Task 2 提交 `78acbe7`，切换到 `feature/M7` 并补充 T21-R1 接口；`docs/SPEC.md` 与 `docs/系统架构.md` 同步 `aborted` 生命周期、显式 `resume=True` 恢复边界和当前受限测试执行契约。
+- Task 2 Red→Green：共享 `path_security.py` 由 FileTools、PathClassifier、CheckpointManager 共用，新增 certificates/keys、证书后缀和精确凭据名回归；路径别名先 Red 后收紧为 lexical + canonical 双重保护。路径与课程文件专项通过。
+- Task 3 Red→Green：新增 `abort_pending_checkpoint()`、`reconcile_pending_checkpoint()` 和 `pending | committed | rolled_back | aborted` manifest 状态；未修改 pending 自动 abort，已变化 pending 普通启动进入 `inconsistent + rollback_required`，显式恢复只处理已预检快照，成功后保持 `blocked` 等待本次 resume。补充快照 hash、manifest、snapshot link 损坏时零业务文件写入与 recovery trace。
+- Task 4 Red→Green：新增精确 `edit_file()`，唯一匹配、UTF-8、路径/凭据/目录边界和同目录原子替换；`write_file()` / `edit_file()` 的失败 mutation 标记区分 `False` 与替换阶段不确定的 `None`，并验证 CRLF 字节保持。
+- Task 5 Red→Green：新增受限 `run_tests()` 和 `build_default_tool_registry()`，仅使用配置命令、固定 argv/cwd、`shell=False`、捕获输出和 120 秒超时；命令/stdout/stderr 脱敏；默认注册 read/list/search/write/edit/run 六个工具，Mock Demo 通过注入测试工具复用装配。
+- Task 6 Red→Green：AgentLoop 接入显式 pending 恢复授权、abort 补偿和状态重载；可证明未写入的 checkpointed tool failure 会 abort 并继续反馈，`mutation_applied=None/True`、abort 或 state reload 失败均保持 inconsistent；run_tests 的脱敏配置命令进入 state.tests_run 和 trace。
+- 过程修正证据：变更专项首次暴露旧的 `ToolResult` 断言、无关 inconsistent 状态被误清除、create-only checkpoint 缺少 `files/` 目录和工作树初始化断言未包含新 state 字段；均按 Red→Green 修正并回归。
+- 评审前新鲜验证：变更专项 `tests/test_checkpoints.py tests/test_file_tools.py tests/test_feedback_loop.py` 为 `138 passed、7 skipped`；全量 `uv run --no-sync pytest -q -p no:cacheprovider` 为 `711 passed、13 skipped`；Ruff 全量通过；MyPy `src` 无问题；`compileall` 和 `git diff --check` 通过。
+- 当前状态：实现与门禁已完成，第一阶段新鲜评审、修复后的专项复验、第二阶段新鲜评审、最终清理和 T21-R1 提交尚未完成。
+
+### 2026-07-18 — T21-R1 评审返工：隐藏凭据后缀与 PEM 脱敏
+
+- 根因：`PurePosixPath(".pem").suffix` 为空，导致 `.pem`、`.key`、`.crt` 等后缀本身作为文件名时未命中敏感路径规则；`redact_text()` 既没有 PEM 私钥块规则，也没有移除私钥正文和 BEGIN/END 标记。
+- Red：新增 PathClassifier/FileTools 对隐藏凭据后缀的拒绝测试，以及 `PRIVATE KEY`、`RSA PRIVATE KEY`、`OPENSSH PRIVATE KEY`、`ENCRYPTED PRIVATE KEY` 的 PEM 脱敏测试；修复前直接专项结果为 `4 failed`。
+- Green：敏感路径判定增加“文件名等于敏感后缀”的分支；`redact_text()` 在其他通用规则前完整替换 PEM 私钥块；新增安全回归结果为 `7 passed`。
+- 环境记录：带 `tmp_path` 的专项测试受宿主 Windows Temp ACL 阻断，曾出现 pytest 临时目录 `PermissionError`；未将该环境错误当作代码结果，完整专项和最终门禁仍待在可写临时目录中重新验证。
+
+### 2026-07-18 — T21-R1 评审返工后全量验证
+
+- 开发者在 `feature/M7` 使用独立可写临时目录 `C:\Temp\HanCode-t21r1` 重新执行全量门禁。
+- 安全专项：`7 passed`。
+- 全量 pytest：`724 passed, 13 skipped in 30.69s`。
+- 质量门禁：Ruff `All checks passed!`；MyPy `Success: no issues found in 27 source files`；compileall 退出码 0；`git diff --check` 通过。Git 输出的 LF/CRLF 为行尾转换提示，不是 diff 错误。
+- 当前状态：代码修复及全量验证已有证据；两阶段新鲜评审、评审结论回填、最终清理和 T21-R1 提交仍待完成。

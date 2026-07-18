@@ -162,10 +162,14 @@ class ScriptedTools:
         *,
         events: list[str] | None = None,
         write_success: bool = True,
+        write_mutation: bool | None = None,
+        test_command: str | None = None,
     ) -> None:
         self.actions: list[Action] = []
         self.events = events
         self.write_success = write_success
+        self.write_mutation = write_mutation
+        self.test_command = test_command
 
     def dispatch(self, action: Action) -> ToolResult:
         if self.events is not None:
@@ -177,12 +181,14 @@ class ScriptedTools:
                 action_name="run_tests",
                 exit_code=1,
                 stderr="E   AssertionError: expected retry\n1 failed",
+                command=self.test_command,
             )
         if action.tool_name == "write_file" and not self.write_success:
             return ToolResult(
                 success=False,
                 action_name="write_file",
                 error_summary="Source write failed.",
+                mutation_applied=self.write_mutation,
             )
         return ToolResult(success=True, action_name=action.tool_name or "unknown")
 
@@ -345,6 +351,40 @@ class RecordingCheckpointManager:
         return replace(pending, status="committed", rollback_available=True, files=tuple(
             replace(file, after_sha256="a" * 64) for file in pending.files
         ))
+
+
+class AbortRecordingCheckpointManager(RecordingCheckpointManager):
+    def __init__(self, events: list[str], *, abort_error: HanCodeError | None = None) -> None:
+        super().__init__(events)
+        self.abort_error = abort_error
+
+    def abort(
+        self, task_id: str, checkpoint_id: str, *, restore_files: bool
+    ) -> CheckpointManifest:
+        self.events.append("abort")
+        assert task_id == "task-001"
+        assert checkpoint_id == "ckpt-001"
+        assert restore_files is False
+        if self.abort_error is not None:
+            raise self.abort_error
+        pending = self._pending_manifest or _checkpoint_manifest(task_id)
+        return replace(pending, status="aborted", rollback_available=False)
+
+
+class StatePersistingAbortCheckpointManager(AbortRecordingCheckpointManager):
+    def abort(
+        self, task_id: str, checkpoint_id: str, *, restore_files: bool
+    ) -> CheckpointManifest:
+        result = super().abort(
+            task_id, checkpoint_id, restore_files=restore_files
+        )
+        state_store = self._state_store
+        assert state_store is not None
+        state_store.save(
+            task_id,
+            replace(state_store.state, latest_checkpoint=None),
+        )
+        return result
 
 
 class StatePersistingCheckpointManager(RecordingCheckpointManager):
@@ -814,6 +854,100 @@ def test_checkpointed_source_write_failure_marks_state_inconsistent_and_stops() 
     assert result.risks[0].level == "high"
 
 
+def test_checkpointed_no_mutation_failure_aborts_and_reinjects_feedback() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    checkpoint_manager = AbortRecordingCheckpointManager(events)
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=ScriptedTools(
+            events=events,
+            write_success=False,
+            write_mutation=False,
+        ),
+        checkpoint_manager=checkpoint_manager,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert events == ["create", "dispatch", "abort"]
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "max_steps_exceeded"
+    assert result.final_state.inconsistent is False
+    assert result.final_state.rollback_required is False
+
+
+def test_checkpoint_abort_reloads_the_persisted_checkpoint_pointer() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    checkpoint_manager = StatePersistingAbortCheckpointManager(events)
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=ScriptedTools(
+            events=events,
+            write_success=False,
+            write_mutation=False,
+        ),
+        checkpoint_manager=checkpoint_manager,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.final_state.latest_checkpoint is None
+    assert state_store.state.latest_checkpoint is None
+
+
+def test_checkpoint_abort_failure_keeps_the_task_fail_closed() -> None:
+    events: list[str] = []
+    state_store = MemoryStateStore(_retry_code_state())
+    checkpoint_manager = AbortRecordingCheckpointManager(
+        events,
+        abort_error=HanCodeError(
+            StructuredError(
+                error_code="pending_checkpoint_abort_failed",
+                message="Abort storage is unavailable.",
+                phase=Phase.CODE.value,
+                denied_rule="pending_checkpoint_abort_persistence_required",
+                suggested_fix="Repair checkpoint storage.",
+            )
+        ),
+    )
+    loop = _loop(
+        llm=MockLLM([_retry_write_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        policy=AllowedPolicy(requires_checkpoint=True),
+        tools=ScriptedTools(
+            events=events,
+            write_success=False,
+            write_mutation=False,
+        ),
+        checkpoint_manager=checkpoint_manager,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert events == ["create", "dispatch", "abort"]
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "pending_checkpoint_abort_failed"
+    assert result.final_state.inconsistent is True
+    assert result.final_state.rollback_required is True
+
+
 def test_checkpoint_commit_failure_marks_state_inconsistent_and_stops() -> None:
     events: list[str] = []
     state_store = MemoryStateStore(_retry_code_state())
@@ -922,6 +1056,27 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
         "tool_completed",
     ]
     assert result.trace_events == tuple(trace_appender.events)
+
+
+def test_run_tests_persists_only_a_redacted_configured_command() -> None:
+    state_store = MemoryStateStore(_state())
+    trace_appender = RecordingTraceAppender()
+    loop = _loop(
+        llm=MockLLM([_run_tests_action()]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(test_command="pytest -q --token=secret-value"),
+        trace_appender=trace_appender,
+        max_steps=1,
+    )
+
+    loop.run("task-001")
+
+    assert state_store.state.tests_run == ("pytest -q --token=[REDACTED]",)
+    tool_event = next(event for event in trace_appender.events if event.event_type == "tool_failed")
+    assert tool_event.observation is not None
+    assert tool_event.observation["command"] == "pytest -q --token=[REDACTED]"
 
 
 def test_mutation_guard_is_released_between_two_source_writes() -> None:

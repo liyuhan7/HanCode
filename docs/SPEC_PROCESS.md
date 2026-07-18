@@ -436,3 +436,19 @@ PLAN 的任务依赖最终收敛为 T1-T27 的细粒度任务链：
 - 是否能从 `非目标 / 边界` 避免引入真实 LLM、复杂 WebUI、Docker demo 或现成 agent framework。
 
 如果实现 agent 仍需要口头解释某个任务如何开始，说明 PLAN 的任务卡还不够完整，应先修订 PLAN，而不是继续实现。
+
+## 18. T27 README 与当前交付能力对齐
+
+T27 将 README 从实现阶段占位说明更新为可供陌生用户执行的运行与分发文档。README 现在以当前 headless CLI 为事实来源，列出 `init`、`demo --provider mock`、`export` 和带 `--provider` 的 auth 命令，并给出 Python 3.11+、uv 锁定依赖、wheel 构建和安装步骤。
+
+本次修订明确区分了已经实现的 CredentialProvider 凭据边界和未实现的真实 Provider 执行：MockLLM demo 不需要真实凭据或网络；keyring 是首选来源，环境变量和 `.env` 只作为读取来源；`.env` 的明文风险、外部来源需要人工清除以及禁止提交真实 API 密钥均在 README 中说明。
+
+README 的已知限制明确记录当前没有 `hancode run`、REPL/TUI/WebUI、真实 Provider 执行和 Docker 必需分发路径，避免把 SPEC 中规划的能力误写成当前可用功能。新增 `tests/test_readme.py` 将这些关键文档承诺转成确定性文本契约。
+
+T27 已取得 README 专项 TDD Red（`4 failed、1 passed`）和 Green（`6 passed`）证据；全量验证、独立 wheel 冷启动 smoke、两阶段新鲜评审和最终清理结果由实现完成后继续回填。
+
+第一阶段新鲜评审进一步指出，仅检查关键词存在不足以保护文档承诺。T27 因此新增了按 README 分区的正反断言和 secret-like 文本扫描：当前可用命令区域不得承诺未实现能力，wheel 区域必须包含安装后的裸 CLI 命令。新增断言先得到 `1 failed、7 passed`，补充 `### wheel 安装后的命令` 标题后得到 `8 passed`；第二阶段评审和全量门禁仍待完成。
+
+第二阶段冷启动评审在受限 Windows 沙箱执行 MockLLM demo 时触发 `TemporaryDirectory` 的 Temp ACL 拒绝。通过读取完整 traceback、复现默认 Temp 和工作树 Temp、再以受控权限运行对照命令，确认这是环境限制：正常可写 Temp 下 demo 返回 `status=completed`，代码行为无需扩大 T27 修改范围。README 因此明确 `TEMP/TMP` 必须可写，并说明 `cli_internal_error` 的排查方向。
+
+同一阶段还促使 README 契约测试覆盖 Anthropic 风格 secret-like 前缀、非空环境变量赋值、init/export 行为边界；测试最终 Green 为 `10 passed`。T27 最终验证已完成：全量 pytest `653 passed、12 skipped`，Ruff、MyPy、lock check、package build、源码 CLI 和独立 Python 3.11 wheel smoke 均通过；两阶段新鲜复审最终无 Critical/Important/Minor。受限沙箱的 Temp ACL 风险已作为 README 运行前提记录，未被误判为生产代码缺陷。

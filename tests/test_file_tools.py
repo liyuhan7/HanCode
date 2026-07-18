@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from hancode.actions import Action, ActionType
-from hancode.file_tools import list_files, read_file, search_text, write_file
+from hancode.file_tools import (
+    edit_file,
+    list_files,
+    read_file,
+    redact_text,
+    search_text,
+    write_file,
+)
 from hancode.models import Phase
 from hancode.tools import ToolRegistry, ToolResult
 
@@ -119,6 +126,22 @@ def test_read_file_rejects_symlink_escape(tmp_path: Path) -> None:
     )
 
 
+def test_read_file_rejects_sensitive_path_resolving_to_ordinary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ordinary_file = tmp_path / "ordinary.txt"
+    ordinary_file.write_text("ordinary content\n", encoding="utf-8")
+    _resolve_sensitive_alias(monkeypatch, tmp_path / ".env.local", ordinary_file)
+
+    result = read_file(tmp_path, ".env.local")
+
+    assert result == ToolResult(
+        success=False,
+        action_name="read_file",
+        error_summary="Credential files cannot be accessed.",
+    )
+
+
 def test_read_file_redacts_secret_like_content(tmp_path: Path) -> None:
     sensitive_values = ["env-secret", "bearer-secret", "sk-exampletoken", "json-secret"]
     (tmp_path / "config.txt").write_text(
@@ -157,6 +180,25 @@ def test_read_file_redacts_quoted_assignment_and_password_json(tmp_path: Path) -
     assert content.count("[REDACTED]") == 2
 
 
+@pytest.mark.parametrize(
+    "label",
+    ["PRIVATE KEY", "RSA PRIVATE KEY", "OPENSSH PRIVATE KEY", "ENCRYPTED PRIVATE KEY"],
+)
+def test_redact_text_redacts_pem_private_key_block(label: str) -> None:
+    private_key = (
+        f"-----BEGIN {label}-----\n"
+        "base64-private-key-material\n"
+        f"-----END {label}-----"
+    )
+
+    redacted = redact_text(f"certificate={private_key}")
+
+    assert "base64-private-key-material" not in redacted
+    assert f"BEGIN {label}" not in redacted
+    assert f"END {label}" not in redacted
+    assert "[REDACTED]" in redacted
+
+
 def test_write_file_inside_workspace(tmp_path: Path) -> None:
     result = write_file(tmp_path, "answer.txt", "你好\n")
 
@@ -164,9 +206,76 @@ def test_write_file_inside_workspace(tmp_path: Path) -> None:
         success=True,
         action_name="write_file",
         output={"path": "answer.txt", "bytes_written": len("你好\n".encode("utf-8"))},
+        mutation_applied=True,
     )
     assert (tmp_path / "answer.txt").read_text(encoding="utf-8") == "你好\n"
     assert (tmp_path / "answer.txt").read_bytes() == "你好\n".encode("utf-8")
+
+
+def test_edit_file_replaces_exactly_one_match_atomically(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "main.py"
+    target.parent.mkdir()
+    target.write_bytes(b"value = 'before'\n")
+
+    result = edit_file(tmp_path, "src/main.py", "'before'", "'after'")
+
+    assert result == ToolResult(
+        success=True,
+        action_name="edit_file",
+        output={
+            "path": "src/main.py",
+            "replacements": 1,
+            "bytes_written": len("value = 'after'\n".encode("utf-8")),
+        },
+        mutation_applied=True,
+    )
+    assert target.read_text(encoding="utf-8") == "value = 'after'\n"
+
+
+def test_edit_file_preserves_existing_crlf_bytes(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "main.py"
+    target.parent.mkdir()
+    target.write_bytes(b"before\r\nold\r\n")
+
+    result = edit_file(tmp_path, "src/main.py", "old", "new")
+
+    assert result.success is True
+    assert target.read_bytes() == b"before\r\nnew\r\n"
+
+
+def test_edit_file_reports_no_mutation_when_match_is_not_unique(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "main.py"
+    target.parent.mkdir()
+    target.write_text("old\nold\n", encoding="utf-8")
+
+    result = edit_file(tmp_path, "src/main.py", "old", "new")
+
+    assert result == ToolResult(
+        success=False,
+        action_name="edit_file",
+        error_summary="Edit target must contain old_string exactly once.",
+        mutation_applied=False,
+    )
+    assert target.read_text(encoding="utf-8") == "old\nold\n"
+
+
+def test_edit_file_marks_replacement_failure_as_uncertain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "src" / "main.py"
+    target.parent.mkdir()
+    target.write_bytes(b"before\n")
+
+    monkeypatch.setattr(
+        "hancode.file_tools.os.replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+
+    result = edit_file(tmp_path, "src/main.py", "before", "after")
+
+    assert result.success is False
+    assert result.mutation_applied is None
+    assert target.read_bytes() == b"before\n"
 
 
 def test_write_file_overwrites_existing_file(tmp_path: Path) -> None:
@@ -176,6 +285,7 @@ def test_write_file_overwrites_existing_file(tmp_path: Path) -> None:
     result = write_file(tmp_path, "answer.txt", "new\n")
 
     assert result.success is True
+    assert result.mutation_applied is True
     assert target.read_text(encoding="utf-8") == "new\n"
 
 
@@ -186,6 +296,7 @@ def test_write_file_rejects_missing_parent_directory(tmp_path: Path) -> None:
         success=False,
         action_name="write_file",
         error_summary="Parent directory does not exist.",
+        mutation_applied=False,
     )
     assert not (tmp_path / "missing").exists()
 
@@ -200,7 +311,45 @@ def test_write_file_rejects_credential_files(tmp_path: Path, path: str) -> None:
         success=False,
         action_name="write_file",
         error_summary="Credential files cannot be accessed.",
+        mutation_applied=False,
     )
+
+
+def test_write_file_rejects_sensitive_path_resolving_to_ordinary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ordinary_file = tmp_path / "ordinary.txt"
+    ordinary_file.write_text("ordinary content\n", encoding="utf-8")
+    _resolve_sensitive_alias(monkeypatch, tmp_path / ".env.local", ordinary_file)
+
+    result = write_file(tmp_path, ".env.local", "must not overwrite\n")
+
+    assert result == ToolResult(
+        success=False,
+        action_name="write_file",
+        error_summary="Credential files cannot be accessed.",
+        mutation_applied=False,
+    )
+    assert ordinary_file.read_text(encoding="utf-8") == "ordinary content\n"
+
+
+def _resolve_sensitive_alias(
+    monkeypatch: pytest.MonkeyPatch, sensitive_alias: Path, ordinary_file: Path
+) -> None:
+    try:
+        sensitive_alias.symlink_to(ordinary_file)
+        return
+    except OSError:
+        pass
+
+    original_resolve = Path.resolve
+
+    def resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == sensitive_alias:
+            return ordinary_file
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
 
 
 def test_write_file_rejects_path_outside_workspace(tmp_path: Path) -> None:
@@ -213,6 +362,7 @@ def test_write_file_rejects_path_outside_workspace(tmp_path: Path) -> None:
         success=False,
         action_name="write_file",
         error_summary="Path must stay inside the project root.",
+        mutation_applied=False,
     )
     assert not (tmp_path / "outside.txt").exists()
 
@@ -224,6 +374,7 @@ def test_write_file_rejects_content_that_cannot_be_encoded_as_utf8(tmp_path: Pat
         success=False,
         action_name="write_file",
         error_summary="Content is not valid UTF-8.",
+        mutation_applied=False,
     )
     assert not (tmp_path / "invalid.txt").exists()
 
@@ -233,10 +384,19 @@ def test_write_file_rejects_content_that_cannot_be_encoded_as_utf8(tmp_path: Pat
     [
         "credentials/local.json",
         "secrets/config.yaml",
+        "certificates/client.pem",
+        "keys/id_rsa",
         "private.key",
         "server.crt",
+        "client.cer",
+        "bundle.der",
+        "identity.p12",
+        "identity.pfx",
         "access.token",
         "id_rsa",
+        ".pem",
+        ".key",
+        ".crt",
     ],
 )
 def test_file_tools_reject_common_credential_paths_consistently(
@@ -271,6 +431,7 @@ def test_write_file_preserves_existing_bytes_when_atomic_replacement_fails(
     result = write_file(tmp_path, "answer.txt", "after")
 
     assert result.success is False
+    assert result.mutation_applied is None
     assert target.read_bytes() == b"before"
 
 

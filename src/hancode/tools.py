@@ -16,6 +16,8 @@ class ToolResult:
     stdout: str | None = None
     stderr: str | None = None
     timed_out: bool = False
+    command: str | None = None
+    mutation_applied: bool | None = None
 
 
 Tool = Callable[..., ToolResult]

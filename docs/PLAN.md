@@ -2407,25 +2407,27 @@ uv run --no-sync mypy src
 
 | 元信息           | 值                                 |
 | ------------- | --------------------------------- |
-| 状态            | [~] 进行中（Task 1 安全边界、Task 2 错误优先级与生命周期审计已完成；组2内置工具待实现） |
+| 状态            | [~] 进行中（Task 1-6 已实现；Task 7 门禁、两阶段评审与最终收口中） |
 | 依赖            | T21                              |
 | 可并行           | 分组串行；先安全边界，再工具与恢复          |
-| Worktree / PR | `feature/M5`                       |
+| Worktree / PR | `feature/M7`                       |
 | 主贡献相关         | 是，T21 收尾修复                     |
-| Commit        | Task 1 `b91ed75`；Task 2 待提交    |
+| Commit        | Task 1 `b91ed75`；Task 2 `78acbe7`；T21-R1 收口待提交 |
 
 ### 目标
 
-修复 T22-T27 未明确承接的 T21 缺陷：凭据路径边界、配置联动、资源上限、普通文件原子写入、Windows workspace junction、内置 edit/run 工具、默认工具装配、Trace 完整性与 pending checkpoint 恢复。
+在 `feature/M7` 完成 T21-R1 剩余机制：凭据路径保护一致性、精确文件编辑、受限测试执行、默认工具装配，以及 pending checkpoint 的可审计 abort / 恢复。保持 Mock/stub 可替换、禁止通用 shell，并通过 TDD、结构化错误和证据化验证收口。
 
 ### 修复边界
 
 * checkpoint / trace 达到上限时 fail-closed 拒绝新增，不自动 pruning。（Task 1 已实现）
 * policy denial 保留为主错误；trace 写失败作为审计风险，不得导致工具执行。（Task 2 已实现：`policy_denied` 主错误保留、trace 失败降级为 `Risk`）
 * 纯审计标记点（phase_started / phase_completed / run_completed / policy_denied）trace 写失败降级为 risk 不掩盖主错误；变更与工具执行点（tool_called / source_write_authorized / checkpoint）保持 fail-closed。（Task 2 已实现）
-* `edit_file` 使用恰好一次匹配规则和原子写入；`run_tests` 只执行配置命令，禁止 `shell=True`。（**待实现**：`tools.py` 目前仅有 `ToolRegistry` dispatch 骨架，无内置 edit/run 工具与默认装配工厂。**风险**：一旦接入真实 registry，`edit_file` / `run_tests` 调用会在 `src/hancode/tools.py:44` 命中 "Tool is not registered." 返回失败——当前仅测试用 stub registry 可跑通端到端。留给 T22-T27。）
-* PathClassifier / config 已覆盖 `*.key` / `*.pem`；证书类（`*.crt` / `*.cer`）与无扩展名、`.pdf`、`requirements.txt` 分类扩展**待评估**。
-* pending checkpoint 不自动猜测提交；无法确认时标记 inconsistent / rollback_required。（依赖 T21 既有 resume 通道）
+* `edit_file` 使用恰好一次匹配规则和原子写入；失败在可证明未写入时返回 `mutation_applied=False`，原子替换阶段不确定时返回 `None`。
+* `run_tests` 只执行配置提供的命令：用 `shlex.split` 固定拆分 argv，固定 `cwd=project_root`、`shell=False`、`capture_output=True`、`check=False`，默认超时 120 秒；命令和输出先脱敏再进入结果、state 和 trace。
+* 凭据路径由 `src/hancode/path_security.py` 统一判定，覆盖 `.env*`、credentials/secrets/certificates/keys 目录、`id_rsa` 等精确文件名及 `.key/.pem/.token/.crt/.cer/.der/.p12/.pfx` 后缀；后缀本身作为隐藏文件名（如 `.pem`、`.key`、`.crt`）时同样拒绝；FileTools、PathClassifier 和 CheckpointManager 共用该边界。
+* `redact_text()` 在通用规则前完整替换 PEM 私钥块（包括 `PRIVATE KEY`、`RSA PRIVATE KEY`、`OPENSSH PRIVATE KEY` 和 `ENCRYPTED PRIVATE KEY`），不将私钥正文、BEGIN/END 标记写入工具结果、state 或 trace。
+* pending checkpoint 状态只允许 `pending | committed | rolled_back | aborted`。普通启动对未修改 pending 自动 abort；发现源文件变化时保存 `inconsistent + rollback_required` 并 fail-closed；只有 `resume=True` 才恢复已校验的 before snapshot。恢复成功后状态为 `blocked`，由显式 resume 转为 running；manifest、快照、hash、symlink/junction 无法验证时不写业务文件。
 * 不接真实 LLM、真实凭据或网络 provider；不提前实现 T22-T27 的交付任务。
 
 ### 涉及文件
@@ -2436,13 +2438,71 @@ uv run --no-sync mypy src
 * `src/hancode/trace.py`
 * `src/hancode/tools.py`
 * `src/hancode/agent_loop.py`
+* `src/hancode/path_security.py`
+* `src/hancode/test_tools.py`
+* `src/hancode/tool_factory.py`
 * 对应 `tests/` 回归测试与本文件、`docs/AGENT_LOG.md`
 
 ### 验证要求
 
 * 每组先新增失败测试，再实现最小修复。
 * 通过专项 pytest、全量 pytest、Ruff、MyPy、源码编译和 `git diff --check`。
-* 覆盖凭据路径、资源上限、原子写入、junction、工具执行、trace 生命周期/并发、错误优先级和 pending checkpoint 恢复。
+* 覆盖凭据路径、原子写入、junction、精确编辑、受限测试执行、默认工具装配、trace 生命周期/并发、错误优先级和 pending checkpoint 恢复。
+
+### 实现与评审前验证
+
+* 变更专项：`uv run --no-sync pytest tests/test_checkpoints.py tests/test_file_tools.py tests/test_feedback_loop.py -q -p no:cacheprovider` → `138 passed, 7 skipped`。
+* 全量回归：`uv run --no-sync pytest -q -p no:cacheprovider` → `711 passed, 13 skipped`。
+* 质量门禁：`uv run --no-sync ruff check src tests`、`uv run --no-sync mypy src`、`uv run --no-sync python -m compileall -q src tests` 和 `git diff --check` 均通过。
+* 当前仅完成评审前验证；两阶段新鲜评审、评审返工后的最终门禁、临时文件清理和提交号待回填。
+* 评审返工安全回归：隐藏凭据后缀与 PEM 私钥脱敏测试 `7 passed`；首次受宿主 Windows Temp ACL 阻断，已改用可写临时目录重新取得完整门禁。
+* 修复后全量验证（开发者本地 PowerShell）：`uv run --no-sync pytest -q -p no:cacheprovider --basetemp C:\Temp\HanCode-t21r1\pytest` → `724 passed, 13 skipped in 30.69s`；Ruff、MyPy（27 个源文件）、compileall 和 `git diff --check` 均通过。
+
+### 接口与状态契约
+
+```python
+@dataclass(frozen=True, slots=True)
+class ToolResult:
+    command: str | None = None
+    mutation_applied: bool | None = None
+
+def edit_file(
+    project_root: Path,
+    path: str,
+    old_string: str,
+    new_string: str,
+) -> ToolResult: ...
+
+def run_tests(
+    project_root: Path,
+    command: str | None,
+    *,
+    runner: Callable[..., CompletedProcess[str]] | None = None,
+    timeout_seconds: float = 120.0,
+) -> ToolResult: ...
+
+def build_default_tool_registry(
+    config: HanCodeConfig,
+    *,
+    run_tests_tool: Callable[[], ToolResult] | None = None,
+) -> ToolRegistry: ...
+
+def abort_pending_checkpoint(
+    task_root: Path,
+    checkpoint_id: str,
+    *,
+    restore_files: bool,
+) -> CheckpointManifest: ...
+
+def reconcile_pending_checkpoint(
+    task_root: Path,
+    state: TaskState,
+    *,
+    recover: bool,
+) -> TaskState: ...
+```
+
+`CheckpointManifest.status` 的生命周期为 `pending | committed | rolled_back | aborted`。`FilesystemStateStore.reconcile()` 接收 `recover_pending`，AgentLoop 只在调用方显式传入 `resume=True` 时授权 pending 恢复；不接受 LLM 提供的任意测试命令，也不提供通用 shell 或多文件 patch。
 
 ---
 
@@ -2672,12 +2732,12 @@ uv run mypy src
 
 | 元信息           | 值                                 |
 | ------------- | --------------------------------- |
-| 状态            | [ ] 未开始                           |
+| 状态            | [x] 已完成（TDD、两阶段新鲜评审、静态门禁、全量回归与 wheel 验证通过） |
 | 依赖            | T2, T23                           |
 | 可并行           | 可先实现 help / init，demo 命令等 T23 后接入 |
 | Worktree / PR | `feature/M7`                      |
 | 主贡献相关         | 否，交付入口                            |
-| Commit        | TODO                              |
+| Commit        | `e272991` — `feat: 完成 T24 CLI 最小入口` |
 
 ### 目标
 
@@ -2686,7 +2746,14 @@ uv run mypy src
 ### 涉及文件
 
 * `src/hancode/cli.py`
+* `src/hancode/demo.py`
+* `src/hancode/export.py`
+* `src/hancode/_demo_fixture/`
+* `scripts/demo_mock_loop.py`
 * `tests/test_cli.py`
+* `tests/test_export.py`
+* `tests/test_mock_demo.py`
+* `pyproject.toml`
 
 ### SPEC 依据
 
@@ -2698,25 +2765,48 @@ uv run mypy src
 
 ```text
 hancode --help
-hancode init
+hancode init [PROJECT_ROOT]
 hancode demo --provider mock
-hancode run "<goal>" --provider mock
-hancode auth status --provider openai
 hancode export --task task-001 --out deliverables/
 ```
 
 输入：CLI 参数、workspace 路径、provider 参数。
 输出：稳定 exit code、结构化文本输出、必要产物。
-不变量：CLI 只调用 core，不绕过 policy、workspace、demo runner。
+本任务实际实现：`help`、`init`、`demo --provider mock`、`export`；`auth` 留给 T25，通用 `run` 等待 TaskController 对应任务卡。
+不变量：CLI 只调用 core，不绕过 policy、workspace、state 或 demo runner；demo runner 与 fixture 同时包含在源码和 package data 中。
 错误处理：provider 未知 exit code 1；配置错误 exit code 2；trace/checkpoint 不可恢复错误 exit code 3。
+
+### 接口契约
+
+```python
+def run_packaged_mock_demo() -> DeliveryResult: ...
+
+def export_task_artifacts(
+    project_root: Path,
+    task_id: str,
+    output_dir: Path,
+) -> ExportResult: ...
+```
+
+`ExportResult.to_dict()` 输出 `task_id`、`output_dir` 和按稳定顺序排列的 `artifacts`。
+export 只复制 state 声明存在的 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`，不覆盖已有目录，不导出 state、trace、checkpoint 或凭据。
 
 ### 预期失败测试
 
-* `test_cli_help_displays_commands`
-* `test_cli_init_creates_workspace`
+* `test_cli_help_displays_supported_commands`
+* `test_cli_init_creates_workspace_with_deterministic_defaults`
+* `test_cli_init_accepts_explicit_project_metadata`
 * `test_cli_demo_runs_with_mock_provider_without_credentials`
 * `test_cli_unknown_provider_returns_clear_error`
-* `test_cli_exit_code_for_config_error_is_stable`
+* `test_cli_config_error_uses_stable_exit_code`
+* `test_cli_trace_error_uses_unrecoverable_exit_code`
+* `test_cli_export_copies_declared_artifacts`
+* `test_export_copies_only_declared_delivery_artifacts`
+* `test_export_rejects_inconsistent_task_state`
+* `test_export_rejects_existing_output_without_overwriting`
+* `test_export_rejects_task_path_escape`
+* `test_export_rejects_linked_output_parent`
+* `test_packaged_mock_demo_runs_without_repository_fixture`
 
 ### 实现要点
 
@@ -2724,21 +2814,36 @@ hancode export --task task-001 --out deliverables/
 * `demo --provider mock` 不要求真实凭据。
 * CLI 输出状态必须明确：completed / blocked / failed。
 * 不在命令行参数中接收明文 key。
+* demo runner 从 `scripts/` 迁入 `src/hancode/`，脚本仅保留薄入口；固定 fixture 作为 package data，确保 wheel 安装后仍可运行。
+* init 默认当前目录、目录名项目 ID、稳定非空课程/作业占位值；显式参数可以覆盖默认值。
+* export 通过 `task_path`、`load_state` 和 `reconcile_state` 使用权威 task state；目标目录使用临时目录完成后再重命名。
 
 ### 验证步骤
 
 ```powershell
-uv run pytest tests/test_cli.py -v
-uv run ruff check src/hancode/cli.py tests/test_cli.py
-uv run mypy src/hancode/cli.py
+uv run pytest tests/test_mock_demo.py tests/test_cli.py tests/test_export.py -v
+uv run ruff check src/hancode/demo.py src/hancode/cli.py src/hancode/export.py scripts/demo_mock_loop.py tests/test_mock_demo.py tests/test_cli.py tests/test_export.py
+uv run mypy src/hancode/demo.py src/hancode/cli.py src/hancode/export.py scripts/demo_mock_loop.py
 uv run hancode --help
+uv run hancode demo --provider mock
 ```
+
+### 实际验证
+
+* Red：迁移测试首次导入 `hancode.demo` 时因模块不存在得到预期 `ImportError`；CLI 测试首次导入 `hancode.cli` 时得到预期 `ImportError`；export 测试首次调用 `hancode.export` 时得到预期 `ModuleNotFoundError`。
+* Green：T23 demo 专项迁移后 `9 passed`；CLI 专项 `9 passed`；CLI + export 联合专项 `13 passed`；T24 三模块专项合计 `23 passed`。
+* 分发：`uv build --wheel` 成功，wheel 包含 `hancode/cli.py`、`hancode/demo.py`、`hancode/export.py` 和三份 `_demo_fixture` 文件。
+* 全量：`uv run --no-sync pytest -q -p no:cacheprovider` 为 `600 passed、11 skipped`；Ruff 全量通过；Mypy `src scripts/demo_mock_loop.py` 为 `Success: no issues found in 24 source files`。
+* 入口：`uv run --no-sync hancode --help` 显示 `init`、`demo`、`export`；`uv run --no-sync python scripts/demo_mock_loop.py` 返回码 0。
+* 两阶段新鲜评审：第一阶段确认 CLI 退出码、demo 包资源和 export 白名单方向正确，并要求确认 wheel package data；`uv build --wheel` 已证明资源进入 wheel。第二阶段发现 export 未检查父目录 symlink/junction；新增回归测试先 Red、补充逐级链路检查后 Green，专项 `13 passed`。随后补充 JSON 键顺序和 Typer 缺参 exit code 回归；无 Critical/Important 未解决项。最终将 package-data 从宽泛 glob 收窄为三类明确文件模式，避免 pytest `__pycache__` 进入 wheel。
 
 ### 完成判定
 
 * CLI help 可用。
 * init 能创建 workspace。
 * mock demo 可通过 CLI 运行。
+* export 只导出允许的 delivery artifacts，并对不一致 state、链接和已存在目标 fail-closed。
+* T23 回归、专项 lint/type check、全量门禁和两阶段新鲜评审通过。
 
 ### 非目标 / 边界
 
@@ -2752,12 +2857,12 @@ uv run hancode --help
 
 | 元信息           | 值                   |
 | ------------- | ------------------- |
-| 状态            | [ ] 未开始             |
+| 状态            | [x] 已完成             |
 | 依赖            | T3, T24             |
 | 可并行           | 可与 T26 部分并行         |
 | Worktree / PR | `feature/M7`        |
 | 主贡献相关         | 否，安全边界              |
-| Commit        | TODO                |
+| Commit        | `07f67af`           |
 
 ### 目标
 
@@ -2767,6 +2872,8 @@ uv run hancode --help
 
 * `src/hancode/credentials.py`
 * `tests/test_credentials.py`
+* `src/hancode/cli.py`
+* `tests/test_cli.py`
 
 ### SPEC 依据
 
@@ -2777,7 +2884,20 @@ uv run hancode --help
 ### 接口契约
 
 ```python
-class CredentialStatus: ...
+CredentialSource = Literal["keyring", "env", "dotenv", "missing"]
+
+@dataclass(frozen=True, slots=True)
+class CredentialStatus:
+    configured: bool
+    provider: str
+    source: CredentialSource
+    masked_id: str | None = None
+
+class CredentialProvider:
+    def status(self, provider: str) -> CredentialStatus: ...
+    def get_secret(self, provider: str) -> str: ...
+    def set_secret(self, provider: str, value: str) -> None: ...
+    def clear_secret(self, provider: str) -> None: ...
 
 def credentials_status(provider: str) -> CredentialStatus: ...
 def credentials_set(provider: str, secret: str) -> None: ...
@@ -2786,8 +2906,11 @@ def credentials_clear(provider: str) -> None: ...
 
 输入：provider、隐藏输入 secret。
 输出：CredentialStatus 或操作结果。
-不变量：CLI 不通过命令行参数接收明文 key；status 只显示 configured/source/masked_id。
-错误处理：unknown provider 返回结构化错误。
+不变量：CLI 只接受显式 `--provider`，不通过命令行参数接收明文 key；status 只显示 configured/source/masked_id。
+来源优先级：`keyring → env → dotenv → missing`；环境变量固定映射为 `openai_compatible → OPENAI_API_KEY`、`anthropic → ANTHROPIC_API_KEY`，`.env` 默认读取当前目录且只读。
+写入边界：`set_secret` / login / update 只写 OS keyring（service=`hancode`、account=`provider`），keyring 不可用时结构化失败，不静默写 `.env`。
+清除边界：clear 需要确认；仅清除 keyring。若有效来源是 env 或 dotenv，直接返回 `credential_external_source_requires_manual_clear`，不虚报成功；mock/local 不需要 secret，status 为 `configured=true/source=missing`。
+错误处理：unknown provider、空 secret、keyring/dotenv 失败和外部来源清除均返回 `StructuredError`，错误文本不包含 secret。
 
 ### 预期失败测试
 
@@ -2796,27 +2919,51 @@ def credentials_clear(provider: str) -> None: ...
 * `test_credentials_clear_removes_secret`
 * `test_auth_login_does_not_accept_key_argument`
 * `test_fake_credential_provider_for_tests`
+* `test_credential_status_falls_back_to_environment`
+* `test_credential_status_falls_back_to_dotenv`
+* `test_keyring_unavailable_fails_closed_without_writing_dotenv`
+* `test_dotenv_symlink_is_structured`
+* `test_cli_auth_login_uses_hidden_input`
+* `test_cli_auth_update_overwrites_fake_keyring_secret`
+* `test_cli_auth_clear_does_not_claim_to_clear_external_source`
+* `test_cli_auth_login_keeps_json_on_stdout_with_real_hidden_prompt`
 
 ### 实现要点
 
 * 使用 fake credential provider 完成单元测试。
-* keyring 集成可做最小封装。
+* 使用可注入的 fake keyring backend；真实 OS keyring 不进入 CI 测试路径。
 * `.env` fallback 明确标注为本地开发后备。
-* 所有错误输出脱敏。
+* dotenv 路径拒绝 symlink / 非普通文件，读取、解析和 loader 异常统一 fail-closed。
+* 所有错误、CLI stdout/stderr 和 status 输出脱敏；mask 覆盖 Unicode 控制字符与行分隔符。
+* auth 子命令为 `status/login/update/clear --provider <provider>`；login/update 使用隐藏输入，clear 使用 stderr 确认提示。
 
 ### 验证步骤
 
 ```powershell
 uv run pytest tests/test_credentials.py -v
-uv run ruff check src/hancode/credentials.py tests/test_credentials.py
-uv run mypy src/hancode/credentials.py
+uv run pytest tests/test_credentials.py tests/test_cli.py -q
+uv run ruff check src/hancode/credentials.py src/hancode/cli.py tests/test_credentials.py tests/test_cli.py
+uv run mypy src/hancode/credentials.py src/hancode/cli.py
 ```
+
+### 实际验证记录（2026-07-18）
+
+* TDD Red：核心测试首次导入不存在的 `hancode.credentials`；CLI 先验证 auth help、凭据状态、隐藏输入和 keyring failure，得到 8 项预期失败；评审返工的 keyring 读故障、未知 provider、clear 确认/外部来源、删除异常、dotenv 异常、Unicode mask 和 stdout JSON 回归均先 Red 后 Green。
+* Green：CredentialProvider + CLI 专项最终 `41 passed, 1 skipped`；跳过项为当前 Windows 权限不允许创建 symlink 的真实 symlink fixture。
+* 质量门禁：Ruff `src/hancode/credentials.py src/hancode/cli.py tests/test_credentials.py tests/test_cli.py` 通过；MyPy 对两个源文件无错误；串行全量 pytest `632 passed, 12 skipped`；`uv build`、CLI help/auth help 和 `git diff --check` 通过。`hancode demo --provider mock` 在将 `TEMP/TMP` 指向 M7 可写临时目录后返回 `completed`；默认宿主 Temp 的 ACL 失败已记录为环境风险并清理临时目录。
+
+### 评审与返工记录（2026-07-18）
+
+* 第一阶段新鲜评审：发现 keyring 读取故障静默降级、未知 provider 先 prompt、clear 缺确认/外部来源误报成功、dotenv 真实边界测试不足；均以 Red → Green 修复。
+* 第二阶段新鲜对抗评审：发现 `PasswordDeleteError` 被误判成功、交互提示污染 stdout、dotenv 任意异常穿透、clear 公共入口可绕过外部来源、Unicode mask 不完整、mock/local 先 prompt；均以 Red → Green 修复。
+* 第二阶段修复后新鲜复核：Critical / Important / Minor 均 0，结论 clean；专项复核 `41 passed, 1 skipped`。
 
 ### 完成判定
 
 * CLI 不输出 secret 明文。
 * 测试只用 fake secret。
-* 凭据状态可以显示来源和是否配置。
+* 凭据状态可以显示来源和是否配置；login/update/clear 的 stdout 保持机器可读 JSON。
+* keyring、env、dotenv 和 clear 的失败边界均返回结构化错误。
 
 ### 非目标 / 边界
 
@@ -2830,12 +2977,12 @@ uv run mypy src/hancode/credentials.py
 
 | 元信息           | 值                  |
 | ------------- | ------------------ |
-| 状态            | [ ] 未开始            |
+| 状态            | [x] 已完成            |
 | 依赖            | T24, T25           |
 | 可并行           | 不并行；交付验证任务         |
 | Worktree / PR | `feature/M7`       |
 | 主贡献相关         | 否，交付质量保障           |
-| Commit        | TODO               |
+| Commit        | `e18c71f`          |
 
 ### 目标
 
@@ -2905,6 +3052,15 @@ uv run hancode --help
 uv run hancode demo --provider mock
 ```
 
+### 实施与评审记录
+
+* TDD Red：新增 package / CI 配置契约后，初始专项为 6 failed、2 passed；失败准确指向缺失 `uv.lock`、Makefile 未使用 uv、GitHub CI 未运行 uv 门禁与缺失 GitLab `unit-test` job。
+* Green：生成 `uv.lock`，将 Makefile 收敛为 `uv run` 门禁；GitHub Actions 与 GitLab CI 均固定 Python 3.11、`uv==0.11.8`、`uv sync --locked --extra dev`，并执行测试、lint、type check、build、源码 CLI 与 Mock Demo。
+* 第一阶段新鲜评审发现：仅 `uv build` 后运行 editable CLI 不能证明 wheel 可安装。新增 CI 契约测试先 Red，再让两个 CI 都在独立 Python 3.11 venv 安装 `dist/*.whl` 后运行 `hancode --help` 与 `hancode demo --provider mock`。
+* 第二阶段新鲜评审发现两个 Minor：wheel venv 位于工作区、配置测试未锁定命令顺序。修复后 wheel venv 分别位于 `$RUNNER_TEMP` / `$CI_BUILDS_DIR`，测试断言 `uv sync` 先于质量门禁、`uv build` 先于 wheel 安装。
+* 最终验证：配置专项 11 passed；全量 `pytest` 为 643 passed、12 skipped；Ruff 通过；MyPy 为 24 个 source files 无问题；`uv lock --check`、`uv sync --locked --extra dev`、`uv build`、源码 CLI / Mock Demo 以及独立 Python 3.11 wheel CLI / Mock Demo 全部通过。
+* 本机普通沙箱会拒绝 setuptools / pytest 临时目录写入；在受控临时目录以非沙箱方式复验成功。该限制未写入产品配置，也不影响 Linux CI。
+
 ### 完成判定
 
 * 测试、lint、type check、package build 全绿。
@@ -2923,12 +3079,12 @@ uv run hancode demo --provider mock
 
 | 元信息           | 值                            |
 | ------------- | ---------------------------- |
-| 状态            | [ ] 未开始                      |
+| 状态            | [x] 已完成                      |
 | 依赖            | T23, T24, T25, T26           |
 | 可并行           | 最终文档任务                       |
 | Worktree / PR | `feature/M7`                   |
 | 主贡献相关         | 否，最终交付文档                     |
-| Commit        | TODO                         |
+| Commit        | `81151dc`（实现与评审修正）       |
 
 ### 目标
 
@@ -2937,8 +3093,10 @@ uv run hancode demo --provider mock
 ### 涉及文件
 
 * `README.md`
+* `tests/test_readme.py`
 * `docs/AGENT_LOG.md`
 * `docs/SPEC_PROCESS.md`
+* `docs/PLAN.md`
 
 ### SPEC 依据
 
@@ -2968,6 +3126,12 @@ README 至少包含：
 * `test_readme_mentions_no_real_credentials`
 * `test_readme_documents_known_limitations`
 * `test_readme_documents_verification_commands`
+* `test_readme_documents_source_and_wheel_installation`
+* `test_readme_documents_auth_commands_and_hidden_input`
+* `test_readme_scopes_available_and_installed_commands`
+* `test_readme_contains_no_secret_like_literals`
+* `test_readme_documents_runtime_temp_boundary`
+* `test_readme_documents_init_and_export_boundaries`
 
 ### 实现要点
 
@@ -2975,6 +3139,28 @@ README 至少包含：
 * 所有命令必须与 CLI 实际命令一致。
 * AGENT_LOG 记录实现过程、验证命令和人工干预。
 * SPEC_PROCESS 记录冷启动验证结果和修订。
+
+### 当前实现记录
+
+* TDD Red：收紧 README 契约测试后，专项结果为 `4 failed、1 passed`；失败原因是 README 缺少无真实凭据说明、真实 key 禁止提交、完整限制表述、Python 3.11+ 与 wheel 安装方式及 `.env` 明文风险。
+* TDD Green：补充 README 的 headless CLI、Harness 机制、源码/wheel 安装、MockLLM、凭据安全、已知限制和验证命令后，README 专项为 `6 passed`。
+* README 明确当前未提供 `hancode run`、REPL/TUI/WebUI、真实 Provider 执行和 Docker 必需分发路径；这些内容不作为当前功能承诺。
+* 第一阶段新鲜评审确认 README 与 CLI、凭据边界和范围要求一致，但指出测试存在性断言偏弱；新增分区正反断言和 secret-like 文本扫描后，先得到 `1 failed、7 passed`，补充 wheel 安装命令分区标题后 Green 为 `8 passed`。
+* 第二阶段冷启动复核确认受限沙箱的系统 Temp ACL 会导致 Demo 返回 `cli_internal_error`；同一命令在受控可写环境中返回 `status=completed`，因此将 `TEMP/TMP` 可写前提和该环境风险写入 README，不修改生产 Demo。
+* 第二阶段建议已转为测试和文档修正：补充 Anthropic secret-like 前缀、非空环境变量赋值扫描、init/export 行为边界；README 专项最终为 `10 passed`。
+* 全量回归、静态检查、wheel 独立环境 smoke 和第二阶段复审均已完成；最终清理后由文档追踪提交回填本任务证据。
+
+### 最终验证记录
+
+* `uv lock --check`：通过，解析 39 个锁定依赖。
+* README 专项：`10 passed`。
+* 全量 pytest：`653 passed、12 skipped`。
+* Ruff：`All checks passed!`；MyPy：`Success: no issues found in 24 source files`。
+* `uv build`：成功生成 `dist/hancode-0.1.0.tar.gz` 和 `dist/hancode-0.1.0-py3-none-any.whl`。
+* 源码环境 `hancode --help` 和 `hancode demo --provider mock` 均返回 0，Demo `status=completed`。
+* 独立 Python 3.11.15 wheel 环境安装 wheel 后，裸 `hancode --help` 和 `hancode demo --provider mock` 均返回 0，Demo `status=completed`。
+* 两阶段新鲜评审：第一阶段初评 Important 已修复并复审通过；第二阶段初评的 Temp ACL 环境阻塞、状态同步和测试/文档问题已修复，复审 Critical/Important/Minor 均为 0。
+* `git diff --check`：通过；验证生成的 build、dist、wheel venv、uv cache、pytest 临时目录和 `.superpowers` 过程文件已清理。
 
 ### 验证步骤
 

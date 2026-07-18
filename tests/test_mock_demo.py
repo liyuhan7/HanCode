@@ -1,32 +1,19 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from dataclasses import replace
 from pathlib import Path
 import shutil
-import sys
-from types import ModuleType
 
 import pytest
 
+from hancode import demo
 from hancode.errors import HanCodeError, StructuredError
 from hancode.models import Phase, TaskStatus
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_SCRIPT_PATH = _REPOSITORY_ROOT / "scripts" / "demo_mock_loop.py"
 _FIXTURE_ROOT = _REPOSITORY_ROOT / "examples" / "broken_project"
-
-
-def _load_demo_module() -> ModuleType:
-    assert _SCRIPT_PATH.is_file(), "T23 demo script must exist."
-    spec = importlib.util.spec_from_file_location("hancode_demo_mock_loop", _SCRIPT_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _copy_fixture(tmp_path: Path) -> Path:
@@ -42,8 +29,6 @@ def test_mock_demo_runs_without_real_credentials_and_generates_delivery_artifact
     for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HANCODE_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     project_root = _copy_fixture(tmp_path)
-    demo = _load_demo_module()
-
     result = demo.run_mock_demo(project_root)
 
     task_root = project_root / ".hancode" / "tasks" / "task-001"
@@ -66,9 +51,28 @@ def test_mock_demo_runs_without_real_credentials_and_generates_delivery_artifact
     assert "Ran 1 test" in test_report
 
 
+def test_mock_demo_reuses_default_registry_with_injected_test_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: list[object] = []
+    original = demo.build_default_tool_registry
+
+    def build_registry(config: object, *, run_tests_tool: object = None) -> object:
+        captured.append(run_tests_tool)
+        return original(config, run_tests_tool=run_tests_tool)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(demo, "build_default_tool_registry", build_registry)
+
+    result = demo.run_mock_demo(_copy_fixture(tmp_path))
+
+    assert result.status is TaskStatus.COMPLETED
+    assert len(captured) == 1
+    assert callable(captured[0])
+
+
 def test_mock_demo_trace_proves_the_required_control_flow(tmp_path: Path) -> None:
     project_root = _copy_fixture(tmp_path)
-    result = _load_demo_module().run_mock_demo(project_root)
+    result = demo.run_mock_demo(project_root)
     task_root = project_root / ".hancode" / "tasks" / "task-001"
     events = [
         json.loads(line)
@@ -107,7 +111,7 @@ def test_mock_demo_rolls_back_retry_and_preserves_the_protected_assignment(
     project_root = _copy_fixture(tmp_path)
     assignment_before = (project_root / "assignment.md").read_text(encoding="utf-8")
 
-    result = _load_demo_module().run_mock_demo(project_root)
+    result = demo.run_mock_demo(project_root)
 
     task_root = project_root / ".hancode" / "tasks" / "task-001"
     events = [
@@ -125,7 +129,6 @@ def test_mock_demo_rolls_back_retry_and_preserves_the_protected_assignment(
 
 
 def test_mock_demo_is_repeatable_in_fresh_workspaces(tmp_path: Path) -> None:
-    demo = _load_demo_module()
     first_root = _copy_fixture(tmp_path / "first")
     second_root = _copy_fixture(tmp_path / "second")
 
@@ -150,7 +153,7 @@ def test_mock_demo_rejects_a_non_clean_project_root(tmp_path: Path) -> None:
     (project_root / "existing.txt").write_text("keep me", encoding="utf-8")
 
     with pytest.raises(HanCodeError) as error:
-        _load_demo_module().run_mock_demo(project_root)
+        demo.run_mock_demo(project_root)
 
     assert error.value.structured_error.error_code == "mock_demo_fixture_required"
     assert (project_root / "existing.txt").read_text(encoding="utf-8") == "keep me"
@@ -164,7 +167,7 @@ def test_mock_demo_rejects_a_tampered_fixture_before_initializing_workspace(
     assignment.write_text("tampered", encoding="utf-8")
 
     with pytest.raises(HanCodeError) as error:
-        _load_demo_module().run_mock_demo(project_root)
+        demo.run_mock_demo(project_root)
 
     assert error.value.structured_error.error_code == "mock_demo_fixture_required"
     assert not (project_root / ".hancode").exists()
@@ -173,7 +176,6 @@ def test_mock_demo_rejects_a_tampered_fixture_before_initializing_workspace(
 def test_delivery_gate_only_accepts_the_expected_missing_artifact_boundary(
     tmp_path: Path,
 ) -> None:
-    demo = _load_demo_module()
     completed = demo.run_mock_demo(_copy_fixture(tmp_path))
     artifacts = dict(completed.final_state.artifacts)
     artifacts["KNOWLEDGE.md"] = False
@@ -218,7 +220,6 @@ def test_delivery_gate_only_accepts_the_expected_missing_artifact_boundary(
 def test_mock_demo_failure_result_uses_the_persisted_trace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    demo = _load_demo_module()
     project_root = _copy_fixture(tmp_path)
 
     def fail_knowledge(*_args: object, **_kwargs: object) -> Path:
@@ -246,3 +247,21 @@ def test_mock_demo_failure_result_uses_the_persisted_trace(
     assert [(event.event_id, event.seq) for event in result.trace_events] == [
         (event["event_id"], event["seq"]) for event in persisted
     ]
+
+
+def test_packaged_mock_demo_runs_without_repository_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = demo.run_packaged_mock_demo()
+
+    assert result.status is TaskStatus.COMPLETED
+    assert set(result.deliverables) == {
+        "SPEC.md",
+        "PLAN.md",
+        "TEST_REPORT.md",
+        "REVIEW.md",
+        "KNOWLEDGE.md",
+        "DELIVERABLES.md",
+    }

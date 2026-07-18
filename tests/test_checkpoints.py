@@ -8,9 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from hancode.checkpoints import commit_checkpoint, create_checkpoint
+from hancode.checkpoints import (
+    abort_pending_checkpoint,
+    commit_checkpoint,
+    create_checkpoint,
+    reconcile_pending_checkpoint,
+)
 from hancode.errors import HanCodeError, StructuredError
-from hancode.models import Phase
+from hancode.models import Phase, TaskStatus
 from hancode.state import load_state, save_state
 from hancode.workspace import init_project_workspace, init_task_workspace
 import hancode.checkpoints as checkpoints
@@ -251,6 +256,8 @@ def test_create_checkpoint_reports_compensation_failure_when_cleanup_fails(
     [
         Path(".env"),
         Path("credentials/api.key"),
+        Path("certificates/client.pem"),
+        Path("keys/id_rsa"),
         Path("tests/teacher_hidden.py"),
         Path("grading/score.py"),
         Path("samples/input.json"),
@@ -544,6 +551,280 @@ def test_commit_checkpoint_preserves_pending_manifest_when_target_is_missing(tmp
     payload = json.loads((task_root / "checkpoints" / "ckpt-001" / "manifest.json").read_text(encoding="utf-8"))
     assert payload["status"] == "pending"
 
+
+def test_reconcile_pending_checkpoint_aborts_unchanged_checkpoint_and_keeps_prior_rollback(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    source = tmp_path / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    committed = create_checkpoint(task_root, [source], "Before first update.")
+    source.write_text("committed", encoding="utf-8")
+    commit_checkpoint(task_root, committed.checkpoint_id)
+    pending = create_checkpoint(task_root, [Path("src/new_module.py")], "Before new file.")
+
+    reconciled = reconcile_pending_checkpoint(task_root, load_state(task_root), recover=False)
+
+    manifest = json.loads(
+        (task_root / "checkpoints" / pending.checkpoint_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    trace = [
+        json.loads(line)
+        for line in (task_root / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert reconciled.checkpoint_seq == 2
+    assert reconciled.latest_checkpoint == committed.checkpoint_id
+    assert reconciled.inconsistent is False
+    assert manifest["status"] == "aborted"
+    assert manifest["rollback_available"] is False
+    assert trace[-1]["event_type"] == "checkpoint_aborted"
+    assert trace[-1]["observation"] == {"checkpoint_id": pending.checkpoint_id}
+
+
+def test_abort_pending_checkpoint_exposes_the_safe_no_restore_path(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    source = tmp_path / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    committed = create_checkpoint(task_root, [source], "Before first update.")
+    source.write_text("committed", encoding="utf-8")
+    commit_checkpoint(task_root, committed.checkpoint_id)
+    pending = create_checkpoint(task_root, [Path("src/new_module.py")], "Before new file.")
+
+    aborted = abort_pending_checkpoint(
+        task_root,
+        pending.checkpoint_id,
+        restore_files=False,
+    )
+
+    assert aborted.checkpoint_id == pending.checkpoint_id
+    assert aborted.status == "aborted"
+    assert aborted.rollback_available is False
+    state = load_state(task_root)
+    assert state.checkpoint_seq == 2
+    assert state.latest_checkpoint == committed.checkpoint_id
+    assert not (tmp_path / "src" / "new_module.py").exists()
+
+
+def test_reconcile_pending_checkpoint_preserves_existing_inconsistent_state(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    source = tmp_path / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    pending = create_checkpoint(task_root, [source], "Before update.")
+    save_state(
+        task_root,
+        replace(
+            load_state(task_root),
+            status=TaskStatus.INCONSISTENT,
+            inconsistent=True,
+        ),
+    )
+
+    reconciled = reconcile_pending_checkpoint(task_root, load_state(task_root), recover=False)
+
+    manifest = json.loads(
+        (task_root / "checkpoints" / pending.checkpoint_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert reconciled.status is TaskStatus.INCONSISTENT
+    assert reconciled.inconsistent is True
+    assert manifest["status"] == "aborted"
+
+
+def test_reconcile_pending_checkpoint_blocks_changed_source_without_writing_it(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    source = tmp_path / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    pending = create_checkpoint(task_root, [source], "Before update.")
+    source.write_text("after", encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as error:
+        reconcile_pending_checkpoint(task_root, load_state(task_root), recover=False)
+
+    persisted = load_state(task_root)
+    manifest = json.loads(
+        (task_root / "checkpoints" / pending.checkpoint_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert error.value.structured_error.error_code == "pending_checkpoint_recovery_required"
+    assert source.read_text(encoding="utf-8") == "after"
+    assert persisted.status.value == "inconsistent"
+    assert persisted.inconsistent is True
+    assert persisted.rollback_required is True
+    assert persisted.pending_checkpoint_recovery_id == pending.checkpoint_id
+    assert manifest["status"] == "pending"
+    trace = [
+        json.loads(line)
+        for line in (task_root / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert trace[-1]["event_type"] == "checkpoint_recovery_required"
+    assert trace[-1]["observation"] == {"checkpoint_id": pending.checkpoint_id}
+
+
+def test_reconcile_pending_checkpoint_clears_its_recovery_lock_when_source_is_restored(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    source = tmp_path / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    pending = create_checkpoint(task_root, [source], "Before update.")
+    source.write_text("after", encoding="utf-8")
+    with pytest.raises(HanCodeError):
+        reconcile_pending_checkpoint(task_root, load_state(task_root), recover=False)
+    source.write_text("before", encoding="utf-8")
+
+    reconciled = reconcile_pending_checkpoint(task_root, load_state(task_root), recover=False)
+
+    assert reconciled.status is TaskStatus.BLOCKED
+    assert reconciled.inconsistent is False
+    assert reconciled.rollback_required is False
+    assert reconciled.pending_checkpoint_recovery_id is None
+    assert json.loads(
+        (task_root / "checkpoints" / pending.checkpoint_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )["status"] == "aborted"
+
+
+def test_reconcile_pending_checkpoint_recovers_before_snapshots_only_when_requested(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    existing = tmp_path / "src" / "main.py"
+    created = tmp_path / "src" / "new_module.py"
+    existing.parent.mkdir()
+    existing.write_text("before", encoding="utf-8")
+    pending = create_checkpoint(
+        task_root,
+        [existing, created],
+        "Before source update.",
+    )
+    existing.write_text("after", encoding="utf-8")
+    created.write_text("created", encoding="utf-8")
+
+    reconciled = reconcile_pending_checkpoint(task_root, load_state(task_root), recover=True)
+
+    manifest = json.loads(
+        (task_root / "checkpoints" / pending.checkpoint_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert existing.read_text(encoding="utf-8") == "before"
+    assert not created.exists()
+    assert reconciled.checkpoint_seq == 1
+    assert reconciled.latest_checkpoint is None
+    assert reconciled.status is TaskStatus.BLOCKED
+    assert reconciled.inconsistent is False
+    assert reconciled.rollback_required is False
+    assert manifest["status"] == "aborted"
+    assert manifest["rollback_available"] is False
+
+
+def test_pending_recovery_preserves_unrelated_inconsistent_state(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    source = tmp_path / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    pending = create_checkpoint(task_root, [source], "Before update.")
+    source.write_text("after", encoding="utf-8")
+    save_state(
+        task_root,
+        replace(
+            load_state(task_root),
+            status=TaskStatus.INCONSISTENT,
+            inconsistent=True,
+            rollback_required=True,
+            pending_checkpoint_recovery_id="ckpt-999",
+        ),
+    )
+
+    reconciled = reconcile_pending_checkpoint(task_root, load_state(task_root), recover=True)
+
+    assert source.read_text(encoding="utf-8") == "before"
+    assert reconciled.status is TaskStatus.INCONSISTENT
+    assert reconciled.inconsistent is True
+    assert reconciled.rollback_required is True
+    assert reconciled.pending_checkpoint_recovery_id == "ckpt-999"
+    assert json.loads(
+        (task_root / "checkpoints" / pending.checkpoint_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )["status"] == "aborted"
+
+
+def test_reconcile_pending_checkpoint_rejects_tampered_snapshot_without_writing_source(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    source = tmp_path / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    pending = create_checkpoint(task_root, [source], "Before update.")
+    manifest_path = task_root / "checkpoints" / pending.checkpoint_id / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    snapshot = task_root / "checkpoints" / pending.checkpoint_id / payload["files"][0]["before_snapshot"]
+    snapshot.write_text("tampered", encoding="utf-8")
+    source.write_text("after", encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as error:
+        reconcile_pending_checkpoint(task_root, load_state(task_root), recover=True)
+
+    assert error.value.structured_error.error_code == "checkpoint_manifest_invalid"
+    assert source.read_text(encoding="utf-8") == "after"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["status"] == "pending"
+    trace = [
+        json.loads(line)
+        for line in (task_root / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert trace[-1]["event_type"] == "checkpoint_recovery_failed"
+
+
+def test_reconcile_pending_checkpoint_rejects_snapshot_link_without_writing_source(
+    tmp_path: Path,
+) -> None:
+    task_root = _code_task(tmp_path)
+    source = tmp_path / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    pending = create_checkpoint(task_root, [source], "Before update.")
+    manifest_path = task_root / "checkpoints" / pending.checkpoint_id / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    snapshot = task_root / "checkpoints" / pending.checkpoint_id / payload["files"][0]["before_snapshot"]
+    external_snapshot = tmp_path / "external-before.snapshot"
+    snapshot.rename(external_snapshot)
+    try:
+        snapshot.symlink_to(external_snapshot)
+    except OSError as exc:
+        pytest.skip(f"Windows does not permit symlink creation: {exc}")
+    source.write_text("after", encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as error:
+        reconcile_pending_checkpoint(task_root, load_state(task_root), recover=True)
+
+    assert error.value.structured_error.error_code == "checkpoint_manifest_invalid"
+    assert source.read_text(encoding="utf-8") == "after"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["status"] == "pending"
+    trace = [
+        json.loads(line)
+        for line in (task_root / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert trace[-1]["event_type"] == "checkpoint_recovery_failed"
 
 def _code_task(tmp_path: Path, *, phase: Phase = Phase.CODE) -> Path:
     init_project_workspace(tmp_path, "project-001", "SE", "Harness")

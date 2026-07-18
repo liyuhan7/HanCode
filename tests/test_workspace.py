@@ -234,6 +234,7 @@ def test_task_workspace_initializes_required_artifacts(tmp_path: Path) -> None:
         "source_edits_this_phase": 0,
         "rollback_required": False,
         "rollback_done": False,
+        "pending_checkpoint_recovery_id": None,
         "phase_completed": {
             "spec": False,
             "plan": False,
