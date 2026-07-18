@@ -7,19 +7,19 @@ from typing import Mapping
 
 import pytest
 
-from hancode.actions import Action
-from hancode.agent_loop import AgentLoop, InMemoryMutationGuard
-from hancode.checkpoints import CheckpointManifest, RollbackResult
-from hancode.config import HanCodeConfig
-from hancode.errors import HanCodeError, StructuredError
-from hancode.feedback import FeedbackBuilder
-from hancode.llm import MockLLM
-from hancode.models import Phase, TaskStatus
-from hancode.path_policy import PathZone
-from hancode.state import TaskState
-from hancode.tool_policy import PolicyDecision, ToolPolicy
-from hancode.tools import ToolResult
-from hancode.trace import TraceEvent
+from hancode.core.actions import Action
+from hancode.runtime.agent_loop import AgentLoop, InMemoryMutationGuard
+from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
+from hancode.core.config import HanCodeConfig
+from hancode.core.errors import HanCodeError, StructuredError
+from hancode.runtime.feedback import FeedbackBuilder
+from hancode.providers.mock import MockLLM
+from hancode.core.models import Phase, TaskStatus
+from hancode.policy.path_policy import PathZone
+from hancode.core.state import TaskState
+from hancode.policy.tool_policy import PolicyDecision, ToolPolicy
+from hancode.tooling.registry import ToolResult
+from hancode.storage.trace import TraceEvent
 
 
 @dataclass(frozen=True)

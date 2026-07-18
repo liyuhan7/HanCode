@@ -1,6 +1,6 @@
 """Executable wrapper for the packaged offline HanCode demo."""
 
-from hancode.demo import main
+from hancode.demo_support.runner import main
 
 
 if __name__ == "__main__":

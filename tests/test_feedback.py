@@ -4,10 +4,10 @@ import json
 from datetime import UTC, datetime
 import pytest
 
-from hancode.actions import ParseError
-from hancode.checkpoints import CheckpointFile, CheckpointManifest, RollbackResult
-from hancode.errors import HanCodeError, StructuredError
-from hancode.feedback import (
+from hancode.core.actions import ParseError
+from hancode.storage.checkpoints import CheckpointFile, CheckpointManifest, RollbackResult
+from hancode.core.errors import HanCodeError, StructuredError
+from hancode.runtime.feedback import (
     FailureCategory,
     FeedbackBuilder,
     Observation,
@@ -15,9 +15,9 @@ from hancode.feedback import (
     build_observation,
     classify_test_output,
 )
-from hancode.models import OperationStatus, Phase
-from hancode.tool_policy import PolicyDecision
-from hancode.tools import ToolResult
+from hancode.core.models import OperationStatus, Phase
+from hancode.policy.tool_policy import PolicyDecision
+from hancode.tooling.registry import ToolResult
 
 
 @pytest.mark.parametrize(

@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from hancode.errors import StructuredError
-from hancode.models import OperationResult, OperationStatus, Phase, Risk, TaskStatus
+from hancode.core.errors import StructuredError
+from hancode.core.models import OperationResult, OperationStatus, Phase, Risk, TaskStatus
 
 
 def test_phase_allows_only_six_project_phases() -> None:

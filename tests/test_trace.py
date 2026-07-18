@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from hancode.errors import HanCodeError
-from hancode.models import Phase
-from hancode.trace import append_trace
-from hancode.workspace import init_project_workspace, init_task_workspace
+from hancode.core.errors import HanCodeError
+from hancode.core.models import Phase
+from hancode.storage.trace import append_trace
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 def test_trace_appends_jsonl_event_with_event_id(tmp_path: Path) -> None:

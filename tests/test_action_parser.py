@@ -5,9 +5,9 @@ from copy import deepcopy
 
 import pytest
 
-import hancode.actions as actions
-from hancode.actions import Action, ParseError
-from hancode.models import Phase
+import hancode.core.actions as actions
+from hancode.core.actions import Action, ParseError
+from hancode.core.models import Phase
 
 
 @pytest.mark.parametrize(

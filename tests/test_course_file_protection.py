@@ -6,18 +6,18 @@ from typing import Mapping
 
 import pytest
 
-from hancode.agent_loop import AgentLoop, InMemoryMutationGuard
-from hancode.actions import Action
-from hancode.checkpoints import CheckpointManifest, RollbackResult
-from hancode.config import HanCodeConfig, load_config
-from hancode.llm import MockLLM
-from hancode.models import Phase, TaskStatus
-from hancode.path_policy import PathClassifier, PathZone
-from hancode.state import TaskState
-from hancode.tool_policy import ToolPolicy
-from hancode.tools import ToolResult
-from hancode.trace import TraceEvent
-from hancode.workspace import init_project_workspace
+from hancode.runtime.agent_loop import AgentLoop, InMemoryMutationGuard
+from hancode.core.actions import Action
+from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
+from hancode.core.config import HanCodeConfig, load_config
+from hancode.providers.mock import MockLLM
+from hancode.core.models import Phase, TaskStatus
+from hancode.policy.path_policy import PathClassifier, PathZone
+from hancode.core.state import TaskState
+from hancode.policy.tool_policy import ToolPolicy
+from hancode.tooling.registry import ToolResult
+from hancode.storage.trace import TraceEvent
+from hancode.storage.workspace import init_project_workspace
 
 
 @pytest.mark.parametrize(

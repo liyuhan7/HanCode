@@ -5,8 +5,8 @@ from typing import cast
 
 import pytest
 
-from hancode import agent_loop as agent_loop_module
-from hancode.agent_loop import (
+from hancode.runtime import agent_loop as agent_loop_module
+from hancode.runtime.agent_loop import (
     FilesystemAgentLoopPorts,
     FilesystemCheckpointManager,
     FilesystemMutationGuard,
@@ -14,11 +14,11 @@ from hancode.agent_loop import (
     FilesystemStateStore,
     FilesystemTraceAppender,
 )
-from hancode.checkpoints import CheckpointManifest, RollbackResult
-from hancode.errors import HanCodeError
-from hancode.models import Phase
-from hancode.state import TaskState
-from hancode.trace import TraceEvent
+from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
+from hancode.core.errors import HanCodeError
+from hancode.core.models import Phase
+from hancode.core.state import TaskState
+from hancode.storage.trace import TraceEvent
 
 
 def test_filesystem_adapters_delegate_against_one_task_root(

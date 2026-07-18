@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from hancode.actions import Action, ActionType
-from hancode.config import HanCodeConfig
-from hancode.models import Phase, TaskStatus
-from hancode.state import TaskState
-from hancode.path_policy import PathZone
-from hancode.tool_policy import PolicyDecision, ToolPolicy, allowed_tools_for_phase
+from hancode.core.actions import Action, ActionType
+from hancode.core.config import HanCodeConfig
+from hancode.core.models import Phase, TaskStatus
+from hancode.core.state import TaskState
+from hancode.policy.path_policy import PathZone
+from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools_for_phase
 
 
 @pytest.mark.parametrize(

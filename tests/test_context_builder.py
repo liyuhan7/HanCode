@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-import hancode.context as context_module
-from hancode.config import load_config
-from hancode.context import ContextBuilder, build_context
-from hancode.errors import HanCodeError
-from hancode.models import Phase
-from hancode.state import TaskState, load_state
-from hancode.workspace import init_project_workspace, init_task_workspace
+import hancode.runtime.context as context_module
+from hancode.core.config import load_config
+from hancode.runtime.context import ContextBuilder, build_context
+from hancode.core.errors import HanCodeError
+from hancode.core.models import Phase
+from hancode.core.state import TaskState, load_state
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 def test_context_builder_includes_course_context(tmp_path: Path) -> None:

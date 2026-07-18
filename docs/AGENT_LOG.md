@@ -18,6 +18,61 @@
 
 ---
 
+### 2026-07-18 — T28 — P0 分层结构重组与装配层抽取
+
+- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：用户要求只做结构重组和装配层抽取；采用 `storage/`、`tooling/`、`providers/` 等实际包名避开既有平铺文件同名冲突；不重写 AgentLoop、ToolPolicy、Checkpoint、Trace、State 业务逻辑，不引入真实网络 Provider。
+- TDD Red：新增 `tests/test_structure_layers.py` 后专项为 6 failed，失败集中在新包缺失、engine 缺失和 Demo 没有 engine factory。
+- 实现摘要：
+  - 将 core、runtime、policy、storage、tooling 模块迁入分层包，内部 import 改为新路径。
+  - 旧平铺模块改为指向新实现的兼容别名；`test_tools.py` 保留普通 re-export，避免 pytest 将兼容源文件识别为导入路径不一致的测试模块。
+  - 将 `llm.py` 拆为 `providers/base.py`、`providers/mock.py`，新增 mock-only factory、确定性 prompt 序列化和 action schema 适配。
+  - 新增 `runtime/engine.py`，支持默认 filesystem 装配及 provider、registry、trace、max steps 等测试/demo 注入；Demo 改用 engine factory。
+  - 将 CLI 实现迁入 `interfaces/cli.py`，旧 `cli.py` 保留入口代理。
+- Green：结构专项 `6 passed`；全量 pytest `730 passed, 13 skipped`。
+- 验证：Ruff `All checks passed!`；MyPy `Success: no issues found in 61 source files`；compileall、`uv build` 和 `git diff --check` 均通过；`uv build` 日志确认七个新分层包进入 sdist / wheel；`hancode --help`、`hancode demo --provider mock`、`hancode auth status --provider mock` 和临时目录 `hancode init` 均返回成功。
+- 提交：未提交，用户未要求创建提交。
+- 人工干预：根据用户计划选择 `storage/`、`tooling/` 和保留平铺 delivery/demo 的 P0 范围；明确 P1/P2 延后。
+- 经验教训：同名旧模块与新包迁移时，单纯 `from ... import *` 无法保留旧模块级 monkeypatch；模块别名能保持实现身份，但 pytest 收集 `test_tools.py` 时必须使用普通 re-export 保留旧 `__file__`。
+- 剩余风险：P1 `app/`、P2 `demo_support/` / `delivery_support/` 尚未拆分；真实远程 Provider 仍未实现。
+
+---
+
+### 2026-07-18 — T29 — P1 应用服务层拆分
+
+- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：只抽取应用编排，不改现有 workspace、engine、credential、export 和 CLI public behavior；保留 CLI 的 `credential_provider`、project service 和 delivery service 注入点。
+- TDD Red：新增 app 层契约测试后，收集阶段因 `hancode.app` 不存在得到预期 `ModuleNotFoundError`。
+- 实现摘要：新增 `ProjectService`、`TaskService`、`AuthService`、`DeliveryService`，分别封装 workspace 初始化、engine run、显式凭据 provider 和 artifact export；`interfaces/cli.py` 改用 Project/Auth/Delivery service。
+- 验证：`tests/test_app_layers.py tests/test_cli.py` 通过；后续全量 pytest `741 passed, 13 skipped`，Ruff、MyPy 和 CLI smoke 通过。
+- 提交：未提交，用户未要求创建提交。
+- 人工干预：未新增 CLI 命令，TaskService 保留为可注入应用 API，不把 task run 暴露为新的 CLI 行为。
+- 经验教训：AuthService 必须每次从当前模块级 `credential_provider` 建立门面，才能同时支持 CLI 旧 monkeypatch 和显式依赖注入。
+- 剩余风险：真实远程 Provider 仍未实现，属于既有 P0 非目标。
+
+---
+
+### 2026-07-18 — T30 — P2 Demo 与 Delivery 支持包拆分
+
+- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：只改变代码布局和 import；必须保持 Delivery Markdown、DeliveryResult、Demo action、fixture digest、trace/state/checkpoint、package data 和旧模块级 monkeypatch 行为。
+- TDD Red：新路径契约测试初次运行时，`delivery_support` / `demo_support` 导入均因包不存在而失败。
+- 实现摘要：
+  - 将 Delivery 核心实现迁入 `delivery_support/result.py`，在 `reports.py`、`review.py`、`knowledge.py`、`deliverables.py` 提供职责化入口；旧 `delivery.py` 别名到同一实现并保留 monkeypatch 语义。
+  - 将 Demo runner 迁入 `demo_support/runner.py`，action 序列迁入 `actions.py`，fixture 校验/复制/配置迁入 `fixture.py`；旧 `demo.py` 别名到 runner。
+  - 新增 `tests/test_app_layers.py` 覆盖 P1/P2 import、身份、服务注入和 action 确定性。
+- Green：P1/P2 专项与现有 CLI、Delivery、Demo 回归通过；全量 pytest `741 passed, 13 skipped`。
+- 验证：Ruff `All checks passed!`；MyPy `Success: no issues found in 76 source files`；compileall、`uv build`、`git diff --check` 通过；build 日志确认 `app`、`delivery_support`、`demo_support` 进入 sdist/wheel；`hancode --help`、`hancode demo --provider mock`、`hancode auth status --provider mock` 返回成功。
+- 提交：未提交，用户未要求创建提交。
+- 人工干预：保留旧 Delivery/Demo 文件为模块别名；没有删除旧入口或引入新的 CLI 命令。
+- 经验教训：对结构迁移而言，旧模块必须别名到实际实现模块；否则现有测试对 `save_state`、`_is_link`、registry 和 knowledge 的 monkeypatch 会失效。
+- 剩余风险：Delivery 专项中的 13 个平台相关 skip 仍需在具备 symlink 权限的 CI 环境复验；真实远程 Provider 不在本轮范围。
+
+---
+
 ### 2026-07-13 — M3 CI 回归 — search_text 凭据 symlink alias
 
 - 问题：Linux CI 的 symlink 场景中，`search_text` 同时报告真实 `.env` 和指向它的 alias；预期只报告 alias。

@@ -4,9 +4,9 @@ from collections.abc import Mapping
 
 import pytest
 
-import hancode.actions as actions
-from hancode.actions import Action, ActionType, ParseError
-from hancode.models import Phase
+import hancode.core.actions as actions
+from hancode.core.actions import Action, ActionType, ParseError
+from hancode.core.models import Phase
 
 
 def test_tool_call_preserves_valid_fields() -> None:

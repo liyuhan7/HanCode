@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from hancode.models import Phase, TaskStatus
-from hancode.router import RoutingDecision, select_next_phase
-from hancode.state import TaskState
+from hancode.core.models import Phase, TaskStatus
+from hancode.core.router import RoutingDecision, select_next_phase
+from hancode.core.state import TaskState
 
 
 def test_missing_spec_routes_to_spec() -> None:

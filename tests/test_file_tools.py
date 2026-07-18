@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from hancode.actions import Action, ActionType
-from hancode.file_tools import (
+from hancode.core.actions import Action, ActionType
+from hancode.tooling.file_tools import (
     edit_file,
     list_files,
     read_file,
@@ -14,8 +14,8 @@ from hancode.file_tools import (
     search_text,
     write_file,
 )
-from hancode.models import Phase
-from hancode.tools import ToolRegistry, ToolResult
+from hancode.core.models import Phase
+from hancode.tooling.registry import ToolRegistry, ToolResult
 
 
 def test_read_file_inside_workspace(tmp_path: Path) -> None:
@@ -267,7 +267,7 @@ def test_edit_file_marks_replacement_failure_as_uncertain(
     target.write_bytes(b"before\n")
 
     monkeypatch.setattr(
-        "hancode.file_tools.os.replace",
+        "hancode.tooling.file_tools.os.replace",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("replace failed")),
     )
 
@@ -426,7 +426,7 @@ def test_write_file_preserves_existing_bytes_when_atomic_replacement_fails(
     def fail_replace(*_: object, **__: object) -> None:
         raise OSError("simulated replacement failure")
 
-    monkeypatch.setattr("hancode.file_tools.os.replace", fail_replace)
+    monkeypatch.setattr("hancode.tooling.file_tools.os.replace", fail_replace)
 
     result = write_file(tmp_path, "answer.txt", "after")
 

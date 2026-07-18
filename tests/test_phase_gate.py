@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from hancode.models import Phase, TaskStatus
-from hancode.phases import can_write_artifact, can_write_source
-from hancode.state import TaskState, load_state
-from hancode.workspace import init_project_workspace, init_task_workspace
+from hancode.core.models import Phase, TaskStatus
+from hancode.core.phases import can_write_artifact, can_write_source
+from hancode.core.state import TaskState, load_state
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 @pytest.mark.parametrize(

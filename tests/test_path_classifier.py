@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from hancode.config import HanCodeConfig
-from hancode.path_policy import PathClassifier, PathZone
-from hancode.path_security import is_sensitive_path
+from hancode.core.config import HanCodeConfig
+from hancode.policy.path_policy import PathClassifier, PathZone
+from hancode.policy.path_security import is_sensitive_path
 
 
 _DEFAULT_TASK_ROOT = object()

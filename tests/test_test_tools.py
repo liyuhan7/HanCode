@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
-from hancode.test_tools import run_tests
-from hancode.tools import ToolResult
+from hancode.tooling.test_tools import run_tests
+from hancode.tooling.registry import ToolResult
 
 
 def test_run_tests_executes_configured_command_as_argv(tmp_path: Path) -> None:

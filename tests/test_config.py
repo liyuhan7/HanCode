@@ -7,9 +7,9 @@ import subprocess
 
 import pytest
 
-from hancode.config import HanCodeConfig, load_config
-from hancode.errors import HanCodeError
-from hancode.workspace import init_project_workspace
+from hancode.core.config import HanCodeConfig, load_config
+from hancode.core.errors import HanCodeError
+from hancode.storage.workspace import init_project_workspace
 
 
 def test_config_loads_defaults(tmp_path: Path) -> None:

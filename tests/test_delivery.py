@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-import hancode.delivery as delivery
-from hancode.agent_loop import AgentRunResult
-from hancode.delivery import (
+import hancode.delivery_support.result as delivery
+from hancode.runtime.agent_loop import AgentRunResult
+from hancode.delivery_support.result import (
     DeliveryResult,
     KnowledgeCategory,
     KnowledgeItem,
@@ -21,12 +21,12 @@ from hancode.delivery import (
     write_review,
     write_test_report,
 )
-from hancode.feedback import FailureCategory, FeedbackReport
-from hancode.errors import HanCodeError
-from hancode.models import Phase, Risk, TaskStatus
-from hancode.state import load_state, reconcile_state, save_state
-from hancode.trace import TraceEvent
-from hancode.workspace import init_project_workspace, init_task_workspace
+from hancode.runtime.feedback import FailureCategory, FeedbackReport
+from hancode.core.errors import HanCodeError
+from hancode.core.models import Phase, Risk, TaskStatus
+from hancode.core.state import load_state, reconcile_state, save_state
+from hancode.storage.trace import TraceEvent
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 def test_write_test_report_contains_command_status_summary(tmp_path: Path) -> None:

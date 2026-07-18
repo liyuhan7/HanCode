@@ -7,9 +7,9 @@ import shutil
 
 import pytest
 
-from hancode import demo
-from hancode.errors import HanCodeError, StructuredError
-from hancode.models import Phase, TaskStatus
+from hancode.demo_support import runner as demo
+from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.models import Phase, TaskStatus
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]

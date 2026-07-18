@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
-from hancode.actions import Action, ActionType
-from hancode.config import load_config
-from hancode.models import Phase
-from hancode.test_tools import run_tests
-from hancode.tool_factory import build_default_tool_registry
-from hancode.workspace import init_project_workspace
+from hancode.core.actions import Action, ActionType
+from hancode.core.config import load_config
+from hancode.core.models import Phase
+from hancode.tooling.test_tools import run_tests
+from hancode.tooling.factory import build_default_tool_registry
+from hancode.storage.workspace import init_project_workspace
 
 
 def test_default_registry_registers_file_edit_and_configured_test_tools(tmp_path: Path) -> None:

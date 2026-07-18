@@ -6,16 +6,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Literal, Mapping, cast
 
-from hancode.actions import Action
-from hancode.agent_loop import AgentLoop, CheckpointManager, Policy
-from hancode.checkpoints import CheckpointFile, CheckpointManifest, RollbackResult
-from hancode.errors import HanCodeError, StructuredError
-from hancode.llm import MockLLM
-from hancode.models import OperationStatus, Phase, TaskStatus
-from hancode.path_policy import PathZone
-from hancode.state import TaskState
-from hancode.tools import ToolResult
-from hancode.trace import TraceEvent
+from hancode.core.actions import Action
+from hancode.runtime.agent_loop import AgentLoop, CheckpointManager, Policy
+from hancode.storage.checkpoints import CheckpointFile, CheckpointManifest, RollbackResult
+from hancode.core.errors import HanCodeError, StructuredError
+from hancode.providers.mock import MockLLM
+from hancode.core.models import OperationStatus, Phase, TaskStatus
+from hancode.policy.path_policy import PathZone
+from hancode.core.state import TaskState
+from hancode.tooling.registry import ToolResult
+from hancode.storage.trace import TraceEvent
 
 
 @dataclass(frozen=True)

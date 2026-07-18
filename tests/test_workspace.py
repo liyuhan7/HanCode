@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from hancode.errors import HanCodeError
-from hancode.workspace import init_project_workspace, init_task_workspace, task_path
+from hancode.core.errors import HanCodeError
+from hancode.storage.workspace import init_project_workspace, init_task_workspace, task_path
 
 
 def test_workspace_initializes_project_files(tmp_path: Path) -> None:

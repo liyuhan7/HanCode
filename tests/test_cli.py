@@ -8,11 +8,11 @@ import keyring.errors
 import pytest
 from typer.testing import CliRunner
 
-from hancode import cli
-from hancode.credentials import CredentialProvider
-from hancode.errors import HanCodeError, StructuredError
-from hancode.state import load_state, save_state
-from hancode.workspace import init_project_workspace, init_task_workspace
+from hancode.interfaces import cli
+from hancode.app.credentials import CredentialProvider
+from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.state import load_state, save_state
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 runner = CliRunner()

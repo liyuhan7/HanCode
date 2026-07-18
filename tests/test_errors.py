@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from hancode.errors import HanCodeError, StructuredError
-from hancode.models import Phase
+from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.models import Phase
 
 
 def test_structured_error_has_required_spec_fields() -> None:

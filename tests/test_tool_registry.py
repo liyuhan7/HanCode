@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from hancode.actions import Action, ActionType
-from hancode.models import Phase
-from hancode.tools import ToolRegistry, ToolResult
+from hancode.core.actions import Action, ActionType
+from hancode.core.models import Phase
+from hancode.tooling.registry import ToolRegistry, ToolResult
 
 
 def test_register_and_dispatch_tool() -> None:

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from hancode.errors import HanCodeError
-from hancode.models import Phase, TaskStatus
-from hancode.state import TaskState, load_state, reconcile_state, save_state
-from hancode.workspace import init_project_workspace, init_task_workspace
+from hancode.core.errors import HanCodeError
+from hancode.core.models import Phase, TaskStatus
+from hancode.core.state import TaskState, load_state, reconcile_state, save_state
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 def test_state_json_is_single_machine_source(tmp_path: Path) -> None:

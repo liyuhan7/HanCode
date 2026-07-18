@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from hancode.errors import HanCodeError
-from hancode.state import load_state, save_state
-from hancode.workspace import init_project_workspace, init_task_workspace
+from hancode.core.errors import HanCodeError
+from hancode.core.state import load_state, save_state
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 _ARTIFACTS = (
@@ -38,7 +38,7 @@ def _mark_artifacts(task_root: Path, names: tuple[str, ...]) -> None:
 
 
 def test_export_copies_only_declared_delivery_artifacts(tmp_path: Path) -> None:
-    from hancode.export import export_task_artifacts
+    from hancode.storage.export import export_task_artifacts
 
     project_root, task_root = _task_workspace(tmp_path)
     _mark_artifacts(task_root, _ARTIFACTS)
@@ -57,7 +57,7 @@ def test_export_copies_only_declared_delivery_artifacts(tmp_path: Path) -> None:
 
 
 def test_export_rejects_inconsistent_task_state(tmp_path: Path) -> None:
-    from hancode.export import export_task_artifacts
+    from hancode.storage.export import export_task_artifacts
 
     project_root, task_root = _task_workspace(tmp_path)
     state = load_state(task_root)
@@ -72,7 +72,7 @@ def test_export_rejects_inconsistent_task_state(tmp_path: Path) -> None:
 
 
 def test_export_rejects_existing_output_without_overwriting(tmp_path: Path) -> None:
-    from hancode.export import export_task_artifacts
+    from hancode.storage.export import export_task_artifacts
 
     project_root, task_root = _task_workspace(tmp_path)
     _mark_artifacts(task_root, ("SPEC.md",))
@@ -89,7 +89,7 @@ def test_export_rejects_existing_output_without_overwriting(tmp_path: Path) -> N
 
 
 def test_export_rejects_task_path_escape(tmp_path: Path) -> None:
-    from hancode.export import export_task_artifacts
+    from hancode.storage.export import export_task_artifacts
 
     project_root, _ = _task_workspace(tmp_path)
 
@@ -105,7 +105,7 @@ def test_export_rejects_task_path_escape(tmp_path: Path) -> None:
 def test_export_rejects_linked_output_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import hancode.export as export_module
+    import hancode.storage.export as export_module
 
     project_root, task_root = _task_workspace(tmp_path)
     _mark_artifacts(task_root, ("SPEC.md",))

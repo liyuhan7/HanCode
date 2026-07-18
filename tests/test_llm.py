@@ -4,9 +4,9 @@ from copy import deepcopy
 
 import pytest
 
-from hancode.actions import Action, parse_action
-from hancode.llm import MockLLM, MockLLMExhausted
-from hancode.models import Phase
+from hancode.core.actions import Action, parse_action
+from hancode.providers.mock import MockLLM, MockLLMExhausted
+from hancode.core.models import Phase
 
 
 def _read_file_action(path: str) -> dict[str, object]:

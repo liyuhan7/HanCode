@@ -5,8 +5,8 @@ from pathlib import Path
 import keyring.errors
 import pytest
 
-from hancode.credentials import CredentialProvider
-from hancode.errors import HanCodeError, StructuredError
+from hancode.app.credentials import CredentialProvider
+from hancode.core.errors import HanCodeError, StructuredError
 
 
 class FakeCredentialStore:

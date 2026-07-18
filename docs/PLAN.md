@@ -3186,6 +3186,283 @@ git status --short
 
 ---
 
+## T28：P0 分层结构重组与装配层抽取
+
+| 元信息           | 值                                      |
+| ------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | T1-T27                                |
+| 可并行           | 不并行；先迁移模块，再抽取 provider / engine / CLI |
+| Worktree / PR | 当前结构调整会话                         |
+| 主贡献相关         | 否；结构与装配支撑                         |
+| Commit        | 未提交（用户未要求提交）                  |
+
+### 目标
+
+在不改变 AgentLoop、ToolPolicy、Checkpoint、Trace、State 业务逻辑、trace 格式、state schema 和 checkpoint manifest schema 的前提下，将 P0 模块迁移到分层包，并保留旧 import 的兼容代理。通用 AgentLoop 装配统一进入 `runtime/engine.py`，CLI 实现迁移到 `interfaces/cli.py`，Provider 仅实现现有 MockLLM 能力，不引入真实网络调用。
+
+### 本轮边界
+
+* 实际目录使用 `storage/`、`tooling/`，避开既有 `workspace.py`、`tools.py` 与 Python 包同名冲突。
+* P0 包为 `core/`、`runtime/`、`policy/`、`storage/`、`tooling/`、`providers/`、`interfaces/`。
+* `delivery.py`、`credentials.py`、`path_security.py` 保持平铺；`app/`、`demo_support/`、`delivery_support/` 延后到后续任务。
+* 旧路径通过模块别名兼容代理保留，以维持现有测试中的 monkeypatch 和外部 import 行为。
+* `providers/factory.py` 只支持 `mock`；`prompt_builder.py` 与 `action_schema.py` 只提供确定性边界适配，不调用真实 Provider。
+* Demo 本轮不大拆文件，只改为通过 `runtime.engine.create_agent_loop()` 复用通用装配，并继续注入 MockLLM、测试工具和 demo trace 适配器。
+
+### 涉及文件
+
+* `src/hancode/core/`
+* `src/hancode/runtime/`
+* `src/hancode/policy/`
+* `src/hancode/storage/`
+* `src/hancode/tooling/`
+* `src/hancode/providers/`
+* `src/hancode/interfaces/`
+* `src/hancode/actions.py`、`models.py`、`errors.py`、`phases.py`、`state.py`、`router.py`、`config.py`
+* 其他平铺兼容代理：`agent_loop.py`、`context.py`、`feedback.py`、`tool_policy.py`、`path_policy.py`、`workspace.py`、`checkpoints.py`、`trace.py`、`export.py`、`tools.py`、`file_tools.py`、`test_tools.py`、`tool_factory.py`、`llm.py`、`cli.py`
+* `src/hancode/demo.py`、`tests/test_structure_layers.py`、对应回归测试、`docs/AGENT_LOG.md`
+
+### 接口契约
+
+```python
+def create_provider_adapter(config: HanCodeConfig) -> LLMClient: ...
+
+def create_agent_loop(
+    project_root: Path,
+    task_id: str,
+    *,
+    provider: LLMClient | None = None,
+) -> AgentLoop: ...
+
+def run_task(
+    project_root: Path,
+    task_id: str,
+    *,
+    resume: bool = False,
+    provider: LLMClient | None = None,
+) -> AgentRunResult: ...
+```
+
+输入：既有 Project / Task Workspace、可选 MockLLM provider。
+输出：新路径与旧路径均可导入的同一实现对象；engine 返回现有 AgentLoop 结果。
+不变量：兼容代理不复制核心类；新旧导入的类身份一致；默认 provider 只产生空 action 序列；所有现有持久化格式和 public behavior 不变。
+错误处理：未知 provider 返回现有 `NotImplementedError` 边界；核心业务错误继续使用现有结构化错误。
+
+### 预期失败测试
+
+* `test_layered_modules_are_importable`
+* `test_legacy_imports_alias_layered_implementations`
+* `test_provider_factory_supports_only_mock`
+* `test_engine_accepts_injected_provider`
+* `test_cli_entry_proxy_exports_app`
+* `test_demo_uses_engine_factory`
+
+### 实现要点
+
+* 先新增层结构与兼容 / engine 测试并确认 Red，再迁移文件和修正新目录内部 import。
+* 旧模块使用模块别名代理，而不是复制定义，确保现有测试对旧路径模块级依赖和 monkeypatch 继续有效。
+* `runtime/engine.py` 复用 `FilesystemAgentLoopPorts`、`ContextBuilder`、`ToolPolicy`、默认工具注册、`FeedbackBuilder` 和 `load_config`。
+* Demo 的自定义 registry、trace adapter 与 max step 仍通过 engine 的可选装配参数注入，不在 demo 中重新构造 AgentLoop。
+* `providers/base.py`、`providers/mock.py` 从旧 `llm.py` 拆出；旧 `llm.py` 同时代理两者。
+
+### 验证步骤
+
+```powershell
+$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_structure_layers.py -v -p no:cacheprovider
+$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider
+$env:PYTHONPATH='src'; uv run --no-sync ruff check src tests --no-cache
+$env:PYTHONPATH='src'; uv run --no-sync mypy src --cache-dir (Join-Path $env:TEMP 'hancode-mypy-t28')
+$env:PYTHONPATH='src'; uv run --no-sync python -m compileall -q src tests
+git diff --check
+```
+
+### 完成判定
+
+* P0 新路径全部可导入，旧路径仍可用且与新实现保持身份一致。
+* demo、init、auth、export 的现有测试通过；MockLLM 不依赖网络或真实凭据。
+* engine 负责通用 AgentLoop 装配，demo 不再手写 AgentLoop 构造。
+* pytest、Ruff、MyPy、compileall 和 `git diff --check` 有本轮新鲜输出。
+* 本卡状态、验证证据和剩余风险同步到本文件与 `docs/AGENT_LOG.md`。
+
+### 实际验证记录
+
+* TDD Red：新增 `tests/test_structure_layers.py` 后运行专项，6 项均按预期失败：缺少 `core/`、`providers/`、`runtime/`、`interfaces/` 和 engine factory。
+* Green：完成分层迁移、兼容代理、Provider、engine、CLI 和 Demo 装配抽取后，专项 `tests/test_structure_layers.py` 为 `6 passed`。
+* 全量 pytest：`$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 为 `730 passed, 13 skipped`。
+* Ruff：`$env:PYTHONPATH='src'; uv run --no-sync ruff check src tests --no-cache` 输出 `All checks passed!`。
+* MyPy：`$env:PYTHONPATH='src'; uv run --no-sync mypy src --cache-dir (Join-Path $env:TEMP 'hancode-mypy-t28')` 输出 `Success: no issues found in 61 source files`。
+* Compile：`$env:PYTHONPATH='src'; uv run --no-sync python -m compileall -q src tests` 通过。
+* Package build：`uv build` 成功，构建日志确认新 `core`、`interfaces`、`policy`、`providers`、`runtime`、`storage`、`tooling` 包均进入 sdist / wheel；随后已清理 `dist/`、`build/` 和 `src/hancode.egg-info/`。
+* CLI smoke：`uv run --no-sync hancode --help`、`uv run --no-sync hancode demo --provider mock`、`uv run --no-sync hancode auth status --provider mock` 和临时目录 `hancode init` 均返回成功。
+* `git diff --check` 通过；本轮未创建或保留临时缓存、`.pyc`、pytest cache 或 `.superpowers` 文件。
+
+### 实现结果与剩余风险
+
+* `core/`、`runtime/`、`policy/`、`storage/`、`tooling/`、`providers/`、`interfaces/` 均可直接导入；旧平铺模块通过模块别名保持类和函数身份一致。
+* `providers/factory.py` 只装配 `MockLLM([])`；未实现真实 OpenAI / Anthropic provider，符合本卡非目标。
+* P1 `app/`、P2 `demo_support/` 和 `delivery_support/` 已由 T29/T30 完成；`credentials.py`、`path_security.py` 仍按既有边界保留平铺。
+
+### 非目标 / 边界
+
+* 不重写 AgentLoop、ToolPolicy、Checkpoint、Trace、State 业务逻辑。
+* 不拆分 delivery、demo、app，不新增真实 OpenAI / Anthropic 调用。
+* 不改变 trace JSONL、state JSON、checkpoint manifest 或 CLI 命令语义。
+* 不顺手修复与结构迁移无关的既有安全或行为问题。
+
+---
+
+## T29：P1 应用服务层拆分
+
+| 元信息           | 值                                      |
+| ------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | T28                                    |
+| 可并行           | 不并行；先稳定应用门面，再拆分交付与 Demo     |
+| Worktree / PR | 当前结构调整会话                         |
+| 主贡献相关         | 否；应用装配与入口隔离                       |
+| Commit        | 待回填                                  |
+
+### 目标
+
+新增 `app/` 应用服务层，把项目初始化、任务运行、凭据访问和交付导出从 CLI 入口中抽出。服务只调用已有确定性 core/runtime/storage/provider 机制，不改变 CLI 命令、JSON 输出、凭据边界或 export 行为。
+
+### 涉及文件
+
+* `src/hancode/app/__init__.py`
+* `src/hancode/app/project_service.py`
+* `src/hancode/app/task_service.py`
+* `src/hancode/app/auth_service.py`
+* `src/hancode/app/delivery_service.py`
+* `src/hancode/interfaces/cli.py`
+* `tests/test_app_layers.py`
+
+### 接口契约
+
+```python
+class ProjectService:
+    def initialize(self, project_root: Path, project_id: str, course_name: str, assignment_name: str) -> Path: ...
+
+class TaskService:
+    def initialize(self, project_root: Path, task_id: str) -> Path: ...
+    def run(self, project_root: Path, task_id: str, *, resume: bool = False, provider: LLMClient | None = None) -> AgentRunResult: ...
+
+class AuthService:
+    def status(self, provider: str) -> CredentialStatus: ...
+    def set_secret(self, provider: str, secret: str) -> None: ...
+    def clear_secret(self, provider: str) -> None: ...
+
+class DeliveryService:
+    def export(self, project_root: Path, task_id: str, output_dir: Path) -> ExportResult: ...
+```
+
+### 预期失败测试
+
+* `test_app_service_modules_are_importable`
+* `test_project_service_delegates_workspace_initialization`
+* `test_task_service_delegates_engine_run`
+* `test_auth_service_uses_injected_credential_provider`
+* `test_delivery_service_delegates_export`
+* `test_cli_uses_application_services_without_changing_output`
+
+### 非目标 / 边界
+
+* 不重写 `CredentialProvider`、`AgentLoop`、`Delivery` 或 `Export` 业务逻辑。
+* 不新增 CLI 命令，不改变现有 exit code、stdout JSON 或 secret 处理。
+* 不把服务层变成全局状态容器；凭据服务支持显式 provider 注入。
+
+### 实际验证记录
+
+* TDD Red：新增 app 层契约测试后，收集阶段因 `hancode.app` 不存在得到预期 `ModuleNotFoundError`。
+* Green：新增 `ProjectService`、`TaskService`、`AuthService`、`DeliveryService`，并让 `interfaces/cli.py` 通过服务调用；`tests/test_app_layers.py` 的 P1 用例通过。
+* 回归：`tests/test_app_layers.py tests/test_cli.py` 通过，CLI 现有 JSON、exit code、凭据注入行为不变。
+* 全量与静态门禁记录统一回填在 T30 的最终验证中。
+
+### 完成判定
+
+* 应用服务模块可独立导入并可注入 fake / provider。
+* CLI 不再直接编排 workspace、credential 和 export 机制。
+* 现有 CLI public behavior 保持不变。
+
+---
+
+## T30：P2 Demo 与 Delivery 支持包拆分
+
+| 元信息           | 值                                      |
+| ------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | T29                                    |
+| 可并行           | 不并行；Delivery 兼容层先于 Demo 入口迁移    |
+| Worktree / PR | 当前结构调整会话                         |
+| 主贡献相关         | 否；交付与演示结构整理                       |
+| Commit        | 待回填                                  |
+
+### 目标
+
+将交付产物能力拆到 `delivery_support/`，将离线 Demo 拆到 `demo_support/`，旧 `delivery.py` 与 `demo.py` 保留兼容模块别名。拆分只改变代码位置和 import，不改变产物内容、trace、state、checkpoint、Demo 结果或 package data。
+
+### 涉及文件
+
+* `src/hancode/delivery_support/__init__.py`
+* `src/hancode/delivery_support/result.py`
+* `src/hancode/delivery_support/reports.py`
+* `src/hancode/delivery_support/review.py`
+* `src/hancode/delivery_support/knowledge.py`
+* `src/hancode/delivery_support/deliverables.py`
+* `src/hancode/demo_support/__init__.py`
+* `src/hancode/demo_support/runner.py`
+* `src/hancode/demo_support/actions.py`
+* `src/hancode/demo_support/fixture.py`
+* `src/hancode/delivery.py`、`src/hancode/demo.py`
+* `tests/test_app_layers.py`、`tests/test_delivery.py`、`tests/test_mock_demo.py`
+
+### 接口契约
+
+```python
+from hancode.delivery_support.result import DeliveryResult, ResultBuilder
+from hancode.delivery_support.reports import write_test_report
+from hancode.delivery_support.review import write_review
+from hancode.delivery_support.knowledge import write_knowledge
+from hancode.delivery_support.deliverables import write_deliverables
+
+from hancode.demo_support.runner import run_mock_demo, run_packaged_mock_demo
+```
+
+不变量：旧路径导入的类、函数与新路径保持身份一致；旧模块级 monkeypatch 仍作用于实际实现；Demo fixture 仍作为 package data 分发；Delivery 专项测试的 Markdown、状态和脱敏断言不变。
+
+### 预期失败测试
+
+* `test_delivery_support_modules_are_importable`
+* `test_delivery_legacy_imports_alias_support_modules`
+* `test_demo_support_modules_are_importable`
+* `test_demo_legacy_imports_alias_runner`
+* `test_demo_action_sequences_remain_deterministic`
+
+### 非目标 / 边界
+
+* 不修改交付 Markdown schema、DeliveryResult schema、Demo action 序列或 fixture digest。
+* 不新增真实 LLM、网络调用、Docker 或新的 Demo 场景。
+* 不删除旧入口文件；兼容层继续服务现有 CLI、测试和外部 import。
+
+### 实际验证记录
+
+* TDD Red：新路径契约测试初次运行时，`delivery_support` / `demo_support` 导入均因包不存在而失败。
+* Green：Delivery 实现迁入 `delivery_support/result.py`，报告、审查、知识、交付由责任模块包装导出；Demo runner、action sequence、fixture 校验分别迁入 `demo_support/`。
+* 兼容回归：旧 `hancode.delivery` / `hancode.demo` 指向新实现；现有 Delivery 的模块级 `save_state`、`_is_link` monkeypatch 和 Demo 的 registry / knowledge monkeypatch 均保持有效。
+* 全量 pytest：`$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 为 `741 passed, 13 skipped`。
+* Ruff：`$env:PYTHONPATH='src'; uv run --no-sync ruff check src tests --no-cache` 通过。
+* MyPy：`$env:PYTHONPATH='src'; uv run --no-sync mypy src --cache-dir (Join-Path $env:TEMP 'hancode-mypy-t29-t30-full')` 输出 `Success: no issues found in 76 source files`。
+* Compile 与 package：`python -m compileall -q src tests`、`uv build` 通过；构建日志确认 `app`、`delivery_support`、`demo_support` 进入 sdist / wheel。
+* CLI smoke：`hancode --help`、`hancode demo --provider mock`、`hancode auth status --provider mock` 均返回成功；`git diff --check` 通过。
+
+### 完成判定
+
+* P1/P2 新路径可导入，旧路径兼容代理可用。
+* Delivery 产物、Demo trace/state/checkpoint 和 CLI 行为保持现有测试契约。
+* 全量测试、静态检查、编译和 package build 均有本轮新鲜证据。
+
+---
+
 # 8. 需求→任务追溯
 
 | SPEC 锚点                                  | 对应任务                         | 状态  |
@@ -3207,12 +3484,15 @@ git status --short
 | FR-15 测试报告与审查记录                          | T20, T22                     | [ ] |
 | FR-16 Knowledge Delivery                 | T22, T23                     | [ ] |
 | 凭据与分发设计                                  | T25, T26, T27                | [ ] |
-| 可测试性约定                                   | T1-T27                       | [ ] |
+| 可测试性约定                                   | T1-T30                       | [ ] |
 | 测试失败分类                                   | T20                          | [ ] |
 | 危险动作与治理护栏                                | T13, T14, T15                | [ ] |
 | 记忆与上下文机制                                 | T2, T19                      | [ ] |
 | 主贡献维度                                    | T16, T17, T18, T20, T21, T23 | [ ] |
 | MockLLM 机制演示                             | T9, T21, T23                 | [ ] |
+| P0 分层结构与装配抽取                         | T28                         | [x] |
+| P1 应用服务层拆分                             | T29                         | [x] |
+| P2 Demo 与 Delivery 支持包拆分                 | T30                         | [x] |
 
 ### 里程碑分支与 PR 一览
 

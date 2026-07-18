@@ -8,17 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from hancode.checkpoints import (
+from hancode.storage.checkpoints import (
     abort_pending_checkpoint,
     commit_checkpoint,
     create_checkpoint,
     reconcile_pending_checkpoint,
 )
-from hancode.errors import HanCodeError, StructuredError
-from hancode.models import Phase, TaskStatus
-from hancode.state import load_state, save_state
-from hancode.workspace import init_project_workspace, init_task_workspace
-import hancode.checkpoints as checkpoints
+from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.models import Phase, TaskStatus
+from hancode.core.state import load_state, save_state
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
+import hancode.storage.checkpoints as checkpoints
 
 
 _CREATED_AT = datetime(2026, 7, 13, 8, 30, tzinfo=UTC)
