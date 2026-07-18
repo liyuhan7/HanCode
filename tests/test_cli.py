@@ -4,10 +4,12 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import keyring.errors
 import pytest
 from typer.testing import CliRunner
 
 from hancode import cli
+from hancode.credentials import CredentialProvider
 from hancode.errors import HanCodeError, StructuredError
 from hancode.state import load_state, save_state
 from hancode.workspace import init_project_workspace, init_task_workspace
@@ -30,7 +32,283 @@ def test_cli_help_displays_supported_commands() -> None:
     assert "init" in result.stdout
     assert "demo" in result.stdout
     assert "export" in result.stdout
-    assert "auth" not in result.stdout
+    assert "auth" in result.stdout
+
+
+def test_cli_auth_help_displays_four_commands() -> None:
+    result = runner.invoke(cli.app, ["auth", "--help"])
+
+    assert result.exit_code == 0
+    assert "login" in result.stdout
+    assert "status" in result.stdout
+    assert "update" in result.stdout
+    assert "clear" in result.stdout
+
+
+class _FakeCredentialStore:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service_name: str, username: str) -> str | None:
+        return self.values.get((service_name, username))
+
+    def set_password(self, service_name: str, username: str, password: str) -> None:
+        self.values[(service_name, username)] = password
+
+    def delete_password(self, service_name: str, username: str) -> None:
+        self.values.pop((service_name, username), None)
+
+
+def _fake_cli_provider(store: _FakeCredentialStore) -> CredentialProvider:
+    return CredentialProvider(keyring_backend=store, environ={})
+
+
+def test_cli_auth_status_returns_masked_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "cli-secret-9f2a"
+    store = _FakeCredentialStore()
+    store.set_password("hancode", "openai_compatible", secret)
+    monkeypatch.setattr(cli, "credential_provider", _fake_cli_provider(store))
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "status", "--provider", "openai_compatible"],
+    )
+
+    assert result.exit_code == 0
+    payload = _payload(result)
+    assert payload == {
+        "command": "auth status",
+        "credential": {
+            "configured": True,
+            "masked_id": "****9f2a",
+            "provider": "openai_compatible",
+            "source": "keyring",
+        },
+        "status": "completed",
+    }
+    assert secret not in result.stdout
+
+
+def test_cli_auth_login_uses_hidden_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FakeCredentialStore()
+    provider = _fake_cli_provider(store)
+    prompt_options: dict[str, object] = {}
+
+    def fake_prompt(text: str, **kwargs: object) -> str:
+        prompt_options.update(kwargs)
+        return "login-secret-abcd"
+
+    monkeypatch.setattr(cli, "credential_provider", provider)
+    monkeypatch.setattr(cli.typer, "prompt", fake_prompt)
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "login", "--provider", "openai_compatible"],
+    )
+
+    assert result.exit_code == 0
+    assert prompt_options["hide_input"] is True
+    assert store.get_password("hancode", "openai_compatible") == "login-secret-abcd"
+    assert "login-secret-abcd" not in result.stdout
+
+
+def test_cli_auth_login_rejects_unknown_provider_before_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_prompt(*args: object, **kwargs: object) -> str:
+        raise AssertionError("unknown provider must not request a credential")
+
+    monkeypatch.setattr(cli.typer, "prompt", fail_prompt)
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "login", "--provider", "unknown"],
+    )
+
+    assert result.exit_code == 1
+    assert _payload(result)["error"]["error_code"] == "credential_unknown_provider"  # type: ignore[index]
+
+
+def test_cli_auth_login_for_mock_rejects_before_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "credential_provider", _fake_cli_provider(_FakeCredentialStore()))
+
+    def fail_prompt(*args: object, **kwargs: object) -> str:
+        raise AssertionError("mock provider must not request a credential")
+
+    monkeypatch.setattr(cli.typer, "prompt", fail_prompt)
+
+    result = runner.invoke(cli.app, ["auth", "login", "--provider", "mock"])
+
+    assert result.exit_code == 1
+    assert _payload(result)["error"]["error_code"] == "credential_not_required"  # type: ignore[index]
+
+
+def test_cli_auth_login_keeps_json_on_stdout_with_real_hidden_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "real-prompt-secret-ef01"
+    store = _FakeCredentialStore()
+    monkeypatch.setattr(cli, "credential_provider", _fake_cli_provider(store))
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "login", "--provider", "openai_compatible"],
+        input=f"{secret}\n",
+    )
+
+    assert result.exit_code == 0
+    assert _payload(result)["command"] == "auth login"
+    assert secret not in (result.stdout + result.stderr)
+
+
+def test_cli_auth_update_overwrites_fake_keyring_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FakeCredentialStore()
+    store.set_password("hancode", "anthropic", "old-secret-1234")
+    monkeypatch.setattr(cli, "credential_provider", _fake_cli_provider(store))
+    monkeypatch.setattr(cli.typer, "prompt", lambda *args, **kwargs: "new-secret-5678")
+
+    result = runner.invoke(cli.app, ["auth", "update", "--provider", "anthropic"])
+
+    assert result.exit_code == 0
+    assert store.get_password("hancode", "anthropic") == "new-secret-5678"
+    assert "new-secret-5678" not in result.stdout
+
+
+def test_cli_auth_clear_removes_fake_keyring_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FakeCredentialStore()
+    store.set_password("hancode", "openai_compatible", "clear-secret-90ab")
+    monkeypatch.setattr(cli, "credential_provider", _fake_cli_provider(store))
+    monkeypatch.setattr(cli, "_confirm_clear", lambda: True)
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "clear", "--provider", "openai_compatible"],
+    )
+
+    assert result.exit_code == 0
+    assert store.get_password("hancode", "openai_compatible") is None
+    assert "clear-secret-90ab" not in result.stdout
+
+
+def test_cli_auth_clear_requires_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FakeCredentialStore()
+    store.set_password("hancode", "openai_compatible", "confirm-secret-12ab")
+    monkeypatch.setattr(cli, "credential_provider", _fake_cli_provider(store))
+    monkeypatch.setattr(cli, "_confirm_clear", lambda: False)
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "clear", "--provider", "openai_compatible"],
+    )
+
+    assert result.exit_code == 1
+    assert store.get_password("hancode", "openai_compatible") == "confirm-secret-12ab"
+    assert _payload(result)["error"]["error_code"] == "credential_clear_cancelled"  # type: ignore[index]
+
+
+def test_cli_auth_clear_keeps_json_on_stdout_with_real_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "real-confirm-secret-78cd"
+    store = _FakeCredentialStore()
+    store.set_password("hancode", "openai_compatible", secret)
+    monkeypatch.setattr(cli, "credential_provider", _fake_cli_provider(store))
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "clear", "--provider", "openai_compatible"],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert _payload(result)["command"] == "auth clear"
+    assert secret not in (result.stdout + result.stderr)
+
+
+def test_cli_auth_clear_does_not_claim_to_clear_external_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = CredentialProvider(
+        keyring_backend=_FakeCredentialStore(),
+        environ={"OPENAI_API_KEY": "external-secret-34cd"},
+    )
+    monkeypatch.setattr(cli, "credential_provider", provider)
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "clear", "--provider", "openai_compatible"],
+    )
+
+    assert result.exit_code == 1
+    assert _payload(result)["error"]["error_code"] == (  # type: ignore[index]
+        "credential_external_source_requires_manual_clear"
+    )
+    assert "external-secret-34cd" not in result.stdout
+
+
+def test_cli_auth_unknown_provider_returns_exit_one() -> None:
+    result = runner.invoke(
+        cli.app,
+        ["auth", "status", "--provider", "unknown"],
+    )
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    assert payload["error"]["error_code"] == "credential_unknown_provider"  # type: ignore[index]
+
+
+def test_cli_auth_keyring_failure_returns_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnavailableCredentialStore(_FakeCredentialStore):
+        def set_password(self, service_name: str, username: str, password: str) -> None:
+            raise keyring.errors.NoKeyringError("backend unavailable")
+
+    monkeypatch.setattr(
+        cli,
+        "credential_provider",
+        _fake_cli_provider(UnavailableCredentialStore()),
+    )
+    monkeypatch.setattr(cli.typer, "prompt", lambda *args, **kwargs: "blocked-secret-ef01")
+
+    result = runner.invoke(
+        cli.app,
+        ["auth", "login", "--provider", "openai_compatible"],
+    )
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    assert payload["error"]["error_code"] == "credential_keyring_unavailable"  # type: ignore[index]
+    assert "blocked-secret-ef01" not in result.stdout
+
+
+def test_cli_auth_does_not_accept_secret_option() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "auth",
+            "login",
+            "--provider",
+            "openai_compatible",
+            "--secret",
+            "command-line-secret",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "command-line-secret" not in (result.stdout + result.stderr)
 
 
 def test_cli_init_creates_workspace_with_deterministic_defaults(tmp_path: Path) -> None:

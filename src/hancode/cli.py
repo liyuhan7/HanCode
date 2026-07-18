@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from hancode.credentials import CredentialProvider
 from hancode.demo import run_packaged_mock_demo
 from hancode.errors import HanCodeError, StructuredError
 from hancode.export import export_task_artifacts
@@ -18,6 +19,13 @@ app = typer.Typer(
     no_args_is_help=True,
     help="HanCode deterministic Coding Agent Harness.",
 )
+auth_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Manage provider credentials without exposing secret values.",
+)
+app.add_typer(auth_app, name="auth")
+credential_provider = CredentialProvider()
 
 
 @app.command()
@@ -102,6 +110,74 @@ def demo(
         ) from None
 
 
+@auth_app.command("status")
+def auth_status(
+    provider: str = typer.Option(..., "--provider", help="Credential provider."),
+) -> None:
+    """Show provider credential status without returning the secret."""
+    try:
+        status = credential_provider.status(provider)
+        _emit(
+            {
+                "command": "auth status",
+                "credential": status.to_dict(),
+                "status": "completed",
+            }
+        )
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc, exit_code=1)) from None
+
+
+@auth_app.command("login")
+def auth_login(
+    provider: str = typer.Option(..., "--provider", help="Credential provider."),
+) -> None:
+    """Store a provider credential using hidden terminal input."""
+    _set_auth_credential("auth login", provider)
+
+
+@auth_app.command("update")
+def auth_update(
+    provider: str = typer.Option(..., "--provider", help="Credential provider."),
+) -> None:
+    """Replace a provider credential using hidden terminal input."""
+    _set_auth_credential("auth update", provider)
+
+
+@auth_app.command("clear")
+def auth_clear(
+    provider: str = typer.Option(..., "--provider", help="Credential provider."),
+) -> None:
+    """Clear the provider credential from the secure store."""
+    try:
+        current_status = credential_provider.status(provider)
+        if current_status.source in {"env", "dotenv"}:
+            raise _cli_error(
+                "credential_external_source_requires_manual_clear",
+                "The active credential is managed outside the secure store.",
+                "Unset the mapped environment variable or remove the local .env value, then retry.",
+                denied_rule="external_credential_source_manual_clear",
+            )
+        if provider not in {"mock", "local"} and not _confirm_clear():
+            raise _cli_error(
+                "credential_clear_cancelled",
+                "Credential clearing was cancelled.",
+                "Confirm the clear operation to remove the keyring credential.",
+                denied_rule="credential_clear_confirmation_required",
+            )
+        credential_provider.clear_secret(provider)
+        status = credential_provider.status(provider)
+        _emit(
+            {
+                "command": "auth clear",
+                "credential": status.to_dict(),
+                "status": "completed",
+            }
+        )
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc, exit_code=1)) from None
+
+
 @app.command("export")
 def export_command(
     task: str = typer.Option(..., "--task", help="Task ID to export."),
@@ -126,6 +202,37 @@ def export_command(
                 )
             )
         ) from None
+
+
+def _set_auth_credential(command: str, provider: str) -> None:
+    try:
+        status = credential_provider.status(provider)
+        if status.provider in {"mock", "local"}:
+            raise _cli_error(
+                "credential_not_required",
+                "This provider does not accept stored credentials.",
+                "Use a remote provider when storing a credential.",
+                denied_rule="provider_credential_not_required",
+            )
+        secret = typer.prompt("Credential", hide_input=True, err=True)
+        credential_provider.set_secret(provider, secret)
+        status = credential_provider.status(provider)
+        _emit(
+            {
+                "command": command,
+                "credential": status.to_dict(),
+                "status": "completed",
+            }
+        )
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc, exit_code=1)) from None
+
+
+def _confirm_clear() -> bool:
+    typer.echo("Clear the stored credential? [y/N]: ", err=True, nl=False)
+    answer = typer.get_text_stream("stdin").readline()
+    typer.echo("", err=True)
+    return answer.strip().lower() in {"y", "yes"}
 
 
 def _emit(payload: dict[str, object]) -> None:

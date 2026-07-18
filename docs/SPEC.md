@@ -889,10 +889,10 @@ HanCode 通过 CLI/TUI 命令管理凭据。
 CLI 命令：
 
 ```bash
-hancode auth login
-hancode auth status
-hancode auth update
-hancode auth clear
+hancode auth login --provider openai_compatible
+hancode auth status --provider openai_compatible
+hancode auth update --provider openai_compatible
+hancode auth clear --provider openai_compatible
 ```
 
 TUI / REPL 命令：
@@ -907,8 +907,8 @@ TUI / REPL 命令：
 录入流程：
 
 ```text
-1. 用户执行 hancode auth login
-2. 系统询问 provider，例如 openai_compatible / anthropic / local
+1. 用户执行 hancode auth login --provider <provider>
+2. 系统校验 provider，例如 openai_compatible / anthropic / local
 3. 系统使用隐藏输入读取 API key
 4. CredentialProvider 将 key 写入 OS Credential Store / Keyring
 5. CLI/TUI 只显示配置成功和脱敏标识
@@ -938,13 +938,15 @@ Key: ****9f2a
 清除流程：
 
 ```text
-1. 用户执行 hancode auth clear
+1. 用户执行 hancode auth clear --provider <provider>
 2. 系统要求确认
-3. CredentialProvider 删除 provider 对应凭据
+3. CredentialProvider 仅删除 provider 对应的 keyring 凭据
 4. 输出清除结果
 5. 真实 LLM 模式下后续任务进入 blocked
 6. MockLLM 模式仍可运行
 ```
+
+如果当前生效来源是环境变量或本地 `.env`，`auth clear` 不修改外部明文来源，返回结构化的手动清理错误；用户清除对应外部值后再重试。CLI 的交互提示写入 stderr，机器可读结果写入 stdout。
 
 禁止输出完整明文 key。禁止将 key 作为命令行参数传入 HanCode。
 

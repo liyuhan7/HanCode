@@ -2797,12 +2797,12 @@ uv run hancode demo --provider mock
 
 | 元信息           | 值                   |
 | ------------- | ------------------- |
-| 状态            | [ ] 未开始             |
+| 状态            | [x] 已完成             |
 | 依赖            | T3, T24             |
 | 可并行           | 可与 T26 部分并行         |
 | Worktree / PR | `feature/M7`        |
 | 主贡献相关         | 否，安全边界              |
-| Commit        | TODO                |
+| Commit        | TODO（实现提交后回填） |
 
 ### 目标
 
@@ -2812,6 +2812,8 @@ uv run hancode demo --provider mock
 
 * `src/hancode/credentials.py`
 * `tests/test_credentials.py`
+* `src/hancode/cli.py`
+* `tests/test_cli.py`
 
 ### SPEC 依据
 
@@ -2822,7 +2824,20 @@ uv run hancode demo --provider mock
 ### 接口契约
 
 ```python
-class CredentialStatus: ...
+CredentialSource = Literal["keyring", "env", "dotenv", "missing"]
+
+@dataclass(frozen=True, slots=True)
+class CredentialStatus:
+    configured: bool
+    provider: str
+    source: CredentialSource
+    masked_id: str | None = None
+
+class CredentialProvider:
+    def status(self, provider: str) -> CredentialStatus: ...
+    def get_secret(self, provider: str) -> str: ...
+    def set_secret(self, provider: str, value: str) -> None: ...
+    def clear_secret(self, provider: str) -> None: ...
 
 def credentials_status(provider: str) -> CredentialStatus: ...
 def credentials_set(provider: str, secret: str) -> None: ...
@@ -2831,8 +2846,11 @@ def credentials_clear(provider: str) -> None: ...
 
 输入：provider、隐藏输入 secret。
 输出：CredentialStatus 或操作结果。
-不变量：CLI 不通过命令行参数接收明文 key；status 只显示 configured/source/masked_id。
-错误处理：unknown provider 返回结构化错误。
+不变量：CLI 只接受显式 `--provider`，不通过命令行参数接收明文 key；status 只显示 configured/source/masked_id。
+来源优先级：`keyring → env → dotenv → missing`；环境变量固定映射为 `openai_compatible → OPENAI_API_KEY`、`anthropic → ANTHROPIC_API_KEY`，`.env` 默认读取当前目录且只读。
+写入边界：`set_secret` / login / update 只写 OS keyring（service=`hancode`、account=`provider`），keyring 不可用时结构化失败，不静默写 `.env`。
+清除边界：clear 需要确认；仅清除 keyring。若有效来源是 env 或 dotenv，直接返回 `credential_external_source_requires_manual_clear`，不虚报成功；mock/local 不需要 secret，status 为 `configured=true/source=missing`。
+错误处理：unknown provider、空 secret、keyring/dotenv 失败和外部来源清除均返回 `StructuredError`，错误文本不包含 secret。
 
 ### 预期失败测试
 
@@ -2841,27 +2859,51 @@ def credentials_clear(provider: str) -> None: ...
 * `test_credentials_clear_removes_secret`
 * `test_auth_login_does_not_accept_key_argument`
 * `test_fake_credential_provider_for_tests`
+* `test_credential_status_falls_back_to_environment`
+* `test_credential_status_falls_back_to_dotenv`
+* `test_keyring_unavailable_fails_closed_without_writing_dotenv`
+* `test_dotenv_symlink_is_structured`
+* `test_cli_auth_login_uses_hidden_input`
+* `test_cli_auth_update_overwrites_fake_keyring_secret`
+* `test_cli_auth_clear_does_not_claim_to_clear_external_source`
+* `test_cli_auth_login_keeps_json_on_stdout_with_real_hidden_prompt`
 
 ### 实现要点
 
 * 使用 fake credential provider 完成单元测试。
-* keyring 集成可做最小封装。
+* 使用可注入的 fake keyring backend；真实 OS keyring 不进入 CI 测试路径。
 * `.env` fallback 明确标注为本地开发后备。
-* 所有错误输出脱敏。
+* dotenv 路径拒绝 symlink / 非普通文件，读取、解析和 loader 异常统一 fail-closed。
+* 所有错误、CLI stdout/stderr 和 status 输出脱敏；mask 覆盖 Unicode 控制字符与行分隔符。
+* auth 子命令为 `status/login/update/clear --provider <provider>`；login/update 使用隐藏输入，clear 使用 stderr 确认提示。
 
 ### 验证步骤
 
 ```powershell
 uv run pytest tests/test_credentials.py -v
-uv run ruff check src/hancode/credentials.py tests/test_credentials.py
-uv run mypy src/hancode/credentials.py
+uv run pytest tests/test_credentials.py tests/test_cli.py -q
+uv run ruff check src/hancode/credentials.py src/hancode/cli.py tests/test_credentials.py tests/test_cli.py
+uv run mypy src/hancode/credentials.py src/hancode/cli.py
 ```
+
+### 实际验证记录（2026-07-18）
+
+* TDD Red：核心测试首次导入不存在的 `hancode.credentials`；CLI 先验证 auth help、凭据状态、隐藏输入和 keyring failure，得到 8 项预期失败；评审返工的 keyring 读故障、未知 provider、clear 确认/外部来源、删除异常、dotenv 异常、Unicode mask 和 stdout JSON 回归均先 Red 后 Green。
+* Green：CredentialProvider + CLI 专项最终 `41 passed, 1 skipped`；跳过项为当前 Windows 权限不允许创建 symlink 的真实 symlink fixture。
+* 质量门禁：Ruff `src/hancode/credentials.py src/hancode/cli.py tests/test_credentials.py tests/test_cli.py` 通过；MyPy 对两个源文件无错误；串行全量 pytest `632 passed, 12 skipped`；`uv build`、CLI help/auth help 和 `git diff --check` 通过。`hancode demo --provider mock` 在将 `TEMP/TMP` 指向 M7 可写临时目录后返回 `completed`；默认宿主 Temp 的 ACL 失败已记录为环境风险并清理临时目录。
+
+### 评审与返工记录（2026-07-18）
+
+* 第一阶段新鲜评审：发现 keyring 读取故障静默降级、未知 provider 先 prompt、clear 缺确认/外部来源误报成功、dotenv 真实边界测试不足；均以 Red → Green 修复。
+* 第二阶段新鲜对抗评审：发现 `PasswordDeleteError` 被误判成功、交互提示污染 stdout、dotenv 任意异常穿透、clear 公共入口可绕过外部来源、Unicode mask 不完整、mock/local 先 prompt；均以 Red → Green 修复。
+* 第二阶段修复后新鲜复核：Critical / Important / Minor 均 0，结论 clean；专项复核 `41 passed, 1 skipped`。
 
 ### 完成判定
 
 * CLI 不输出 secret 明文。
 * 测试只用 fake secret。
-* 凭据状态可以显示来源和是否配置。
+* 凭据状态可以显示来源和是否配置；login/update/clear 的 stdout 保持机器可读 JSON。
+* keyring、env、dotenv 和 clear 的失败边界均返回结构化错误。
 
 ### 非目标 / 边界
 

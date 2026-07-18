@@ -1225,3 +1225,27 @@
 - 最终复验：全量 `pytest` `600 passed、11 skipped`；Ruff、Mypy 和 wheel 构建均通过。
 - 范围：T24 仅实现 `help/init/demo/export`；`auth` 留给 T25，通用 `run`、REPL/TUI 和真实 provider 不在本任务范围。
 - 提交：`e272991`（`feat: 完成 T24 CLI 最小入口`）；随后以文档提交补齐本任务的 hash 追踪。
+
+### 2026-07-18 — T25 CredentialProvider 实施、两阶段评审与返工
+
+- 采用规范：用户指定的 M6 `AGENTS.md`、`karpathy-guidelines`、`test-driven-development`、`requesting-code-review`；工作区为 `feature/M7`，只处理 T25，不实现 T26/T27、真实 Provider、TUI/REPL 或企业级 secret manager。
+- 目标与边界：建立 `CredentialProvider` 作为唯一凭据访问边界；支持 `keyring → env → dotenv → missing` 状态优先级；keyring-only 写入/清除；CLI `auth status/login/update/clear --provider`；所有 status、错误、stdout/stderr 均不输出真实 secret。
+- TDD Red → Green：
+  - 核心测试先因 `hancode.credentials` 不存在而在 collection 阶段失败；新增最小 `CredentialStatus`、`SecretStore`、`CredentialProvider` 与三个 wrapper 后专项转绿（12 passed）。
+  - CLI 测试先因 root help 缺 `auth`、模块无可替换 provider 和命令不存在得到 8 项失败；接入 auth 子命令后核心+CLI 为 29 passed。
+  - 第一阶段评审问题逐项先 Red 后 Green：keyring 读取故障结构化、unknown/mock/local 在 prompt 前拒绝、clear confirmation 与 env/dotenv 外部来源保护、真实 dotenv symlink/解码边界；34 passed、1 skipped。
+  - 第二阶段对抗评审问题逐项先 Red 后 Green：`PasswordDeleteError` 不再误报成功、loader 异常统一脱敏、Unicode 控制字符 mask、真实 prompt/confirm 输出通道；最终专项 41 passed、1 skipped。
+- 实现摘要：
+  - `CredentialStatus` 使用 frozen slots dataclass，status 只返回 `configured/provider/source/masked_id`；mask 仅保留最后四个安全可打印字符。
+  - keyring 使用 service `hancode`、account `provider`；写入失败不回退写 `.env`；env/.env 只读，clear 对外部有效来源返回 `credential_external_source_requires_manual_clear`。
+  - dotenv 拒绝 symlink/非普通文件、异常或非 Mapping/非字符串 loader 返回；底层异常不穿透，不回显路径、内容或异常文本。
+  - CLI 的 provider 先校验再 prompt；prompt 和自定义 confirmation 写 stderr，机器结果保持 stdout 单一 JSON；不存在 `--secret` 明文参数。
+- 文档同步：更新 `docs/SPEC.md` 的 auth 命令形态与外部来源 clear 边界；更新 `docs/PLAN.md` T25 接口、测试、实现决策、评审和验证记录；本条提交 hash 在实现提交后回填。
+- 新鲜评审：第一阶段 4 个 Important；第二阶段 1 个 Critical + 4 个 Important + 2 个 Minor；返工后新鲜复核 Critical / Important / Minor 均 0，结论 clean。
+- 验证证据：
+  - 专项：`uv run --no-sync pytest tests/test_credentials.py tests/test_cli.py -q -p no:cacheprovider` 等价本地命令最终 `41 passed, 1 skipped`。
+  - 静态检查：Ruff T25 文件通过；MyPy `credentials.py` / `cli.py` 通过。
+  - 全量回归：串行 `pytest -q -p no:cacheprovider` 为 `632 passed, 12 skipped`；并行运行时既有 T23 demo 的固定 2 秒 subprocess 曾出现 1 个资源竞争超时，串行复验通过。
+  - 其余门禁：`uv build` 成功生成 sdist/wheel；`.venv\Scripts\hancode.exe --help`、`auth --help` 返回 0；`hancode demo --provider mock` 在将 `TEMP/TMP` 指向 M7 可写 runtime 临时目录后返回 `completed`；`git diff --check` 通过。
+- 人工干预与剩余风险：当前 Windows 环境不允许创建 symlink 时 symlink 用例跳过；真实 OS keyring 不在测试中调用；env/.env 清除必须由用户在外部源手动完成；宿主用户 Temp ACL 会影响 T23 demo，需要可写 TEMP/TMP；ProviderAdapter/真实 LLM 凭据消费留给后续任务。
+- 提交：TODO（实现与文档最终验证后回填）。
