@@ -96,7 +96,13 @@ def task_path(project_root: Path, task_id: str) -> Path:
     return candidate
 
 
-def init_task_workspace(project_root: Path, task_id: str) -> Path:
+def init_task_workspace(
+    project_root: Path,
+    task_id: str,
+    *,
+    goal: str | None = None,
+    allow_existing: bool = True,
+) -> Path:
     _project_root, workspace = _workspace_paths(project_root)
     required_files = [
         workspace / "project.json",
@@ -127,6 +133,20 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
     checkpoints_dir = task_workspace / "checkpoints"
     if _is_link(checkpoints_dir):
         raise _workspace_file_link_error("checkpoints")
+
+    normalized_goal = _normalize_goal(goal)
+
+    if not allow_existing and task_workspace.exists():
+        raise HanCodeError(
+            StructuredError(
+                error_code="task_already_exists",
+                message=f"Task workspace already exists: {task_id}.",
+                phase="spec",
+                denied_rule="unique_task_id_required",
+                suggested_fix="Use another task ID or resume the existing task.",
+            )
+        )
+
     task_workspace.mkdir(exist_ok=True)
     checkpoints_dir.mkdir(exist_ok=True)
 
@@ -144,7 +164,7 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
         initial_state = {
             "schema_version": 1,
             "task_id": task_id,
-            "goal": None,
+            "goal": normalized_goal,
             "status": "created",
             "current_phase": "spec",
             "files_changed": [],
@@ -174,6 +194,72 @@ def init_task_workspace(project_root: Path, task_id: str) -> Path:
             encoding="utf-8",
         )
     return task_workspace
+
+
+def list_task_ids(project_root: Path) -> tuple[str, ...]:
+    """Return sorted task IDs for a project workspace.
+
+    Fails closed when the tasks directory or any task state is invalid.
+    """
+    _project_root, workspace = _workspace_paths(project_root)
+    tasks_dir = workspace / "tasks"
+    if _is_link(tasks_dir):
+        raise _workspace_boundary_error()
+    if not tasks_dir.is_dir():
+        return ()
+
+    task_ids: list[str] = []
+    for entry in sorted(tasks_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        if _is_link(entry):
+            raise _workspace_boundary_error()
+        state_file = entry / "state.json"
+        if _is_link(state_file) or not state_file.is_file():
+            raise HanCodeError(
+                StructuredError(
+                    error_code="task_list_failed",
+                    message=(
+                        "Task directory is missing a valid state.json: "
+                        f"{entry.name}."
+                    ),
+                    phase="spec",
+                    denied_rule="valid_task_state_required",
+                    suggested_fix=(
+                        "Remove the broken task directory or repair its state.json."
+                    ),
+                )
+            )
+        task_ids.append(entry.name)
+
+    return tuple(task_ids)
+
+
+def _normalize_goal(goal: str | None) -> str | None:
+    if goal is None:
+        return None
+    if not isinstance(goal, str):
+        raise HanCodeError(
+            StructuredError(
+                error_code="task_goal_required",
+                message="Task goal must be a non-empty string.",
+                phase="spec",
+                denied_rule="non_empty_task_goal_required",
+                suggested_fix="Provide a non-empty natural-language task goal.",
+            )
+        )
+    stripped = goal.strip()
+    if not stripped:
+        raise HanCodeError(
+            StructuredError(
+                error_code="task_goal_required",
+                message="Task goal must not be empty or blank.",
+                phase="spec",
+                denied_rule="non_empty_task_goal_required",
+                suggested_fix="Provide a non-empty natural-language task goal.",
+            )
+        )
+    return stripped
 
 
 def _workspace_paths(project_root: Path) -> tuple[Path, Path]:

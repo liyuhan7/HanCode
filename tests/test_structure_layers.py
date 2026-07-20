@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from hancode.core.config import HanCodeConfig
+from hancode.core.errors import HanCodeError
 from hancode.demo_support import runner as demo
 from hancode.demo_support.runner import _run_stage
 from hancode.providers.mock import MockLLM
@@ -90,7 +91,7 @@ def test_provider_factory_supports_only_mock() -> None:
     unsupported_config = cast(
         HanCodeConfig, SimpleNamespace(llm_provider="openai_compatible")
     )
-    with pytest.raises(NotImplementedError, match="not implemented"):
+    with pytest.raises(HanCodeError, match="provider_not_implemented"):
         create_provider_adapter(unsupported_config)
 
 

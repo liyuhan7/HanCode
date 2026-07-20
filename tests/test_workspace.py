@@ -491,3 +491,131 @@ def test_project_workspace_rejects_hancode_directory_link(tmp_path: Path) -> Non
         init_project_workspace(tmp_path, "course-project", "AI4SE", "Harness")
 
     assert error.value.structured_error.error_code == "workspace_link_not_allowed"
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: goal persistence and strict task creation
+# ---------------------------------------------------------------------------
+
+
+def test_init_task_workspace_persists_goal(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Harness",
+    )
+    task_root = init_task_workspace(tmp_path, "task-001", goal="Implement login")
+
+    state = json.loads((task_root / "state.json").read_text(encoding="utf-8"))
+    assert state["goal"] == "Implement login"
+
+
+def test_init_task_workspace_normalizes_goal(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Harness",
+    )
+    task_root = init_task_workspace(
+        tmp_path, "task-001", goal="  Implement login  "
+    )
+
+    state = json.loads((task_root / "state.json").read_text(encoding="utf-8"))
+    assert state["goal"] == "Implement login"
+
+
+def test_init_task_workspace_rejects_blank_goal(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Harness",
+    )
+    with pytest.raises(HanCodeError) as exc_info:
+        init_task_workspace(tmp_path, "task-001", goal="   ")
+
+    assert exc_info.value.structured_error.error_code == "task_goal_required"
+    assert exc_info.value.structured_error.denied_rule == "non_empty_task_goal_required"
+
+
+def test_init_task_workspace_keeps_goal_optional_for_internal_calls(
+    tmp_path: Path,
+) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Harness",
+    )
+    task_root = init_task_workspace(tmp_path, "task-001")
+
+    state = json.loads((task_root / "state.json").read_text(encoding="utf-8"))
+    assert state["goal"] is None
+
+
+def test_strict_task_creation_rejects_existing_task(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Harness",
+    )
+    init_task_workspace(tmp_path, "task-001", goal="First goal")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        init_task_workspace(
+            tmp_path, "task-001", goal="Second goal", allow_existing=False
+        )
+
+    assert exc_info.value.structured_error.error_code == "task_already_exists"
+    assert exc_info.value.structured_error.denied_rule == "unique_task_id_required"
+
+
+def test_list_task_ids_returns_sorted_ids(tmp_path: Path) -> None:
+    from hancode.storage.workspace import list_task_ids
+
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Harness",
+    )
+    init_task_workspace(tmp_path, "task-002")
+    init_task_workspace(tmp_path, "task-001")
+    init_task_workspace(tmp_path, "experiment")
+
+    ids = list_task_ids(tmp_path)
+
+    assert ids == ("experiment", "task-001", "task-002")
+
+
+def test_list_task_ids_returns_empty_when_no_tasks(tmp_path: Path) -> None:
+    from hancode.storage.workspace import list_task_ids
+
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Harness",
+    )
+
+    assert list_task_ids(tmp_path) == ()
+
+
+def test_list_task_ids_rejects_missing_state_json(tmp_path: Path) -> None:
+    from hancode.storage.workspace import list_task_ids
+
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Harness",
+    )
+    (tmp_path / ".hancode" / "tasks" / "broken-task").mkdir()
+
+    with pytest.raises(HanCodeError) as exc_info:
+        list_task_ids(tmp_path)
+
+    assert exc_info.value.structured_error.error_code == "task_list_failed"

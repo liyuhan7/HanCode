@@ -3463,26 +3463,83 @@ from hancode.demo_support.runner import run_mock_demo, run_packaged_mock_demo
 
 ---
 
+## S1：Headless 任务生命周期与 CLI 入口
+
+| 元信息           | 值                                      |
+| ------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | T1-T30                                |
+| 可并行           | 不并行；应用层入口任务                          |
+| Worktree / PR | 当前结构调整会话                         |
+| 主贡献相关         | 否；应用入口与任务生命周期                       |
+| Commit        | 未提交（用户未要求提交）                  |
+
+### 目标
+
+扩展现有 TaskService 为任务生命周期应用服务，新增 CLI task 命令组和根级 run 命令，使用户可以创建带 goal 的任务、运行任务、恢复任务和查看任务状态。不新增 TaskController，不修改 AgentLoop 内核。
+
+### 涉及文件
+
+* `src/hancode/app/task_models.py`（新增）
+* `src/hancode/app/task_service.py`（修改）
+* `src/hancode/storage/workspace.py`（修改）
+* `src/hancode/interfaces/cli.py`（修改）
+* `src/hancode/providers/factory.py`（修改）
+* `tests/test_task_service.py`（新增）
+* `tests/test_cli_tasks.py`（新增）
+* `tests/test_provider_factory.py`（新增）
+* `tests/test_workspace.py`（修改）
+* `tests/test_structure_layers.py`（修改）
+
+### 接口契约
+
+```python
+class TaskService:
+    def create(self, project_root: Path, goal: str, *, task_id: str | None = None) -> TaskSummary: ...
+    def get(self, project_root: Path, task_id: str) -> TaskSummary: ...
+    def list_tasks(self, project_root: Path) -> tuple[TaskSummary, ...]: ...
+    def run(self, project_root: Path, task_id: str, *, resume: bool = False, provider: LLMClient | None = None) -> AgentRunResult: ...
+    def resume(self, project_root: Path, task_id: str, *, provider: LLMClient | None = None) -> AgentRunResult: ...
+```
+
+### 实际验证
+
+* 全量 pytest：796 passed, 13 skipped in 38.17s
+* Ruff：All checks passed!
+* MyPy：Success: no issues found in 54 source files
+* CLI smoke：hancode task create/status/list/run/resume 和 hancode run 全部返回结构化 JSON
+
+### 非目标 / 边界
+
+* 不实现真实 Provider。
+* 不实现 ASK_USER。
+* 不实现实时事件流。
+* 不实现 TUI。
+* 不修改 AgentLoop 内核。
+* 不修改 state.json schema version。
+
+---
+
 # 8. 需求→任务追溯
 
 | SPEC 锚点                                  | 对应任务                         | 状态  |
 | ---------------------------------------- | ---------------------------- | --- |
-| FR-1 AgentLoop 主循环                       | T10, T21                     | [ ] |
-| FR-2 LLM 抽象与 MockLLM                     | T9, T23                      | [ ] |
-| FR-3 Action 解析与校验                        | T7, T8                       | [ ] |
-| FR-4 ToolRegistry 与工具分发                  | T11, T12                     | [ ] |
-| FR-5 ToolPolicy 治理护栏                     | T13, T14, T15                | [ ] |
-| FR-6 ContextBuilder 与记忆选择                | T19                          | [ ] |
-| FR-7 反馈回灌机制                              | T20, T21                     | [ ] |
+| FR-1 AgentLoop 主循环                       | T10, T21                     | [x] |
+| FR-2 LLM 抽象与 MockLLM                     | T9, T23                      | [x] |
+| FR-3 Action 解析与校验                        | T7, T8                       | [x] |
+| FR-4 ToolRegistry 与工具分发                  | T11, T12                     | [x] |
+| FR-5 ToolPolicy 治理护栏                     | T13, T14, T15                | [x] |
+| FR-6 ContextBuilder 与记忆选择                | T19                          | [x] |
+| FR-7 反馈回灌机制                              | T20, T21                     | [x] |
 | FR-8 TraceLogger                         | T16                          | [x] |
-| FR-9 配置加载与运行约束                           | T3, T26                      | [ ] |
-| FR-10 Project Workspace 与 Task Workspace | T2                           | [ ] |
-| FR-11 课程项目 Phase Gate                    | T5, T6                       | [ ] |
-| FR-12 课程项目上下文构造                          | T19                          | [ ] |
-| FR-13 课程文件保护策略                           | T13, T14, T15                | [ ] |
-| FR-14 Checkpoint 与 Rollback              | T17, T18, T21                | [ ] |
-| FR-15 测试报告与审查记录                          | T20, T22                     | [ ] |
-| FR-16 Knowledge Delivery                 | T22, T23                     | [ ] |
+| FR-9 配置加载与运行约束                           | T3, T26                      | [x] |
+| FR-10 Project Workspace 与 Task Workspace | T2                           | [x] |
+| FR-11 课程项目 Phase Gate                    | T5, T6                       | [x] |
+| FR-12 课程项目上下文构造                          | T19                          | [x] |
+| FR-13 课程文件保护策略                           | T13, T14, T15                | [x] |
+| FR-14 Checkpoint 与 Rollback              | T17, T18, T21                | [x] |
+| FR-15 测试报告与审查记录                          | T20, T22                     | [x] |
+| FR-16 Knowledge Delivery                 | T22, T23                     | [x] |
 | 凭据与分发设计                                  | T25, T26, T27                | [ ] |
 | 可测试性约定                                   | T1-T30                       | [ ] |
 | 测试失败分类                                   | T20                          | [ ] |

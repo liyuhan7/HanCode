@@ -1390,3 +1390,84 @@
 - 全量 pytest：`724 passed, 13 skipped in 30.69s`。
 - 质量门禁：Ruff `All checks passed!`；MyPy `Success: no issues found in 27 source files`；compileall 退出码 0；`git diff --check` 通过。Git 输出的 LF/CRLF 为行尾转换提示，不是 diff 错误。
 - 当前状态：代码修复及全量验证已有证据；两阶段新鲜评审、评审结论回填、最终清理和 T21-R1 提交仍待完成。
+
+---
+
+### 2026-07-20 — Stage 0 — 固化现有内核基线
+
+- 使用的技能：test-driven-development、requesting-code-review
+- 使用的智能体：OpenCode Codex
+- 关键提示词 / 上下文：用户要求进行阶段 0 固化，包括整理能力矩阵、固化内核接口、补回归测试、统一错误模型、建立端到端 Mock 测试、更新文档。
+- 实现摘要：
+  - 整理能力矩阵：将 PLAN.md §8 中 FR-1~FR-16 全部标记为 [x]。
+  - 固化内核接口：确认 interfaces/cli.py 只委托 app/* 服务，不直接访问 storage/tooling；确认 providers/mock.py 纯内存无文件访问。
+  - 统一错误模型：确认所有核心模块使用 StructuredError（core/errors.py），ToolPolicy/Workspace/Trace/Checkpoint/Rollback 均返回结构化错误。
+  - 补回归测试：新增 tests/test_kernel_baseline.py（11 个测试），覆盖 CLI 边界、Provider 隔离、错误结构化、Phase 门禁、Router 纯函数、MockLLM 控制流。
+  - 端到端 Mock 验证：hancode demo --provider mock 返回 completed，生成全部 6 个交付产物和 68 条 trace 事件。
+- 验证结果：
+  - 全量 pytest：751 passed, 13 skipped in 37.41s（基线 740，新增 11 个测试）
+  - Ruff：All checks passed!
+  - MyPy：Success: no issues found in 53 source files
+  - hancode demo --provider mock：status=completed，包含 policy denial、checkpoint、测试失败、retry、rollback、delivery
+- 内核接口说明：
+  ```
+  Presentation Layer (interfaces/cli.py)
+    -> 仅委托 app/* 服务，不直接访问 storage/tooling/runtime
+  Application Layer (app/*)
+    -> 委托 runtime/engine、storage/workspace、app/credentials
+  Core Harness Layer (core/, runtime/, policy/, storage/, tooling/)
+    -> 所有错误通过 StructuredError 返回
+    -> 不依赖 TUI、CLI 或真实 LLM
+  Provider Layer (providers/)
+    -> MockLLM 纯内存，不访问文件系统
+    -> factory 只支持 "mock"，其他抛出 NotImplementedError
+  ```
+- 未完成项：T21-R1 仍有待提交；hancode run、TUI、真实 Provider 尚未实现（属后续阶段）。
+
+---
+
+### 2026-07-20 — Stage 1 — Headless 任务生命周期与 CLI 入口
+
+- 使用的技能：test-driven-development
+- 使用的智能体：OpenCode Codex
+- 关键提示词 / 上下文：用户要求实现阶段一，扩展现有 TaskService 为任务生命周期应用服务，新增 CLI task 命令组和根级 run 命令。不新增 TaskController，不修改 AgentLoop 内核。
+- TDD 实现顺序：
+  - S1-1：Workspace 支持 goal（init_task_workspace 新增 goal 和 allow_existing 参数，新增 list_task_ids 函数）
+  - S1-2：任务枚举和 ID 分配（_next_task_id 顺序编号算法）
+  - S1-3：TaskSummary 和 TaskService 生命周期（新增 task_models.py，扩展 TaskService 的 create/get/list_tasks/resume）
+  - S1-4：CLI task 命令组（task create/run/resume/status/list）
+  - S1-5：根级 run 命令（create + run 组合流程）
+  - S1-6：Provider 和异常边界（factory 将 NotImplementedError 转为 HanCodeError）
+- 实现摘要：
+  - 新增 src/hancode/app/task_models.py：TaskSummary 和 TaskRunSummary 应用层数据模型
+  - 修改 src/hancode/app/task_service.py：扩展为完整任务生命周期服务（create/get/list_tasks/run/resume）
+  - 修改 src/hancode/storage/workspace.py：init_task_workspace 支持 goal 和 allow_existing；新增 list_task_ids
+  - 修改 src/hancode/interfaces/cli.py：新增 task 命令组和根级 run 命令
+  - 修改 src/hancode/providers/factory.py：未实现 Provider 返回结构化错误
+  - 新增 tests/test_task_service.py（18 个测试）
+  - 新增 tests/test_cli_tasks.py（16 个测试）
+  - 新增 tests/test_provider_factory.py（3 个测试）
+  - 修改 tests/test_workspace.py（8 个新测试）
+  - 修改 tests/test_structure_layers.py（适配新错误类型）
+- 验证结果：
+  - 全量 pytest：796 passed, 13 skipped in 38.17s（基线 751，新增 45 个测试）
+  - Ruff：All checks passed!
+  - MyPy：Success: no issues found in 54 source files
+  - CLI smoke：
+    - hancode --help 显示 init/demo/export/run/auth/task 六个命令
+    - hancode task --help 显示 create/run/resume/status/list 五个命令
+    - hancode task create "goal" 创建任务并持久化 goal
+    - hancode task status task-001 返回结构化任务摘要
+    - hancode task list 返回排序后的任务列表
+    - hancode task run task-001 返回 blocked（MockLLM 耗尽），exit code 1
+    - hancode task resume task-001 返回 blocked，exit code 1
+    - hancode run "goal" 创建并运行任务，自动生成 task-002，exit code 1
+- 架构结论：
+  ```
+  CLI (interfaces/cli.py)
+    -> TaskService (app/task_service.py)
+      -> runtime/engine.run_task
+        -> AgentLoop
+  ```
+  未新增 TaskController，未修改 AgentLoop 内核，state.json schema version 保持 1。
+- 未完成项：真实 Provider、ASK_USER、实时事件流、TUI 仍属后续阶段。
