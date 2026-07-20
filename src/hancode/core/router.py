@@ -24,6 +24,12 @@ def select_next_phase(state: TaskState) -> RoutingDecision:
         return RoutingDecision(
             state.current_phase, "state_inconsistent", blocked=True
         )
+    if state.status is TaskStatus.WAITING_INPUT:
+        return RoutingDecision(
+            state.current_phase,
+            "interaction_answer_required",
+            blocked=True,
+        )
     if state.status is TaskStatus.COMPLETED:
         if not state.artifacts["KNOWLEDGE.md"]:
             return RoutingDecision(Phase.DELIVER, "knowledge_missing", blocked=True)

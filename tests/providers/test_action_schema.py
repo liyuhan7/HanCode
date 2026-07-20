@@ -44,25 +44,26 @@ def test_schema_includes_tool_call_branch() -> None:
         for b in branches
         if b["properties"]["type"]["const"] == "tool_call"
     ]
-    assert len(tool_call_branches) == 1
-    branch = tool_call_branches[0]
-    assert branch["properties"]["phase"]["const"] == "spec"
-    assert "read_file" in branch["properties"]["tool_name"]["enum"]
-    assert "write_file" in branch["properties"]["tool_name"]["enum"]
+    assert {branch["properties"]["tool_name"]["const"] for branch in tool_call_branches} == {
+        "read_file",
+        "list_files",
+        "write_file",
+    }
+    assert all(branch["properties"]["phase"]["const"] == "spec" for branch in tool_call_branches)
 
 
 def test_schema_exposes_tool_argument_schemas() -> None:
     schema = build_action_schema(
         phase=Phase.SPEC, tool_catalog=_make_catalog()
     )
-    tool_call_branch = next(
-        b for b in schema["oneOf"] if b["properties"]["type"]["const"] == "tool_call"
+    read_branch = next(
+        b
+        for b in schema["oneOf"]
+        if b["properties"].get("tool_name", {}).get("const") == "read_file"
     )
-    argument_schemas = tool_call_branch["properties"]["args"]["oneOf"]
-    assert any(
-        argument_schema["properties"].get("path") == {"type": "string"}
-        for argument_schema in argument_schemas
-    )
+    assert read_branch["properties"]["args"]["properties"]["path"] == {
+        "type": "string"
+    }
 
 
 def test_schema_includes_finish_phase_branch() -> None:
@@ -122,12 +123,13 @@ def test_schema_rejects_unknown_tool_by_exclusion() -> None:
         phase=Phase.SPEC, tool_catalog=_make_catalog()
     )
     branches = schema["oneOf"]
-    tool_call_branch = next(
-        b for b in branches if b["properties"]["type"]["const"] == "tool_call"
-    )
-    enum_tools = set(tool_call_branch["properties"]["tool_name"]["enum"])
-    assert "unknown_tool" not in enum_tools
-    assert "run_shell" not in enum_tools
+    tool_names = {
+        branch["properties"]["tool_name"]["const"]
+        for branch in branches
+        if branch["properties"]["type"]["const"] == "tool_call"
+    }
+    assert "unknown_tool" not in tool_names
+    assert "run_shell" not in tool_names
 
 
 def test_schema_uses_current_phase_constant() -> None:

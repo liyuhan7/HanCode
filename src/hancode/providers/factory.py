@@ -47,6 +47,7 @@ def create_provider_adapter(
             transport=transport or HttpxProviderTransport(),
             sleeper=sleeper or cast(Sleeper, time.sleep),
             tool_catalog=build_default_tool_catalog(config),
+            interaction_enabled=config.interaction_mode == "ask_user",
         )
 
     raise HanCodeError(

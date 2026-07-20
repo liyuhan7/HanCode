@@ -178,6 +178,9 @@ def init_task_workspace(
             "source_edits_this_phase": 0,
             "rollback_required": False,
             "rollback_done": False,
+            "interaction_seq": 0,
+            "interactions": [],
+            "pending_interaction_id": None,
             "pending_checkpoint_recovery_id": None,
             "phase_completed": {
                 "spec": False,

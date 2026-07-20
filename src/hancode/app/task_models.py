@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import Phase, TaskStatus
 from hancode.core.state import TaskState
 from hancode.runtime.agent_loop import AgentRunResult
+from hancode.tooling.file_tools import redact_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,15 +27,27 @@ class TaskSummary:
     inconsistent: bool
     artifacts: Mapping[str, bool]
     resumable: bool
+    requires_input: bool = False
+    pending_interaction: Mapping[str, object] | None = None
 
     @classmethod
     def from_state(cls, state: TaskState) -> TaskSummary:
+        pending = _pending_interaction(state)
+        requires_input = (
+            state.status is TaskStatus.WAITING_INPUT
+            and pending is not None
+            and pending.status is InteractionStatus.WAITING
+        )
         resumable = (
             state.status is TaskStatus.BLOCKED and not state.inconsistent
         ) or (
             state.status is TaskStatus.INCONSISTENT
             and state.rollback_required
             and state.latest_checkpoint is not None
+        ) or (
+            state.status is TaskStatus.WAITING_INPUT
+            and pending is not None
+            and pending.status is InteractionStatus.ANSWERED
         )
 
         return cls(
@@ -50,6 +64,17 @@ class TaskSummary:
             inconsistent=state.inconsistent,
             artifacts=state.artifacts,
             resumable=resumable,
+            requires_input=requires_input,
+            pending_interaction=(
+                None
+                if pending is None
+                else {
+                    "interaction_id": pending.interaction_id,
+                    "phase": pending.phase.value,
+                    "question": redact_text(pending.question),
+                    "answer_received": pending.status is InteractionStatus.ANSWERED,
+                }
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -67,7 +92,22 @@ class TaskSummary:
             "inconsistent": self.inconsistent,
             "artifacts": dict(self.artifacts),
             "resumable": self.resumable,
+            "requires_input": self.requires_input,
+            "pending_interaction": self.pending_interaction,
         }
+
+
+def _pending_interaction(state: TaskState) -> InteractionRecord | None:
+    if state.pending_interaction_id is None:
+        return None
+    return next(
+        (
+            interaction
+            for interaction in state.interactions
+            if interaction.interaction_id == state.pending_interaction_id
+        ),
+        None,
+    )
 
 
 @dataclass(frozen=True, slots=True)

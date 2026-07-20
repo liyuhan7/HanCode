@@ -129,8 +129,12 @@ def test_prompt_filters_tools_by_phase() -> None:
     payload = json.loads(prompt.messages[1].content)
     names = {tool["name"] for tool in payload["available_tools"]}
     assert names == {"read_file", "write_file", "run_tests"}
-    schema_tools = prompt.action_schema["oneOf"][0]["properties"]["tool_name"]["enum"]
-    assert set(schema_tools) == names
+    schema_tools = {
+        branch["properties"]["tool_name"]["const"]
+        for branch in prompt.action_schema["oneOf"]
+        if branch["properties"]["type"]["const"] == "tool_call"
+    }
+    assert schema_tools == names
 
 
 def test_prompt_contains_artifact_targets() -> None:
@@ -170,6 +174,30 @@ def test_prompt_excludes_ask_user_in_stage_two() -> None:
     )
     user_content = prompt.messages[1].content
     assert "ask_user" not in user_content
+
+
+def test_prompt_exposes_ask_user_when_interaction_enabled() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+        interaction_enabled=True,
+    )
+
+    user_content = prompt.messages[1].content
+    assert "ask_user" in user_content
+    assert "Do not ask for API keys" in prompt.messages[0].content
+
+
+def test_prompt_forbids_secret_requests_when_interaction_enabled() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+        interaction_enabled=True,
+    )
+
+    system_content = prompt.messages[0].content
+    assert "passwords" in system_content
+    assert "credentials" in system_content
 
 
 def test_prompt_serialization_is_deterministic() -> None:

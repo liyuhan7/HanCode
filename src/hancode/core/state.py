@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Mapping, TypeGuard
 
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import Phase, TaskStatus
 
 
@@ -34,19 +35,19 @@ _STATE_FIELDS = frozenset(
         "artifacts",
         "delivery_coverage_digest",
         "pending_checkpoint_recovery_id",
+        "interaction_seq",
+        "interactions",
+        "pending_interaction_id",
     }
 )
 _OPTIONAL_STATE_FIELDS = frozenset(
-    {"delivery_coverage_digest", "pending_checkpoint_recovery_id"}
-)
-_ACCEPTED_STATE_FIELD_SETS = frozenset(
-    _STATE_FIELDS - omitted_fields
-    for omitted_fields in (
-        frozenset(),
-        frozenset({"delivery_coverage_digest"}),
-        frozenset({"pending_checkpoint_recovery_id"}),
-        _OPTIONAL_STATE_FIELDS,
-    )
+    {
+        "delivery_coverage_digest",
+        "pending_checkpoint_recovery_id",
+        "interaction_seq",
+        "interactions",
+        "pending_interaction_id",
+    }
 )
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
 _ARTIFACT_NAMES = frozenset(
@@ -84,6 +85,9 @@ class TaskState:
     artifacts: Mapping[str, bool]
     delivery_coverage_digest: str | None = None
     pending_checkpoint_recovery_id: str | None = None
+    interaction_seq: int = 0
+    interactions: tuple[InteractionRecord, ...] = ()
+    pending_interaction_id: str | None = None
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -140,6 +144,46 @@ class TaskState:
             or not self.pending_checkpoint_recovery_id
         ):
             raise _invalid_state_field("pending_checkpoint_recovery_id")
+        if not _is_nonnegative_int(self.interaction_seq):
+            raise _invalid_state_field("interaction_seq")
+        if not isinstance(self.interactions, tuple) or any(
+            not isinstance(interaction, InteractionRecord)
+            for interaction in self.interactions
+        ):
+            raise _invalid_state_field("interactions")
+        interaction_ids = [interaction.interaction_id for interaction in self.interactions]
+        if len(set(interaction_ids)) != len(interaction_ids):
+            raise _invalid_state_field("interactions")
+        if any(interaction.phase is not self.current_phase for interaction in self.interactions):
+            raise _invalid_state_field("interactions")
+        waiting_interactions = tuple(
+            interaction
+            for interaction in self.interactions
+            if interaction.status is InteractionStatus.WAITING
+        )
+        if len(waiting_interactions) > 1:
+            raise _invalid_state_field("interactions")
+        if self.pending_interaction_id is not None and (
+            not isinstance(self.pending_interaction_id, str)
+            or not any(
+                interaction.interaction_id == self.pending_interaction_id
+                for interaction in self.interactions
+            )
+        ):
+            raise _invalid_state_field("pending_interaction_id")
+        if self.status is TaskStatus.WAITING_INPUT:
+            if self.pending_interaction_id is None or (
+                waiting_interactions
+                and waiting_interactions[0].interaction_id != self.pending_interaction_id
+                and not any(
+                    interaction.interaction_id == self.pending_interaction_id
+                    and interaction.status is InteractionStatus.ANSWERED
+                    for interaction in self.interactions
+                )
+            ):
+                raise _invalid_state_field("pending_interaction_id")
+        elif waiting_interactions or self.pending_interaction_id is not None:
+            raise _invalid_state_field("interactions")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )
@@ -154,7 +198,9 @@ def load_state(task_root: Path) -> TaskState:
         data = json.loads(state_file.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("Task state must be a JSON object.")
-        if frozenset(data) not in _ACCEPTED_STATE_FIELD_SETS:
+        required_fields = _STATE_FIELDS - _OPTIONAL_STATE_FIELDS
+        actual_fields = frozenset(data)
+        if not required_fields <= actual_fields or not actual_fields <= _STATE_FIELDS:
             raise ValueError("Task state fields do not match schema version 1.")
 
         schema_version = _required_int(data, "schema_version")
@@ -193,6 +239,17 @@ def load_state(task_root: Path) -> TaskState:
                 None
                 if "pending_checkpoint_recovery_id" not in data
                 else _optional_str(data, "pending_checkpoint_recovery_id")
+            ),
+            interaction_seq=(
+                0 if "interaction_seq" not in data else _required_int(data, "interaction_seq")
+            ),
+            interactions=(
+                () if "interactions" not in data else _required_interactions(data)
+            ),
+            pending_interaction_id=(
+                None
+                if "pending_interaction_id" not in data
+                else _optional_str(data, "pending_interaction_id")
             ),
         )
     except (OSError, UnicodeError, ValueError):
@@ -244,6 +301,9 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "artifacts": dict(state.artifacts),
         "delivery_coverage_digest": state.delivery_coverage_digest,
         "pending_checkpoint_recovery_id": state.pending_checkpoint_recovery_id,
+        "interaction_seq": state.interaction_seq,
+        "interactions": [interaction.to_dict() for interaction in state.interactions],
+        "pending_interaction_id": state.pending_interaction_id,
     }
     state_file = task_root / "state.json"
     if _is_link(state_file):
@@ -330,6 +390,28 @@ def _required_bool_mapping(
     ):
         raise ValueError(f"Task state field is invalid: {field}.")
     return dict(value)
+
+
+def _required_interactions(
+    data: Mapping[str, object],
+) -> tuple[InteractionRecord, ...]:
+    value = data.get("interactions")
+    if not isinstance(value, list):
+        raise ValueError("Task state field is invalid: interactions.")
+    records: list[InteractionRecord] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("Task state field is invalid: interactions.")
+        records.append(
+            InteractionRecord(
+                interaction_id=_required_str(item, "interaction_id"),
+                phase=Phase(_required_str(item, "phase")),
+                question=_required_str(item, "question"),
+                answer=_optional_str(item, "answer"),
+                status=InteractionStatus(_required_str(item, "status")),
+            )
+        )
+    return tuple(records)
 
 
 def _state_parse_error() -> HanCodeError:

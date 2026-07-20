@@ -185,6 +185,19 @@ def test_ask_user_requires_nonempty_question() -> None:
     assert result.error_code == "invalid_action_args"
 
 
+def test_ask_user_rejects_question_over_schema_limit() -> None:
+    result = Action.from_values(
+        type=ActionType.ASK_USER,
+        phase=Phase.SPEC,
+        tool_name=None,
+        args={"question": "x" * 2049},
+        reason=None,
+    )
+
+    assert isinstance(result, ParseError)
+    assert result.error_code == "invalid_action_args"
+
+
 def test_final_rejects_arguments() -> None:
     result = Action.from_values(
         type=ActionType.FINAL,

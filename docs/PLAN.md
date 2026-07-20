@@ -3750,6 +3750,1523 @@ class TaskService:
 
 ---
 
+## S3：Human-in-the-Loop——ASK_USER 暂停、回答持久化与跨进程恢复
+
+| 元信息   | 值                                                    |
+| ----- | ---------------------------------------------------- |
+| 状态    | [x] 已完成（S3-0 至 S3-9 TDD、静态门禁、全量回归与构建通过） |
+| 依赖    | S2（真实 OpenAI-Compatible ProviderAdapter）             |
+| 主贡献相关 | 是；Human-in-the-Loop 状态机                              |
+| Commit | 未提交（按用户要求保留在当前工作区）                    |
+
+### S3.1 阶段定位
+
+阶段二完成后，HanCode 已经能够：
+
+```text
+ContextBuilder
+→ OpenAI-Compatible Provider
+→ Action
+→ AgentLoop
+→ ToolPolicy
+→ ToolRegistry
+→ State / Trace
+```
+
+但当前真实模型只能：
+
+* 调用工具；
+* 完成阶段；
+* 返回 Final。
+
+当课程要求不明确、项目存在多种方案、用户偏好缺失时，模型无法暂停并询问用户。
+
+虽然 `ActionType.ASK_USER` 已经存在，ActionParser 也要求其包含非空 `question`，但它目前只是一个未接入运行时的预留 Action。
+
+Provider 当前仍然固定：
+
+```python
+interaction_enabled=False
+```
+
+因此真实模型看不到 `ask_user` Schema。
+
+AgentLoop 也没有 ASK_USER 分支，最终会把它作为：
+
+```text
+unsupported_control_action
+```
+
+处理。
+
+S3 的核心目标是：
+
+> 让模型可以发出 ASK_USER，HanCode 将问题持久化并安全退出；用户之后通过 CLI 提交回答，再从相同 phase、相同 task 和相同上下文恢复 AgentLoop。
+
+它不做 TUI，而是先把交互能力落实到 Harness 内核和 Headless CLI，为后续 TUI 提供稳定接口。
+
+### S3.2 S3 进入门禁
+
+在开始 S3 前，应先完成 S2.2 的两个收尾问题：
+
+1. Action JSON Schema 必须将每个 `tool_name` 与对应 `args_schema` 绑定。
+2. Transport 必须将非法 UTF-8 响应转换为 `provider_invalid_response`，不能让任务进入 `inconsistent`。
+
+这两项属于 Provider 契约基础。ASK_USER 同样依赖 Action Schema，因此不应在错误 Schema 上继续扩展。
+
+### S3.3 阶段范围
+
+#### 3.1 本阶段实现
+
+| 能力 | 是否实现 |
+|---|---:|
+| `ask_user` Provider Schema | 是 |
+| ASK_USER Prompt 约束 | 是 |
+| AgentLoop 暂停 | 是 |
+| Pending Interaction 持久化 | 是 |
+| `waiting_input` 任务状态 | 是 |
+| 用户回答持久化 | 是 |
+| 跨 CLI 进程恢复 | 是 |
+| 同一 phase 多轮问答 | 是 |
+| 用户回答进入下一轮 Context | 是 |
+| Task status 展示待回答问题 | 是 |
+| CLI `task answer` | 是 |
+| 回答幂等性 | 是 |
+| 并发回答和 AgentLoop 锁 | 是 |
+| Interaction Trace | 是 |
+| 回答脱敏和长度限制 | 是 |
+| FakeProvider 端到端测试 | 是 |
+
+#### 3.2 本阶段不实现
+
+| 能力 | 原因 |
+|---|---|
+| TUI | 后续阶段只消费 S3 接口 |
+| Streaming | 与 ASK_USER 状态机无直接依赖 |
+| 自动终端聊天循环 | S3 保持 Headless CLI |
+| `confirm_before_write` | 属于另一类人工审批 |
+| 人工批准 Tool Call | 后续单独设计 |
+| 多用户协作回答 | 当前 task 只有一个本地用户 |
+| WebSocket / Server | 当前是本地 CLI 产品 |
+| 远程通知 | 非课程项目 MVP |
+| 长期聊天历史 | 只保留当前 phase 的结构化问答 |
+| 用户通过回答提供 API key | 凭据必须继续走 `hancode auth` |
+
+当前 PLAN 已将 `confirm_before_write`、复杂 TUI 和 WebUI 列为 post-MVP，因此 S3 不应把这些能力混入 ASK_USER。
+
+### S3.4 用户使用流程
+
+#### 4.1 模型提出问题
+
+用户运行：
+
+```bash
+hancode task run task-001 --project-root .
+```
+
+模型返回：
+
+```json
+{
+  "type": "ask_user",
+  "phase": "spec",
+  "tool_name": null,
+  "args": {
+    "question": "这个项目要求使用 FastAPI，还是允许自行选择 Web 框架？"
+  },
+  "reason": "The framework constraint is required before producing SPEC.md."
+}
+```
+
+HanCode：
+
+1. 不调用工具；
+2. 不创建 checkpoint；
+3. 不消耗 retry budget；
+4. 保持当前 phase；
+5. 持久化问题；
+6. 将任务状态设置为 `waiting_input`；
+7. 退出 AgentLoop。
+
+CLI 输出：
+
+```json
+{
+  "command": "task run",
+  "status": "waiting_input",
+  "task": {
+    "task_id": "task-001",
+    "current_phase": "spec",
+    "requires_input": true,
+    "resumable": false,
+    "pending_interaction": {
+      "interaction_id": "ask-000001",
+      "phase": "spec",
+      "question": "这个项目要求使用 FastAPI，还是允许自行选择 Web 框架？",
+      "answer_received": false
+    }
+  }
+}
+```
+
+建议退出码：
+
+```text
+4 = waiting_input
+```
+
+#### 4.2 用户提交回答
+
+```bash
+hancode task answer task-001 --project-root .
+```
+
+CLI 从终端读取：
+
+```text
+Answer: 课程没有限制框架，优先使用 FastAPI。
+```
+
+输出不能回显回答全文：
+
+```json
+{
+  "command": "task answer",
+  "status": "completed",
+  "interaction": {
+    "interaction_id": "ask-000001",
+    "answer_received": true
+  },
+  "task": {
+    "task_id": "task-001",
+    "status": "waiting_input",
+    "resumable": true,
+    "requires_input": false
+  }
+}
+```
+
+然后用户执行：
+
+```bash
+hancode task resume task-001 --project-root .
+```
+
+恢复后的 Provider Context 包含：
+
+```json
+{
+  "interaction_history": [
+    {
+      "interaction_id": "ask-000001",
+      "phase": "spec",
+      "question": "这个项目要求使用 FastAPI，还是允许自行选择 Web 框架？",
+      "answer": "课程没有限制框架，优先使用 FastAPI。"
+    }
+  ]
+}
+```
+
+### S3.5 为什么需要新的任务状态
+
+当前 `TaskStatus` 只有：
+
+```text
+created
+running
+blocked
+failed
+completed
+inconsistent
+```
+
+不能继续复用 `blocked` 表示 ASK_USER，原因是：
+
+```text
+blocked
+= Provider 失败、Context 缺失、路由阻塞或运行边界错误
+
+waiting_input
+= 系统运行正常，只是在等待用户提供信息
+```
+
+两者恢复条件不同：
+
+| 状态 | 恢复条件 |
+|---|---|
+| `blocked` | 修复 Provider、配置或 Workspace |
+| `waiting_input` | 提交对应问题的用户回答 |
+| `inconsistent` | 状态修复或 rollback |
+| `failed` | 通常不可直接恢复 |
+
+因此增加：
+
+```python
+class TaskStatus(str, Enum):
+    ...
+    WAITING_INPUT = "waiting_input"
+```
+
+### S3.6 Interaction 数据模型
+
+新增：
+
+```python
+class InteractionStatus(str, Enum):
+    WAITING = "waiting"
+    ANSWERED = "answered"
+```
+
+```python
+@dataclass(frozen=True, slots=True)
+class InteractionRecord:
+    interaction_id: str
+    phase: Phase
+    question: str
+    answer: str | None
+    status: InteractionStatus
+```
+
+TaskState 增加：
+
+```python
+@dataclass(frozen=True, slots=True)
+class TaskState:
+    ...
+    interaction_seq: int = 0
+    interactions: tuple[InteractionRecord, ...] = ()
+    pending_interaction_id: str | None = None
+```
+
+#### 6.1 字段语义
+
+##### interaction_seq
+
+单调递增，用于生成：
+
+```text
+ask-000001
+ask-000002
+ask-000003
+```
+
+禁止根据列表长度生成，避免清理旧记录后 ID 重复。
+
+##### interactions
+
+只保存当前 phase 内已经发生的结构化问答。
+
+模型每次构造 Context 时都能看到当前阶段已回答的问题，避免下一轮 Provider 调用遗忘用户回答。
+
+##### pending_interaction_id
+
+指向当前需要回答或刚收到回答、等待恢复的 Interaction。
+
+### S3.7 状态不变量
+
+TaskState 必须验证：
+
+1. `interaction_seq` 是非负整数。
+2. `interaction_id` 必须满足：
+
+```text
+ask-\d{6}
+```
+
+3. 所有 Interaction 的 phase 必须等于 `current_phase`。
+4. 同一个 task 中 Interaction ID 不得重复。
+5. 最多只能有一个 `WAITING` Interaction。
+6. `pending_interaction_id` 必须指向现有 Interaction。
+7. `WAITING` 状态必须满足：
+
+```text
+answer is None
+```
+
+8. `ANSWERED` 状态必须满足：
+
+```text
+answer 是非空字符串
+```
+
+9. `TaskStatus.WAITING_INPUT` 时必须存在 `pending_interaction_id`。
+10. 非 `WAITING_INPUT` 状态不得存在未回答 Interaction。
+11. 单 phase Interaction 数不得超过配置上限。
+12. phase 完成时必须清空该 phase 的 Interaction History。
+
+### S3.8 State Schema 兼容设计
+
+当前 TaskState 没有 Interaction 字段。
+
+为了兼容现有任务，不需要立即将 `schema_version` 从 1 升到 2，可以把三个新字段作为可选字段：
+
+```python
+interaction_seq = 0
+interactions = ()
+pending_interaction_id = None
+```
+
+但当前 `_ACCEPTED_STATE_FIELD_SETS` 通过枚举可选字段组合实现。继续增加字段会产生组合爆炸。
+
+应重构为：
+
+```python
+required_fields = _STATE_FIELDS - _OPTIONAL_STATE_FIELDS
+actual_fields = frozenset(data)
+
+if not (
+    required_fields <= actual_fields
+    and actual_fields <= _STATE_FIELDS
+):
+    raise ValueError(...)
+```
+
+保存时始终写出新字段，旧 state 第一次保存后自动升级为完整格式。
+
+### S3.9 Interaction 生命周期
+
+#### 9.1 ASK_USER
+
+```text
+RUNNING
+→ Provider 返回 ASK_USER
+→ Parser 校验
+→ Policy 校验
+→ 创建 InteractionRecord(WAITING)
+→ 保存 state
+→ Trace interaction_requested
+→ WAITING_INPUT
+```
+
+状态变化：
+
+```python
+new_interaction = InteractionRecord(
+    interaction_id=f"ask-{state.interaction_seq + 1:06d}",
+    phase=current_phase,
+    question=sanitized_question,
+    answer=None,
+    status=InteractionStatus.WAITING,
+)
+
+state = replace(
+    state,
+    status=TaskStatus.WAITING_INPUT,
+    interaction_seq=state.interaction_seq + 1,
+    interactions=(*state.interactions, new_interaction),
+    pending_interaction_id=new_interaction.interaction_id,
+)
+```
+
+#### 9.2 用户回答
+
+```text
+WAITING_INPUT + WAITING
+→ task answer
+→ 验证 Interaction ID
+→ 回答脱敏
+→ 保存 ANSWERED
+→ 状态仍为 WAITING_INPUT
+→ resumable = true
+```
+
+回答后不立即改成 `RUNNING`，因为：
+
+* `task answer` 和 `task resume` 是两个不同操作；
+* 回答已经安全持久化；
+* 即使进程退出，之后仍可恢复；
+* 状态不会谎称 Agent 正在运行。
+
+#### 9.3 恢复
+
+```text
+WAITING_INPUT + ANSWERED
+→ task resume
+→ RUNNING
+→ ContextBuilder 注入 interaction_history
+→ Provider 继续选择 Action
+```
+
+如果没有回答就执行 `task resume`：
+
+```text
+interaction_answer_required
+```
+
+不得调用 Provider。
+
+#### 9.4 回答何时被消费
+
+不能在第一次 Provider 调用后立刻删除问答记录。
+
+HanCode 的 Provider 每轮都会重新构造 Context，不保存厂商聊天历史。若回答在第一次 Tool Call 后被删除，模型下一轮就会遗忘用户信息。
+
+因此设计为：
+
+* `pending_interaction_id`：在模型成功返回一个合法的非 ASK_USER Action 后清除；
+* `interactions`：当前 phase 完成前一直保留；
+* phase 完成后统一清空。
+
+这样：
+
+```text
+answer
+→ read_file
+→ list_files
+→ write_file
+→ finish_phase
+```
+
+每一轮都能看到该回答。
+
+### S3.10 多轮问题
+
+同一个 phase 可以多次 ASK_USER：
+
+```text
+ask-000001 → answered
+ask-000002 → answered
+ask-000003 → answered
+```
+
+Context：
+
+```json
+{
+  "interaction_history": [
+    {
+      "interaction_id": "ask-000001",
+      "question": "...",
+      "answer": "..."
+    },
+    {
+      "interaction_id": "ask-000002",
+      "question": "...",
+      "answer": "..."
+    }
+  ]
+}
+```
+
+增加配置：
+
+```json
+{
+  "interaction_mode": "ask_user",
+  "max_interactions_per_phase": 8,
+  "max_interaction_question_chars": 2048,
+  "max_interaction_answer_chars": 8192
+}
+```
+
+达到上限后：
+
+```text
+interaction_limit_exceeded
+```
+
+任务进入 `blocked`，防止模型无限追问。
+
+### S3.11 Provider 与 Prompt 修改
+
+#### 11.1 配置
+
+新增：
+
+```python
+interaction_mode: Literal[
+    "disabled",
+    "ask_user",
+] = "disabled"
+```
+
+默认关闭，保证旧项目行为不变。
+
+用户显式配置：
+
+```json
+{
+  "interaction_mode": "ask_user"
+}
+```
+
+#### 11.2 ProviderFactory
+
+```python
+OpenAICompatibleProvider(
+    ...
+    interaction_enabled=(
+        config.interaction_mode == "ask_user"
+    ),
+)
+```
+
+#### 11.3 OpenAICompatibleProvider
+
+当前代码固定传入：
+
+```python
+interaction_enabled=False
+```
+
+修改为实例字段：
+
+```python
+self._interaction_enabled = interaction_enabled
+```
+
+```python
+prompt = self._prompt_builder.build(
+    context=context,
+    tool_catalog=self._tool_catalog,
+    interaction_enabled=self._interaction_enabled,
+)
+```
+
+#### 11.4 ASK_USER Schema
+
+现有 Action Schema Builder 已经具有 `_ask_user_branch()`，只是没有对真实 Provider 开放。
+
+S3 开启后输出：
+
+```json
+{
+  "type": "object",
+  "required": [
+    "type",
+    "phase",
+    "reason",
+    "tool_name",
+    "args"
+  ],
+  "properties": {
+    "type": {
+      "const": "ask_user"
+    },
+    "phase": {
+      "const": "spec"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tool_name": {
+      "type": "null"
+    },
+    "args": {
+      "type": "object",
+      "required": [
+        "question"
+      ],
+      "properties": {
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+#### 11.5 Prompt 约束
+
+System Prompt 增加：
+
+```text
+Use ask_user only when information is genuinely required
+and cannot be inferred from the provided context.
+
+Ask one precise question at a time.
+
+Do not ask for API keys, passwords, tokens, credentials,
+private keys, or other secrets.
+
+Do not use ask_user merely to ask for permission to continue.
+
+Do not ask questions whose answers are already available
+in SPEC.md, PLAN.md, course context, project files, or prior
+interaction history.
+```
+
+避免模型：
+
+```text
+"我可以继续吗？"
+"需要我读取文件吗？"
+"请提供 API key。"
+```
+
+### S3.12 Interaction Policy
+
+当前 ToolPolicy 对 `ASK_USER` 和 `FINAL` 直接允许。
+
+S3 应拆开：
+
+```python
+if action.type is ActionType.ASK_USER:
+    return self._evaluate_ask_user(
+        action,
+        phase,
+        state,
+    )
+
+if action.type is ActionType.FINAL:
+    return _allowed(phase)
+```
+
+ASK_USER Policy 检查：
+
+1. `interaction_mode == "ask_user"`。
+2. question 非空。
+3. question 长度不超限。
+4. 当前不存在未处理 pending Interaction。
+5. 当前 phase 问答次数未超限。
+6. question 不包含明显的凭据请求。
+7. TaskState 一致。
+8. ASK_USER 不需要 checkpoint。
+9. ASK_USER 不消耗 retry budget。
+10. ASK_USER 不触发 rollback。
+
+错误：
+
+```text
+interaction_disabled
+interaction_question_required
+interaction_question_too_long
+interaction_already_pending
+interaction_limit_exceeded
+interaction_secret_request_denied
+```
+
+### S3.13 AgentLoop 修改
+
+新增 ASK_USER 分支，位置应在 Tool Call 和 Finish Phase 之间：
+
+```python
+if action.type is ActionType.ASK_USER:
+    state, interaction = self._request_user_input(
+        task_id,
+        state,
+        action,
+        routing.phase,
+    )
+
+    trace_error = self._append_trace(
+        task_id,
+        trace_events,
+        event_type="interaction_requested",
+        phase=routing.phase,
+        status="waiting",
+        observation={
+            "interaction_id": interaction.interaction_id,
+            "question_length": len(
+                interaction.question
+            ),
+        },
+    )
+
+    if trace_error is not None:
+        ...
+
+    return _result(
+        TaskStatus.WAITING_INPUT,
+        step,
+        tuple(tool_calls),
+        {
+            "interaction_id":
+                interaction.interaction_id,
+            "question":
+                interaction.question,
+        },
+        None,
+        state,
+    )
+```
+
+禁止把完整用户回答写入 Trace。
+
+### S3.14 Router 修改
+
+当前 Router 只显式阻止：
+
+```text
+BLOCKED
+FAILED
+INCONSISTENT
+```
+
+增加：
+
+```python
+if state.status is TaskStatus.WAITING_INPUT:
+    return RoutingDecision(
+        state.current_phase,
+        "interaction_answer_required",
+        blocked=True,
+    )
+```
+
+但 `resume=True` 且 pending Interaction 已回答时，AgentLoop 应在调用 Router 前把状态转换为：
+
+```text
+WAITING_INPUT
+→ RUNNING
+```
+
+### S3.15 ContextBuilder 修改
+
+ContextBuilder 接收 TaskState，因此可以直接加入：
+
+```python
+if state.interactions:
+    context["interaction_history"] = [
+        {
+            "interaction_id":
+                record.interaction_id,
+            "phase":
+                record.phase.value,
+            "question":
+                record.question,
+            "answer":
+                record.answer,
+        }
+        for record in state.interactions
+        if record.status
+            is InteractionStatus.ANSWERED
+    ]
+```
+
+未回答的问题不能送回 Provider，因为 AgentLoop 在等待用户期间根本不应再次调用模型。
+
+#### 15.1 Context Budget
+
+Interaction History 比：
+
+```text
+project_memory
+experience
+project_structure
+```
+
+更重要。
+
+上下文裁剪顺序建议：
+
+```text
+project_memory
+→ experience
+→ source_snippets
+→ 非当前阶段 artifact targets
+→ interaction_history 中最旧记录
+→ required artifacts
+```
+
+当前代码在预算不足时会先删除 `artifact_targets` 和 `task_workspace`，这不适合作为 S3 最终顺序。
+
+建议至少保留：
+
+```json
+{
+  "current_artifact_target":
+    ".hancode/tasks/task-001/SPEC.md"
+}
+```
+
+以及最新 Interaction。
+
+### S3.16 Application Service 设计
+
+新增：
+
+```python
+class InteractionService:
+    def get_pending(
+        self,
+        project_root: Path,
+        task_id: str,
+    ) -> InteractionRecord | None:
+        ...
+
+    def answer(
+        self,
+        project_root: Path,
+        task_id: str,
+        answer: str,
+        *,
+        interaction_id: str | None = None,
+    ) -> TaskSummary:
+        ...
+```
+
+#### 16.1 answer 行为
+
+```text
+load state
+→ reconcile
+→ 获取 pending Interaction
+→ 校验可回答
+→ 校验 interaction_id
+→ 脱敏
+→ 长度限制
+→ 幂等检查
+→ 保存 ANSWERED
+→ 返回 TaskSummary
+```
+
+### S3.17 回答幂等性
+
+重复执行：
+
+```bash
+hancode task answer task-001
+```
+
+可能发生在：
+
+* CLI 输出丢失；
+* 用户不确定第一次是否成功；
+* 脚本自动重试；
+* 进程在保存后崩溃。
+
+规则：
+
+| 情况 | 结果 |
+|---|---|
+| 同一个 Interaction、同一个回答 | 幂等成功 |
+| 同一个 Interaction、不同回答 | `interaction_answer_conflict` |
+| Interaction 已被消费 | `interaction_not_pending` |
+| ID 不匹配 | `interaction_id_mismatch` |
+| 没有 pending Interaction | `interaction_not_pending` |
+
+不能静默覆盖旧回答，否则恢复上下文不可审计。
+
+### S3.18 并发与锁
+
+当前任务级 mutation lock 实现在 AgentLoop 内部，并只包围 `run()`。
+
+但 `task answer` 同样会修改 state.json。
+
+如果不使用同一把锁，可能发生：
+
+```text
+AgentLoop 正在保存 WAITING_INPUT
+同时 task answer 修改 state
+→ 后写入者覆盖前写入者
+```
+
+因此 S3 应将锁抽取到：
+
+```text
+src/hancode/storage/task_lock.py
+```
+
+提供：
+
+```python
+class TaskMutationGuard(Protocol):
+    def acquire(
+        self,
+        task_id: str,
+        phase: Phase,
+    ) -> AbstractContextManager[None]:
+        ...
+```
+
+由以下组件共同使用：
+
+```text
+AgentLoop
+InteractionService.answer
+未来 confirm_before_write
+未来 TUI session
+```
+
+锁冲突返回：
+
+```text
+mutation_lock_busy
+```
+
+用户稍后重试，不得覆盖 state。
+
+### S3.19 CLI 设计
+
+新增：
+
+```bash
+hancode task answer TASK_ID
+```
+
+参数：
+
+```text
+TASK_ID
+--project-root PATH
+--interaction-id ID
+--answer-file PATH
+```
+
+默认行为：
+
+* 未提供 `--answer-file` 时，从 stdin 读取；
+* 不允许通过 `--answer "..."` 直接传入，避免回答进入 shell history；
+* 支持多行 answer file；
+* 不输出回答全文。
+
+示例：
+
+```bash
+hancode task answer task-001
+```
+
+或：
+
+```bash
+hancode task answer \
+  task-001 \
+  --interaction-id ask-000001 \
+  --answer-file answer.txt
+```
+
+Task CLI 当前只有 create、run、resume、status、list，因此 S3 只需在现有 `task_app` 下增加 answer。
+
+### S3.20 TaskSummary 修改
+
+当前 `resumable` 只考虑：
+
+* blocked 且一致；
+* inconsistent 且可以 rollback。
+
+增加：
+
+```python
+pending = state.pending_interaction
+
+requires_input = (
+    state.status is TaskStatus.WAITING_INPUT
+    and pending is not None
+    and pending.status
+        is InteractionStatus.WAITING
+)
+
+resumable = existing_resumable or (
+    state.status is TaskStatus.WAITING_INPUT
+    and pending is not None
+    and pending.status
+        is InteractionStatus.ANSWERED
+)
+```
+
+TaskSummary 增加：
+
+```python
+requires_input: bool
+pending_interaction: InteractionSummary | None
+```
+
+InteractionSummary 不包含 answer：
+
+```python
+{
+    "interaction_id": "...",
+    "phase": "spec",
+    "question": "...",
+    "answer_received": true
+}
+```
+
+### S3.21 Exit Code
+
+建议扩展：
+
+| Exit Code | 含义 |
+|---:|---|
+| 0 | completed |
+| 1 | blocked / failed |
+| 2 | CLI、配置或输入错误 |
+| 3 | inconsistent |
+| 4 | waiting_input |
+
+`waiting_input` 不是失败，也不是完成，需要独立代码方便外部脚本和未来 TUI 判断。
+
+### S3.22 Trace 设计
+
+新增事件：
+
+```text
+interaction_requested
+interaction_answered
+interaction_resumed
+interaction_pending_cleared
+interaction_history_cleared
+```
+
+#### 22.1 interaction_requested
+
+允许记录：
+
+```json
+{
+  "interaction_id": "ask-000001",
+  "question_length": 36
+}
+```
+
+可以记录脱敏后的问题摘要，但不建议记录完整问题。
+
+#### 22.2 interaction_answered
+
+只记录：
+
+```json
+{
+  "interaction_id": "ask-000001",
+  "answer_length": 22,
+  "redacted": false
+}
+```
+
+禁止记录 answer。
+
+#### 22.3 interaction_resumed
+
+```json
+{
+  "interaction_id": "ask-000001"
+}
+```
+
+### S3.23 安全边界
+
+用户回答进入 State 和 Provider Context 前必须：
+
+1. 去除首尾空白；
+2. 校验非空；
+3. 校验 UTF-8 长度；
+4. 调用 `redact_text()`；
+5. 禁止把回答写入 Trace；
+6. 禁止把回答写入普通 CLI 输出；
+7. 禁止把回答加入错误 message；
+8. 禁止用 ASK_USER 获取凭据。
+
+如果用户输入只有：
+
+```text
+sk-xxxxxxxx
+```
+
+脱敏后只剩 `[REDACTED]`，应返回：
+
+```text
+interaction_answer_contains_only_sensitive_content
+```
+
+提示：
+
+```text
+Do not provide credentials through ASK_USER.
+Use hancode auth login instead.
+```
+
+### S3.24 文件变更设计
+
+#### 24.1 新增文件
+
+| 文件 | 职责 |
+|---|---|
+| `src/hancode/core/interactions.py` | Interaction 模型和校验 |
+| `src/hancode/app/interaction_service.py` | 查询和提交回答 |
+| `src/hancode/storage/task_lock.py` | 共享 task mutation lock |
+| `tests/test_interactions.py` | Interaction 模型测试 |
+| `tests/test_interaction_service.py` | Answer 服务测试 |
+| `tests/test_interaction_loop.py` | AgentLoop 暂停恢复测试 |
+| `tests/providers/test_interaction_integration.py` | Provider 端到端问答测试 |
+
+#### 24.2 修改文件
+
+| 文件 | 修改 |
+|---|---|
+| `src/hancode/core/models.py` | 增加 WAITING_INPUT |
+| `src/hancode/core/state.py` | Interaction 状态持久化 |
+| `src/hancode/core/router.py` | waiting_input 路由 |
+| `src/hancode/core/actions.py` | ASK_USER 长度与安全契约 |
+| `src/hancode/core/config.py` | interaction 配置 |
+| `src/hancode/policy/tool_policy.py` | ASK_USER Policy |
+| `src/hancode/runtime/context.py` | interaction_history |
+| `src/hancode/runtime/agent_loop.py` | ASK_USER 暂停和 resume |
+| `src/hancode/providers/factory.py` | interaction_enabled 装配 |
+| `src/hancode/providers/openai_compatible.py` | 不再固定关闭交互 |
+| `src/hancode/providers/prompt_builder.py` | ASK_USER Prompt |
+| `src/hancode/app/task_models.py` | pending interaction 展示 |
+| `src/hancode/interfaces/cli.py` | task answer 和 exit code 4 |
+| `README.md` | 人机交互使用说明 |
+| `docs/PLAN.md` | S3 任务卡 |
+| `docs/AGENT_LOG.md` | 实现证据 |
+
+### S3.25 TDD 实现顺序
+
+#### S3-0：S2.2 收尾
+
+完成：
+
+```text
+tool_name 与 args schema 绑定
+非法 UTF-8 → provider_invalid_response
+```
+
+#### S3-1：Interaction 领域模型
+
+涉及：
+
+```text
+core/interactions.py
+core/models.py
+```
+
+测试：
+
+```text
+test_interaction_waiting_requires_no_answer
+test_interaction_answered_requires_answer
+test_interaction_id_format
+test_waiting_input_status_exists
+```
+
+#### S3-2：TaskState 持久化
+
+涉及：
+
+```text
+core/state.py
+```
+
+测试：
+
+```text
+test_old_state_loads_with_empty_interactions
+test_state_roundtrips_interactions
+test_state_rejects_dangling_pending_id
+test_state_rejects_multiple_waiting_questions
+test_state_rejects_cross_phase_interaction
+```
+
+#### S3-3：Config、Prompt 和 Schema
+
+涉及：
+
+```text
+core/config.py
+providers/prompt_builder.py
+providers/factory.py
+providers/openai_compatible.py
+```
+
+测试：
+
+```text
+test_interaction_disabled_by_default
+test_prompt_exposes_ask_user_when_enabled
+test_prompt_excludes_ask_user_when_disabled
+test_prompt_forbids_secret_requests
+```
+
+#### S3-4：ASK_USER Policy
+
+涉及：
+
+```text
+policy/tool_policy.py
+```
+
+测试：
+
+```text
+test_ask_user_allowed_when_enabled
+test_ask_user_denied_when_disabled
+test_ask_user_requires_question
+test_ask_user_does_not_require_checkpoint
+test_ask_user_does_not_consume_retry_budget
+test_ask_user_limit
+```
+
+#### S3-5：AgentLoop 暂停
+
+涉及：
+
+```text
+runtime/agent_loop.py
+core/router.py
+```
+
+测试：
+
+```text
+test_ask_user_sets_waiting_input
+test_ask_user_keeps_phase
+test_ask_user_persists_question
+test_ask_user_does_not_dispatch_tool
+test_ask_user_does_not_checkpoint
+test_ask_user_does_not_rollback
+test_ask_user_appends_safe_trace
+```
+
+#### S3-6：InteractionService 与锁
+
+涉及：
+
+```text
+app/interaction_service.py
+storage/task_lock.py
+```
+
+测试：
+
+```text
+test_answer_updates_pending_interaction
+test_same_answer_is_idempotent
+test_different_answer_conflicts
+test_answer_requires_pending_question
+test_answer_uses_task_lock
+test_answer_does_not_echo_secret
+```
+
+#### S3-7：Context 和 Resume
+
+涉及：
+
+```text
+runtime/context.py
+runtime/agent_loop.py
+app/task_service.py
+```
+
+测试：
+
+```text
+test_resume_requires_answer
+test_resume_with_answer_sets_running
+test_answer_enters_provider_context
+test_interaction_history_survives_multiple_steps
+test_interaction_history_clears_after_phase
+test_provider_failure_keeps_answer
+```
+
+#### S3-8：CLI
+
+涉及：
+
+```text
+interfaces/cli.py
+app/task_models.py
+```
+
+测试：
+
+```text
+test_cli_run_returns_waiting_input
+test_cli_waiting_input_exit_code_is_4
+test_cli_status_shows_question
+test_cli_answer_reads_stdin
+test_cli_answer_reads_file
+test_cli_answer_does_not_echo_answer
+test_cli_resume_after_answer
+```
+
+#### S3-9：端到端交互测试
+
+FakeTransport 序列：
+
+```text
+1. ask_user
+2. write_file SPEC.md
+3. finish_phase spec
+4. HTTP 400 结束测试脚本
+```
+
+验证第二次 Provider 请求包含用户回答：
+
+```text
+ASK_USER
+→ WAITING_INPUT
+→ task answer
+→ task resume
+→ Context 包含 answer
+→ write_file
+→ SPEC.md 存在
+→ state.artifacts["SPEC.md"] == true
+```
+
+### S3.26 核心端到端测试示例
+
+```python
+def test_provider_ask_user_answer_resume(
+    tmp_path: Path,
+) -> None:
+    service.create(
+        tmp_path,
+        "Generate SPEC.md",
+    )
+
+    first_provider = provider_with_actions([
+        ask_user(
+            phase="spec",
+            question="Which framework should be used?",
+        ),
+    ])
+
+    first = service.run(
+        tmp_path,
+        "task-001",
+        provider=first_provider,
+    )
+
+    assert first.status is TaskStatus.WAITING_INPUT
+    assert first.final_state.current_phase is Phase.SPEC
+
+    interaction_service.answer(
+        tmp_path,
+        "task-001",
+        "Use FastAPI.",
+    )
+
+    second_transport = InspectingFakeTransport([
+        write_spec_action(),
+        finish_spec_action(),
+        stop_response(),
+    ])
+
+    second = service.resume(
+        tmp_path,
+        "task-001",
+        provider=provider(second_transport),
+    )
+
+    assert second.tool_calls == ("write_file",)
+    assert "Use FastAPI." in (
+        second_transport.requests[0]
+        .json_body["messages"][1]["content"]
+    )
+
+    assert (
+        tmp_path
+        / ".hancode"
+        / "tasks"
+        / "task-001"
+        / "SPEC.md"
+    ).is_file()
+```
+
+### S3.27 S3 验收标准
+
+S3 只有同时满足以下条件才能标记完成：
+
+1. `ask_user` 在 interaction enabled 时进入 Provider Schema。
+2. interaction disabled 时 ASK_USER 不对模型开放。
+3. ASK_USER 能通过 ActionParser。
+4. ASK_USER 不调用 ToolRegistry。
+5. ASK_USER 不创建 checkpoint。
+6. ASK_USER 不消耗 retry budget。
+7. ASK_USER 不触发 rollback。
+8. ASK_USER 保持当前 phase。
+9. ASK_USER 将任务设为 `waiting_input`。
+10. Pending question 持久化到 state。
+11. 进程结束后 `task status` 仍能展示问题。
+12. `task answer` 能提交回答。
+13. 回答不会出现在 CLI 输出。
+14. 回答不会出现在 Trace。
+15. 回答不会出现在错误 message。
+16. 同一回答重复提交是幂等的。
+17. 不同回答覆盖已提交回答会被拒绝。
+18. 未回答时不能 resume。
+19. 已回答时可以 resume。
+20. 恢复后 Provider Context 包含回答。
+21. 回答在当前 phase 的后续多轮中保持可见。
+22. phase 完成后 Interaction History 被清理。
+23. Provider 失败不会丢失已提交回答。
+24. 回答和 AgentLoop 使用同一 task lock。
+25. waiting_input 有独立 CLI exit code。
+26. TaskSummary 正确区分 requires_input 和 resumable。
+27. FakeTransport 能跑通 ask → answer → resume → tool。
+28. 旧 state.json 能正常加载。
+29. MockLLM 路径保持确定性离线。
+30. pytest、Ruff、MyPy、package build 全部通过。
+
+### S3.28 最终架构
+
+S3 完成后的链路：
+
+```text
+User
+ │
+ ▼
+hancode task run
+ │
+ ▼
+AgentLoop
+ │
+ ▼
+ProviderAdapter
+ │
+ ▼
+ASK_USER
+ │
+ ▼
+Interaction State
+ │
+ ├─ status = waiting_input
+ ├─ question persisted
+ └─ AgentLoop exits
+        │
+        ▼
+hancode task answer
+        │
+        ├─ sanitize
+        ├─ lock
+        └─ persist answer
+               │
+               ▼
+hancode task resume
+               │
+               ▼
+ContextBuilder
+               │
+               ├─ phase context
+               ├─ artifacts
+               └─ interaction_history
+                      │
+                      ▼
+               ProviderAdapter
+                      │
+                      ▼
+                 next Action
+```
+
+S3 的核心不是增加一个 CLI 提示，而是建立：
+
+> **模型提问、任务暂停、问题持久化、回答持久化、跨进程恢复、上下文重放和并发保护的完整 Human-in-the-Loop 状态机。**
+
+完成 S3 后，HanCode 才真正具备后续 TUI 所需的交互内核；TUI 只需要展示 `pending_interaction`、读取回答并调用 `InteractionService`，不需要重新实现 Agent 状态逻辑。
+
+`TaskState` 不变量、共享 task lock 和端到端恢复测试是 S3 最关键的三部分，应按 `S3-0 → S3-9` 顺序逐项 TDD 推进。
+
+### S3.29 实施记录
+
+- S3-0：完成 `tool_name` 与工具参数 Schema 绑定，并将非法 UTF-8 响应映射为 `provider_invalid_response`。
+- S3-1/S3-2：新增 `InteractionRecord`、`WAITING_INPUT`、state 交互字段、旧 state 兼容加载和状态不变量校验。
+- S3-3/S3-4：新增默认关闭的交互配置、Provider/Prompt 装配、问题长度限制、秘密请求拒绝和 phase 交互次数限制。
+- S3-5/S3-7：AgentLoop 可安全暂停、持久化问题、等待回答、恢复已回答交互，并把已回答历史加入 Provider Context。
+- S3-6：新增 `InteractionService` 和共享 task mutation lock，支持回答幂等、冲突拒绝、长度限制和脱敏。
+- S3-8：新增 `task answer`、pending 问题状态展示和 waiting_input 独立退出码 4；回答不进入普通 CLI 输出或 trace 内容。
+- S3-9：FakeTransport 完成 `ask_user → answer → resume → write_file → finish_phase → provider failure` 链路测试。
+- 新鲜验证：`968 passed, 14 skipped`；Ruff、MyPy 和 `uv build` 全部通过。
+- 剩余风险：TUI/REPL/WebUI 仍是后续范围；Windows symlink/junction 相关测试在无权限环境可能继续 skip；当前工作区未提交。
+
+---
+
 # 8. 需求→任务追溯
 
 | SPEC 锚点                                  | 对应任务                         | 状态  |

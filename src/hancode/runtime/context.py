@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Mapping
 
 from hancode.core.config import HanCodeConfig
+from hancode.core.interactions import InteractionStatus
 from hancode.storage.checkpoints import _load_manifest, _validate_manifest_identity
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.tooling.file_tools import redact_text
@@ -198,6 +199,18 @@ def build_context(
             "truncated_sections": [],
         },
     }
+    interaction_history = [
+        {
+            "interaction_id": interaction.interaction_id,
+            "phase": interaction.phase.value,
+            "question": redact_text(interaction.question),
+            "answer": redact_text(interaction.answer or ""),
+        }
+        for interaction in current_state.interactions
+        if interaction.status is InteractionStatus.ANSWERED
+    ]
+    if interaction_history:
+        context["interaction_history"] = interaction_history
     return _apply_context_budget(context, phase, config.max_context_chars)
 
 

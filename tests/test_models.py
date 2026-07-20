@@ -30,6 +30,7 @@ def test_task_status_allows_only_defined_values() -> None:
         "failed",
         "completed",
         "inconsistent",
+        "waiting_input",
     ]
 
     with pytest.raises(ValueError):

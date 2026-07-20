@@ -32,6 +32,17 @@ Never modify protected course files.
 Do not wrap the response in Markdown.
 Do not return explanations outside the Action object."""
 
+_INTERACTION_SYSTEM_PROMPT = """\
+Use ask_user only when information is genuinely required
+and cannot be inferred from the provided context.
+Ask one precise question at a time.
+Do not ask for API keys, passwords, tokens, credentials,
+private keys, or other secrets.
+Do not use ask_user merely to ask for permission to continue.
+Do not ask questions whose answers are already available
+in SPEC.md, PLAN.md, course context, project files, or prior
+interaction history."""
+
 _PHASE_INSTRUCTIONS: dict[Phase, str] = {
     Phase.SPEC: "Understand the assignment and produce SPEC.md. Do not modify source code.",
     Phase.PLAN: "Use SPEC.md to produce PLAN.md. Do not modify source code.",
@@ -67,7 +78,10 @@ class PromptBuilder:
         phase = _require_phase(context)
         phase_catalog = _phase_tool_catalog(phase, tool_catalog)
 
-        system_content = _build_system_message(phase)
+        system_content = _build_system_message(
+            phase,
+            interaction_enabled=interaction_enabled,
+        )
         user_content = _build_user_message(
             context=context,
             tool_catalog=phase_catalog,
@@ -100,9 +114,15 @@ def _require_phase(context: Mapping[str, object]) -> Phase:
         raise ValueError(f"Unsupported phase: {raw_phase}") from exc
 
 
-def _build_system_message(phase: Phase) -> str:
+def _build_system_message(phase: Phase, *, interaction_enabled: bool) -> str:
     instruction = _PHASE_INSTRUCTIONS.get(phase, "")
-    return f"{_SYSTEM_PROMPT}\n\nCurrent phase: {phase.value}\n{instruction}"
+    interaction_instruction = (
+        f"\n\n{_INTERACTION_SYSTEM_PROMPT}" if interaction_enabled else ""
+    )
+    return (
+        f"{_SYSTEM_PROMPT}{interaction_instruction}\n\n"
+        f"Current phase: {phase.value}\n{instruction}"
+    )
 
 
 def _build_user_message(

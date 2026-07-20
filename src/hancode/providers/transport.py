@@ -115,8 +115,9 @@ class HttpxProviderTransport:
                         chunks.append(chunk)
                     raw_body = b"".join(chunks)
                     try:
-                        json_body: object = json.loads(raw_body)
-                    except json.JSONDecodeError:
+                        json_text = raw_body.decode("utf-8")
+                        json_body: object = json.loads(json_text)
+                    except (UnicodeDecodeError, json.JSONDecodeError):
                         json_body = None
                     return ProviderResponse(
                         status_code=response.status_code,

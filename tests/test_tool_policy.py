@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from hancode.core.actions import Action, ActionType
 from hancode.core.config import HanCodeConfig
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import Phase, TaskStatus
 from hancode.core.state import TaskState
 from hancode.policy.path_policy import PathZone
@@ -252,7 +254,7 @@ def test_finish_phase_uses_deterministic_state_gate(
 
 
 def test_allows_control_actions_without_tool_dispatch(tmp_path: Path) -> None:
-    policy = _policy(tmp_path)
+    policy = _policy(tmp_path, interaction_mode="ask_user")
     state = _state(Phase.CODE)
 
     ask_user = policy.evaluate(
@@ -266,6 +268,108 @@ def test_allows_control_actions_without_tool_dispatch(tmp_path: Path) -> None:
     assert final.allowed is True
     assert ask_user.requires_checkpoint is False
     assert final.requires_checkpoint is False
+
+
+def test_denies_ask_user_when_interaction_is_disabled(tmp_path: Path) -> None:
+    decision = _policy(tmp_path).evaluate(
+        action=_ask_user_action(Phase.CODE),
+        phase=Phase.CODE,
+        state=_state(Phase.CODE),
+    )
+
+    assert decision.allowed is False
+    assert decision.denied_rule == "interaction_disabled"
+
+
+def test_denies_ask_user_without_question(tmp_path: Path) -> None:
+    action = _ask_user_action(Phase.CODE)
+    object.__setattr__(action, "args", {})
+
+    decision = _policy(tmp_path, interaction_mode="ask_user").evaluate(
+        action=action,
+        phase=Phase.CODE,
+        state=_state(Phase.CODE),
+    )
+
+    assert decision.allowed is False
+    assert decision.denied_rule == "interaction_question_required"
+
+
+def test_denies_ask_user_question_over_configured_limit(tmp_path: Path) -> None:
+    decision = _policy(
+        tmp_path,
+        interaction_mode="ask_user",
+        max_interaction_question_chars=5,
+    ).evaluate(
+        action=_ask_user_action(Phase.CODE, question="Too long"),
+        phase=Phase.CODE,
+        state=_state(Phase.CODE),
+    )
+
+    assert decision.allowed is False
+    assert decision.denied_rule == "interaction_question_too_long"
+
+
+def test_denies_ask_user_when_an_interaction_is_pending(tmp_path: Path) -> None:
+    interaction = InteractionRecord(
+        interaction_id="ask-000001",
+        phase=Phase.CODE,
+        question="Choose a target.",
+        answer=None,
+        status=InteractionStatus.WAITING,
+    )
+    state = replace(
+        _state(Phase.CODE),
+        status=TaskStatus.WAITING_INPUT,
+        interaction_seq=1,
+        interactions=(interaction,),
+        pending_interaction_id=interaction.interaction_id,
+    )
+
+    decision = _policy(tmp_path, interaction_mode="ask_user").evaluate(
+        action=_ask_user_action(Phase.CODE),
+        phase=Phase.CODE,
+        state=state,
+    )
+
+    assert decision.allowed is False
+    assert decision.denied_rule == "interaction_already_pending"
+
+
+def test_denies_ask_user_after_phase_interaction_limit(tmp_path: Path) -> None:
+    interaction = InteractionRecord(
+        interaction_id="ask-000001",
+        phase=Phase.CODE,
+        question="Which target?",
+        answer="src/main.py",
+        status=InteractionStatus.ANSWERED,
+    )
+    state = replace(_state(Phase.CODE), interaction_seq=1, interactions=(interaction,))
+
+    decision = _policy(
+        tmp_path,
+        interaction_mode="ask_user",
+        max_interactions_per_phase=1,
+    ).evaluate(
+        action=_ask_user_action(Phase.CODE),
+        phase=Phase.CODE,
+        state=state,
+    )
+
+    assert decision.allowed is False
+    assert decision.denied_rule == "interaction_limit_exceeded"
+
+
+@pytest.mark.parametrize("question", ["Provide the API key", "Enter your password"])
+def test_denies_ask_user_secret_request(tmp_path: Path, question: str) -> None:
+    decision = _policy(tmp_path, interaction_mode="ask_user").evaluate(
+        action=_ask_user_action(Phase.CODE, question=question),
+        phase=Phase.CODE,
+        state=_state(Phase.CODE),
+    )
+
+    assert decision.allowed is False
+    assert decision.denied_rule == "interaction_secret_request_denied"
 
 
 def test_edit_file_source_write_requires_checkpoint(tmp_path: Path) -> None:
@@ -306,11 +410,30 @@ def test_denies_rollback_without_checkpoint(tmp_path: Path) -> None:
     assert decision.denied_rule == "rollback_checkpoint_required"
 
 
-def _policy(project_root: Path) -> ToolPolicy:
-    return ToolPolicy(_config(project_root))
+def _policy(
+    project_root: Path,
+    *,
+    interaction_mode: str = "disabled",
+    max_interactions_per_phase: int = 8,
+    max_interaction_question_chars: int = 2048,
+) -> ToolPolicy:
+    return ToolPolicy(
+        _config(
+            project_root,
+            interaction_mode=interaction_mode,
+            max_interactions_per_phase=max_interactions_per_phase,
+            max_interaction_question_chars=max_interaction_question_chars,
+        )
+    )
 
 
-def _config(project_root: Path) -> HanCodeConfig:
+def _config(
+    project_root: Path,
+    *,
+    interaction_mode: str = "disabled",
+    max_interactions_per_phase: int = 8,
+    max_interaction_question_chars: int = 2048,
+) -> HanCodeConfig:
     return HanCodeConfig(
         project_root=project_root,
         hancode_root=project_root / ".hancode",
@@ -329,6 +452,9 @@ def _config(project_root: Path) -> HanCodeConfig:
         max_trace_events=40,
         protected_patterns=("assignment.md",),
         writable_roots=(project_root / "src",),
+        interaction_mode=interaction_mode,  # type: ignore[arg-type]
+        max_interactions_per_phase=max_interactions_per_phase,
+        max_interaction_question_chars=max_interaction_question_chars,
     )
 
 
@@ -406,12 +532,12 @@ def _finish_action(phase: Phase) -> Action:
     return action
 
 
-def _ask_user_action(phase: Phase) -> Action:
+def _ask_user_action(phase: Phase, *, question: str = "Continue?") -> Action:
     action = Action.from_values(
         type=ActionType.ASK_USER,
         phase=phase,
         tool_name=None,
-        args={"question": "Continue?"},
+        args={"question": question},
         reason=None,
     )
     assert isinstance(action, Action)

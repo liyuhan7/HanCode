@@ -4,11 +4,9 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 import inspect
-import os
 from pathlib import Path
 import re
 from typing import Callable, Iterator, Mapping, Protocol
-import uuid
 
 from hancode.core.actions import Action, ActionType, ParseError, parse_action
 from hancode.storage.checkpoints import (
@@ -26,12 +24,14 @@ from hancode.tooling.file_tools import redact_text
 from hancode.providers.base import LLMClient
 from hancode.providers.errors import ProviderError
 from hancode.providers.mock import MockLLMExhausted
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import OperationStatus, Phase, Risk, TaskStatus
 from hancode.policy.path_policy import PathZone
 from hancode.core.router import select_next_phase
 from hancode.core.state import TaskState, load_state, reconcile_state, save_state
 from hancode.tooling.registry import ToolResult
 from hancode.storage.trace import TraceEvent, append_trace
+from hancode.storage.task_lock import FilesystemTaskMutationGuard
 from hancode.storage.workspace import task_path
 
 
@@ -200,73 +200,14 @@ class InMemoryMutationGuard:
         yield
 
 
-class FilesystemMutationGuard(_FilesystemTaskAdapter):
-    @contextmanager
-    def acquire(self, task_id: str, phase: Phase) -> Iterator[None]:
-        lock_path = self._task_root(task_id) / ".agent-loop.lock"
-        owner_token = uuid.uuid4().hex
-        try:
-            file_descriptor = os.open(
-                lock_path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600,
-            )
-        except FileExistsError as exc:
-            raise HanCodeError(
-                StructuredError(
-                    error_code="mutation_lock_busy",
-                    message="Another agent run holds the task mutation lock.",
-                    phase=phase.value,
-                    denied_rule="single_task_mutator_required",
-                    suggested_fix="Wait for the active task run to finish before retrying.",
-                )
-            ) from exc
-        except OSError as exc:
-            raise HanCodeError(
-                StructuredError(
-                    error_code="mutation_lock_unavailable",
-                    message="The task mutation lock could not be acquired.",
-                    phase=phase.value,
-                    denied_rule="mutation_lock_required",
-                    suggested_fix="Restore task workspace lock-file access before retrying.",
-                )
-            ) from exc
+class FilesystemMutationGuard(FilesystemTaskMutationGuard):
+    """Compatibility name for the shared task mutation guard."""
 
-        cleanup_failed = False
-        owner_changed = False
-        try:
-            os.write(
-                file_descriptor,
-                f"owner={owner_token};pid={os.getpid()}\n".encode("ascii"),
-            )
-            yield
-        finally:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                cleanup_failed = True
-            try:
-                current_owner = lock_path.read_text(encoding="ascii").strip()
-                if current_owner != f"owner={owner_token};pid={os.getpid()}".strip():
-                    owner_changed = True
-                else:
-                    lock_path.unlink()
-            except (OSError, UnicodeError):
-                cleanup_failed = True
-            if cleanup_failed or owner_changed:
-                raise HanCodeError(
-                    StructuredError(
-                        error_code=(
-                            "mutation_lock_owner_changed"
-                            if owner_changed
-                            else "mutation_lock_release_failed"
-                        ),
-                        message="The task mutation lock could not be released.",
-                        phase=phase.value,
-                        denied_rule="mutation_lock_release_required",
-                        suggested_fix="Restore task workspace lock-file access before retrying.",
-                    )
-                )
+    def __init__(self, project_root: Path) -> None:
+        super().__init__(
+            project_root,
+            task_path_resolver=lambda root, task_id: task_path(root, task_id),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,6 +529,44 @@ class AgentLoop:
                     _resume_state_error(state.current_phase),
                     state,
                 )
+            elif state.status is TaskStatus.WAITING_INPUT:
+                answered_pending = _answered_pending_interaction(state)
+                if answered_pending is not None:
+                    state = self._save_if_changed(
+                        task_id,
+                        state,
+                        replace(
+                            state,
+                            status=TaskStatus.RUNNING,
+                            pending_interaction_id=None,
+                        ),
+                    )
+                    for event_type, event_status in (
+                        ("interaction_resumed", "running"),
+                        ("interaction_pending_cleared", "succeeded"),
+                    ):
+                        trace_error = self._append_trace(
+                            task_id,
+                            trace_events,
+                            event_type=event_type,
+                            phase=state.current_phase,
+                            status=event_status,
+                            observation={
+                                "interaction_id": answered_pending.interaction_id,
+                            },
+                        )
+                        if trace_error is not None:
+                            state, state_error = self._mark_inconsistent(
+                                task_id, state, trace_error
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                0,
+                                (),
+                                observation,
+                                state_error,
+                                state,
+                            )
 
         traced_phase: Phase | None = None
         for step in range(1, self._max_steps + 1):
@@ -628,6 +607,15 @@ class AgentLoop:
                     TaskStatus.COMPLETED, step - 1, tuple(tool_calls), observation, None, state
                 )
             if routing.blocked:
+                if state.status is TaskStatus.WAITING_INPUT:
+                    return _result(
+                        TaskStatus.WAITING_INPUT,
+                        step - 1,
+                        tuple(tool_calls),
+                        _pending_interaction_observation(state),
+                        None,
+                        state,
+                    )
                 status = (
                     state.status
                     if state.status
@@ -856,6 +844,48 @@ class AgentLoop:
                         state,
                     )
                 continue
+
+            if action.type is ActionType.ASK_USER:
+                state, interaction = self._request_user_input(
+                    task_id,
+                    state,
+                    action,
+                    routing.phase,
+                )
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="interaction_requested",
+                    phase=routing.phase,
+                    status="waiting",
+                    observation={
+                        "interaction_id": interaction.interaction_id,
+                        "question_length": len(interaction.question),
+                    },
+                )
+                if trace_error is not None:
+                    state, state_error = self._mark_inconsistent(
+                        task_id, state, trace_error
+                    )
+                    return _result(
+                        TaskStatus.INCONSISTENT,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        state_error,
+                        state,
+                    )
+                return _result(
+                    TaskStatus.WAITING_INPUT,
+                    step,
+                    tuple(tool_calls),
+                    {
+                        "interaction_id": interaction.interaction_id,
+                        "question": interaction.question,
+                    },
+                    None,
+                    state,
+                )
 
             if action.type is ActionType.TOOL_CALL:
                 if not isinstance(action.tool_name, str) or not action.tool_name:
@@ -1826,6 +1856,7 @@ class AgentLoop:
         )
 
     def _enter_phase(self, task_id: str, state: TaskState, phase: Phase) -> TaskState:
+        phase_changed = state.current_phase is not phase
         source_edits = (
             0
             if phase is Phase.CODE and state.current_phase is not Phase.CODE
@@ -1839,8 +1870,46 @@ class AgentLoop:
                 status=TaskStatus.RUNNING,
                 current_phase=phase,
                 source_edits_this_phase=source_edits,
+                interactions=() if phase_changed else state.interactions,
+                pending_interaction_id=(
+                    None if phase_changed else state.pending_interaction_id
+                ),
             ),
         )
+
+    def _request_user_input(
+        self,
+        task_id: str,
+        state: TaskState,
+        action: Action,
+        phase: Phase,
+    ) -> tuple[TaskState, InteractionRecord]:
+        question = action.args.get("question")
+        if not isinstance(question, str) or not question.strip():
+            raise HanCodeError(
+                StructuredError(
+                    error_code="interaction_question_required",
+                    message="ASK_USER requires a non-empty question.",
+                    phase=phase.value,
+                    denied_rule="interaction_question_required",
+                    suggested_fix="Provide one precise non-empty question.",
+                )
+            )
+        interaction = InteractionRecord(
+            interaction_id=f"ask-{state.interaction_seq + 1:06d}",
+            phase=phase,
+            question=question,
+            answer=None,
+            status=InteractionStatus.WAITING,
+        )
+        updated = replace(
+            state,
+            status=TaskStatus.WAITING_INPUT,
+            interaction_seq=state.interaction_seq + 1,
+            interactions=(*state.interactions, interaction),
+            pending_interaction_id=interaction.interaction_id,
+        )
+        return self._save_if_changed(task_id, state, updated), interaction
 
     def _block(self, task_id: str, state: TaskState) -> TaskState:
         return self._save_if_changed(task_id, state, replace(state, status=TaskStatus.BLOCKED))
@@ -2542,6 +2611,30 @@ def _make_result(
         retry_budget_remaining=final_state.retry_budget_remaining,
         trace_events=trace_events,
     )
+
+
+def _answered_pending_interaction(state: TaskState) -> InteractionRecord | None:
+    if state.pending_interaction_id is None:
+        return None
+    for interaction in state.interactions:
+        if (
+            interaction.interaction_id == state.pending_interaction_id
+            and interaction.status is InteractionStatus.ANSWERED
+        ):
+            return interaction
+    return None
+
+
+def _pending_interaction_observation(state: TaskState) -> dict[str, object] | None:
+    if state.pending_interaction_id is None:
+        return None
+    for interaction in state.interactions:
+        if interaction.interaction_id == state.pending_interaction_id:
+            return {
+                "interaction_id": interaction.interaction_id,
+                "question": interaction.question,
+            }
+    return None
 
 
 def _safe_structured_error(error: StructuredError | None) -> StructuredError | None:

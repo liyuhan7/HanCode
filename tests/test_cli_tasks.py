@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from typer.testing import CliRunner
 from hancode.app.task_models import TaskSummary
 from hancode.app.task_service import TaskService
 from hancode.core.models import Phase, TaskStatus
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.state import TaskState
 from hancode.interfaces import cli
 from hancode.runtime.agent_loop import AgentRunResult
@@ -70,11 +72,12 @@ def _make_run_result(
     status: TaskStatus = TaskStatus.BLOCKED,
     task_id: str = "task-001",
 ) -> AgentRunResult:
+    state_status = TaskStatus.CREATED if status is TaskStatus.WAITING_INPUT else status
     state = TaskState(
         schema_version=1,
         task_id=task_id,
         goal="test goal",
-        status=status,
+        status=state_status,
         current_phase=Phase.SPEC,
         files_changed=(),
         latest_checkpoint=None,
@@ -104,6 +107,21 @@ def _make_run_result(
             "DELIVERABLES.md": False,
         },
     )
+    if status is TaskStatus.WAITING_INPUT:
+        interaction = InteractionRecord(
+            interaction_id="ask-000001",
+            phase=Phase.SPEC,
+            question="Which target should be used?",
+            answer=None,
+            status=InteractionStatus.WAITING,
+        )
+        state = replace(
+            state,
+            status=TaskStatus.WAITING_INPUT,
+            interaction_seq=1,
+            interactions=(interaction,),
+            pending_interaction_id=interaction.interaction_id,
+        )
     return AgentRunResult(
         status=status,
         steps=1,
@@ -359,6 +377,30 @@ def test_cli_task_resume_calls_service_with_resume_true(
     assert calls == [True]
 
 
+def test_cli_task_run_returns_waiting_input_with_exit_code_four(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _make_project(tmp_path)
+    runner.invoke(
+        cli.app,
+        ["task", "create", "test", "--project-root", str(tmp_path)],
+    )
+
+    def fake_run(self, project_root: Path, task_id: str, *, resume: bool, provider: object = None) -> AgentRunResult:
+        return _make_run_result(status=TaskStatus.WAITING_INPUT)
+
+    monkeypatch.setattr(TaskService, "run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        ["task", "run", "task-001", "--project-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 4
+    payload = _payload(result)
+    assert payload["status"] == "waiting_input"
+
+
 # =========================================================================
 # Root-level run
 # =========================================================================
@@ -485,6 +527,154 @@ def test_cli_task_inconsistent_returns_exit_three(
     )
 
     assert result.exit_code == 3
+
+
+def test_cli_task_status_shows_pending_question(tmp_path: Path) -> None:
+    _make_project(tmp_path)
+    runner.invoke(
+        cli.app,
+        ["task", "create", "test", "--project-root", str(tmp_path)],
+    )
+    task_root = tmp_path / ".hancode" / "tasks" / "task-001"
+    state = TaskState(
+        schema_version=1,
+        task_id="task-001",
+        goal="test",
+        status=TaskStatus.WAITING_INPUT,
+        current_phase=Phase.SPEC,
+        files_changed=(),
+        latest_checkpoint=None,
+        checkpoint_seq=0,
+        tests_run=(),
+        latest_test_status="none",
+        test_status_consumed=False,
+        retry_budget_remaining=2,
+        inconsistent=False,
+        source_edits_this_phase=0,
+        rollback_required=False,
+        rollback_done=False,
+        phase_completed={phase.value: False for phase in Phase},
+        artifacts={
+            "SPEC.md": False,
+            "PLAN.md": False,
+            "TEST_REPORT.md": False,
+            "REVIEW.md": False,
+            "KNOWLEDGE.md": False,
+            "DELIVERABLES.md": False,
+        },
+        interaction_seq=1,
+        interactions=(
+            InteractionRecord(
+                interaction_id="ask-000001",
+                phase=Phase.SPEC,
+                question="Which target should be used?",
+                answer=None,
+                status=InteractionStatus.WAITING,
+            ),
+        ),
+        pending_interaction_id="ask-000001",
+    )
+    from hancode.core.state import save_state
+
+    save_state(task_root, state)
+
+    result = runner.invoke(
+        cli.app,
+        ["task", "status", "task-001", "--project-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    payload = _payload(result)
+    assert payload["interaction"]["question"] == "Which target should be used?"
+
+
+def test_cli_task_answer_reads_stdin_without_echoing_answer(tmp_path: Path) -> None:
+    _make_project(tmp_path)
+    runner.invoke(
+        cli.app,
+        ["task", "create", "test", "--project-root", str(tmp_path)],
+    )
+    _write_waiting_state(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        ["task", "answer", "task-001", "--project-root", str(tmp_path)],
+        input="src/main.py\n",
+    )
+
+    assert result.exit_code == 0
+    assert "src/main.py" not in result.stdout
+
+
+def test_cli_task_answer_reads_file(tmp_path: Path) -> None:
+    _make_project(tmp_path)
+    runner.invoke(
+        cli.app,
+        ["task", "create", "test", "--project-root", str(tmp_path)],
+    )
+    _write_waiting_state(tmp_path)
+    answer_file = tmp_path / "answer.txt"
+    answer_file.write_text("src/main.py\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "task",
+            "answer",
+            "task-001",
+            "--file",
+            str(answer_file),
+            "--project-root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+
+
+def _write_waiting_state(project_root: Path) -> None:
+    task_root = project_root / ".hancode" / "tasks" / "task-001"
+    state = TaskState(
+        schema_version=1,
+        task_id="task-001",
+        goal="test",
+        status=TaskStatus.WAITING_INPUT,
+        current_phase=Phase.SPEC,
+        files_changed=(),
+        latest_checkpoint=None,
+        checkpoint_seq=0,
+        tests_run=(),
+        latest_test_status="none",
+        test_status_consumed=False,
+        retry_budget_remaining=2,
+        inconsistent=False,
+        source_edits_this_phase=0,
+        rollback_required=False,
+        rollback_done=False,
+        phase_completed={phase.value: False for phase in Phase},
+        artifacts={
+            "SPEC.md": False,
+            "PLAN.md": False,
+            "TEST_REPORT.md": False,
+            "REVIEW.md": False,
+            "KNOWLEDGE.md": False,
+            "DELIVERABLES.md": False,
+        },
+        interaction_seq=1,
+        interactions=(
+            InteractionRecord(
+                interaction_id="ask-000001",
+                phase=Phase.SPEC,
+                question="Which target should be used?",
+                answer=None,
+                status=InteractionStatus.WAITING,
+            ),
+        ),
+        pending_interaction_id="ask-000001",
+    )
+    from hancode.core.state import save_state
+
+    save_state(task_root, state)
 
 
 # =========================================================================

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import urlparse
 
 from hancode.core.errors import HanCodeError, StructuredError
@@ -62,6 +62,7 @@ _OPTIONAL_STRING_FIELDS = (
     "test_command",
     "build_command",
     "provider_base_url",
+    "interaction_mode",
 )
 _INTEGER_FIELDS = (
     "max_steps",
@@ -74,6 +75,9 @@ _INTEGER_FIELDS = (
     "provider_max_retries",
     "provider_max_output_tokens",
     "provider_max_response_bytes",
+    "max_interactions_per_phase",
+    "max_interaction_question_chars",
+    "max_interaction_answer_chars",
 )
 _PROVIDER_INTEGER_FIELDS = frozenset(
     {
@@ -93,6 +97,7 @@ _SUPPORTED_LLM_PROVIDERS = frozenset(
     {"mock", "openai_compatible", "anthropic", "local"}
 )
 _SUPPORTED_CREDENTIAL_SOURCES = frozenset({"keyring", "env", "dotenv"})
+_SUPPORTED_INTERACTION_MODES = frozenset({"disabled", "ask_user"})
 _REMOTE_LLM_PROVIDERS = frozenset({"openai_compatible", "anthropic"})
 _SENSITIVE_FIELD_MARKERS = (
     "apikey",
@@ -132,6 +137,10 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "provider_max_retries",
         "provider_max_output_tokens",
         "provider_max_response_bytes",
+        "interaction_mode",
+        "max_interactions_per_phase",
+        "max_interaction_question_chars",
+        "max_interaction_answer_chars",
     }
 )
 _ALLOWED_PROJECT_FIELDS = _PROJECT_METADATA_FIELDS | _ACTIVE_CONFIG_FIELDS
@@ -161,6 +170,10 @@ class HanCodeConfig:
     provider_max_retries: int = 2
     provider_max_output_tokens: int = 2048
     provider_max_response_bytes: int = 1048576
+    interaction_mode: Literal["disabled", "ask_user"] = "disabled"
+    max_interactions_per_phase: int = 8
+    max_interaction_question_chars: int = 2048
+    max_interaction_answer_chars: int = 8192
 
 
 def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig:
@@ -225,6 +238,19 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         provider_max_response_bytes=cast(
             int, project_data.get("provider_max_response_bytes", 1048576)
         ),
+        interaction_mode=cast(
+            Literal["disabled", "ask_user"],
+            project_data.get("interaction_mode", "disabled"),
+        ),
+        max_interactions_per_phase=cast(
+            int, project_data.get("max_interactions_per_phase", 8)
+        ),
+        max_interaction_question_chars=cast(
+            int, project_data.get("max_interaction_question_chars", 2048)
+        ),
+        max_interaction_answer_chars=cast(
+            int, project_data.get("max_interaction_answer_chars", 8192)
+        ),
     )
 
 
@@ -288,6 +314,10 @@ def _read_project_config(project_file: Path) -> dict[str, object]:
         and credential_source not in _SUPPORTED_CREDENTIAL_SOURCES
     ):
         raise _invalid_project_config_error("credential_source")
+
+    interaction_mode = project_data.get("interaction_mode", "disabled")
+    if interaction_mode not in _SUPPORTED_INTERACTION_MODES:
+        raise _invalid_project_config_error("interaction_mode")
 
     _validate_provider_connection_fields(project_data, provider)
 

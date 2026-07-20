@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import Phase, TaskStatus
 from hancode.core.router import RoutingDecision, select_next_phase
 from hancode.core.state import TaskState
@@ -73,6 +76,29 @@ def test_blocked_or_failed_state_blocks_routing(status: TaskStatus, reason: str)
     )
 
     assert decision == RoutingDecision(Phase.PLAN, reason, blocked=True)
+
+
+def test_waiting_input_routes_to_answer_required() -> None:
+    interaction = InteractionRecord(
+        interaction_id="ask-000001",
+        phase=Phase.CODE,
+        question="Continue?",
+        answer=None,
+        status=InteractionStatus.WAITING,
+    )
+    state = replace(
+        _state(),
+        status=TaskStatus.WAITING_INPUT,
+        interaction_seq=1,
+        interactions=(interaction,),
+        pending_interaction_id=interaction.interaction_id,
+    )
+
+    assert select_next_phase(state) == RoutingDecision(
+        Phase.CODE,
+        "interaction_answer_required",
+        blocked=True,
+    )
 
 
 def test_failed_test_routes_to_review() -> None:

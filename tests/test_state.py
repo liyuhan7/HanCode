@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hancode.core.errors import HanCodeError
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import Phase, TaskStatus
 from hancode.core.state import TaskState, load_state, reconcile_state, save_state
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
@@ -88,7 +89,23 @@ def test_state_save_preserves_allowed_status_values(
 ) -> None:
     task_root = _init_task(tmp_path)
 
-    save_state(task_root, replace(load_state(task_root), status=status))
+    state = load_state(task_root)
+    if status is TaskStatus.WAITING_INPUT:
+        interaction = InteractionRecord(
+            interaction_id="ask-000001",
+            phase=Phase.SPEC,
+            question="Question?",
+            answer=None,
+            status=InteractionStatus.WAITING,
+        )
+        state = replace(
+            state,
+            status=TaskStatus.WAITING_INPUT,
+            interaction_seq=1,
+            interactions=(interaction,),
+            pending_interaction_id=interaction.interaction_id,
+        )
+    save_state(task_root, replace(state, status=status))
 
     persisted = json.loads((task_root / "state.json").read_text(encoding="utf-8"))
     assert persisted["status"] == status.value

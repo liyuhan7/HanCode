@@ -236,7 +236,13 @@ def _has_valid_schema(
     if tool_name is not None:
         return False
     if action_type is ActionType.ASK_USER:
-        return set(args) == {"question"} and _is_nonempty_text(args["question"])
+        question = args.get("question")
+        return (
+            set(args) == {"question"}
+            and isinstance(question, str)
+            and bool(question.strip())
+            and len(question) <= 2048
+        )
     return not args
 
 

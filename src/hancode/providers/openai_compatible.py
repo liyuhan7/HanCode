@@ -48,6 +48,7 @@ class OpenAICompatibleProvider:
         transport: ProviderTransport,
         sleeper: Sleeper,
         tool_catalog: tuple[ToolDescriptor, ...],
+        interaction_enabled: bool = False,
     ) -> None:
         self._model_name = model_name
         self._base_url = base_url.rstrip("/")
@@ -60,13 +61,14 @@ class OpenAICompatibleProvider:
         self._transport = transport
         self._sleeper = sleeper
         self._tool_catalog = tool_catalog
+        self._interaction_enabled = interaction_enabled
 
     def next_action(self, context: Mapping[str, object]) -> dict[str, object]:
         phase = _context_phase(context)
         prompt = self._prompt_builder.build(
             context=context,
             tool_catalog=self._tool_catalog,
-            interaction_enabled=False,
+            interaction_enabled=self._interaction_enabled,
         )
         request = self._build_request(prompt)
 

@@ -8,6 +8,7 @@ import pytest
 
 import hancode.runtime.context as context_module
 from hancode.core.config import load_config
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.runtime.context import ContextBuilder, build_context
 from hancode.core.errors import HanCodeError
 from hancode.core.models import Phase
@@ -372,6 +373,35 @@ def test_context_builder_respects_max_context_chars(tmp_path: Path) -> None:
         ],
         "truncated_sections": ["course_context"],
     }
+
+
+def test_context_builder_includes_answered_interaction_history(tmp_path: Path) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    config = load_config(project_root, "task-001")
+    state = replace(
+        _state(task_root, goal="Implement the assignment."),
+        interaction_seq=1,
+        interactions=(
+            InteractionRecord(
+                interaction_id="ask-000001",
+                phase=Phase.SPEC,
+                question="Which file should be changed?",
+                answer="src/main.py",
+                status=InteractionStatus.ANSWERED,
+            ),
+        ),
+    )
+
+    context = build_context(project_root, "task-001", Phase.SPEC, config, state=state)
+
+    assert context["interaction_history"] == [
+        {
+            "interaction_id": "ask-000001",
+            "phase": "spec",
+            "question": "Which file should be changed?",
+            "answer": "src/main.py",
+        }
+    ]
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:

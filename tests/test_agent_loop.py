@@ -12,6 +12,7 @@ from hancode.runtime.agent_loop import AgentLoop, InMemoryMutationGuard
 from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
 from hancode.core.config import HanCodeConfig
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.runtime.feedback import FeedbackBuilder
 from hancode.providers.mock import MockLLM
 from hancode.core.models import Phase, TaskStatus
@@ -737,15 +738,98 @@ def test_terminal_routing_stops_before_llm() -> None:
     assert llm.contexts == ()
 
 
-def test_ask_user_blocks_without_tool() -> None:
+def test_ask_user_sets_waiting_input_without_tool_dispatch() -> None:
     loop, _, _, _, tools, _ = _build_loop([_ask_user_action()])
 
     result = loop.run("task-001")
 
-    assert result.status is TaskStatus.BLOCKED
-    assert result.error is not None
-    assert result.error.error_code == "unsupported_control_action"
+    assert result.status is TaskStatus.WAITING_INPUT
+    assert result.error is None
+    assert result.final_state.status is TaskStatus.WAITING_INPUT
+    assert result.final_state.current_phase is Phase.CODE
+    assert result.final_state.pending_interaction_id == "ask-000001"
+    assert result.final_observation == {
+        "interaction_id": "ask-000001",
+        "question": "Continue?",
+    }
     assert not tools.actions
+
+
+def test_ask_user_persists_question_and_writes_safe_trace() -> None:
+    state_store = StubStateStore(_task_state())
+    trace_appender = SpyTraceAppender()
+    loop, _, _, _, _, _ = _build_loop(
+        [_ask_user_action()], state_store=state_store, trace_appender=trace_appender
+    )
+
+    result = loop.run("task-001")
+
+    assert len(result.final_state.interactions) == 1
+    interaction = result.final_state.interactions[0]
+    assert interaction.question == "Continue?"
+    assert interaction.status is InteractionStatus.WAITING
+    assert [event.event_type for event in trace_appender.events] == [
+        "phase_started",
+        "interaction_requested",
+    ]
+    assert trace_appender.events[-1].observation == {
+        "interaction_id": "ask-000001",
+        "question_length": len("Continue?"),
+    }
+
+
+def test_waiting_input_does_not_call_provider_until_answered() -> None:
+    interaction = InteractionRecord(
+        interaction_id="ask-000001",
+        phase=Phase.CODE,
+        question="Continue?",
+        answer=None,
+        status=InteractionStatus.WAITING,
+    )
+    waiting_state = replace(
+        _task_state(),
+        status=TaskStatus.WAITING_INPUT,
+        interaction_seq=1,
+        interactions=(interaction,),
+        pending_interaction_id=interaction.interaction_id,
+    )
+    state_store = StubStateStore(waiting_state)
+    loop, llm, _, _, _, _ = _build_loop(
+        [_read_file_action()], state=waiting_state, state_store=state_store
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.WAITING_INPUT
+    assert llm.contexts == ()
+    assert state_store.state == waiting_state
+
+
+def test_resume_with_answered_interaction_returns_to_running() -> None:
+    interaction = InteractionRecord(
+        interaction_id="ask-000001",
+        phase=Phase.CODE,
+        question="Continue?",
+        answer="Yes",
+        status=InteractionStatus.ANSWERED,
+    )
+    answered_state = replace(
+        _task_state(),
+        status=TaskStatus.WAITING_INPUT,
+        interaction_seq=1,
+        interactions=(interaction,),
+        pending_interaction_id=interaction.interaction_id,
+    )
+    loop, _, context_builder, _, _, _ = _build_loop(
+        [_read_file_action()], state=answered_state
+    )
+
+    result = loop.run("task-001", resume=True)
+
+    assert result.status is TaskStatus.BLOCKED
+    assert context_builder.calls[0][2].status is TaskStatus.RUNNING
+    assert context_builder.calls[0][2].pending_interaction_id is None
+    assert context_builder.calls[0][2].interactions[0].answer == "Yes"
 
 
 def test_agent_loop_rejects_non_positive_max_steps() -> None:

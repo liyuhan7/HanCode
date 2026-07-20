@@ -23,6 +23,16 @@ _ALLOWED_TOOL_PHASES = {
     "rollback_last_checkpoint": frozenset({Phase.REVIEW}),
 }
 _WRITE_TOOLS = frozenset({"write_file", "edit_file"})
+_SECRET_REQUEST_MARKERS = (
+    "api key",
+    "apikey",
+    "password",
+    "token",
+    "credential",
+    "private key",
+    "private_key",
+    "secret",
+)
 
 
 def allowed_tools_for_phase(phase: Phase) -> tuple[str, ...]:
@@ -65,6 +75,7 @@ class ToolPolicy:
     """Evaluate actions against phase, path, and task-state constraints."""
 
     def __init__(self, config: HanCodeConfig) -> None:
+        self._config = config
         self._path_classifier = PathClassifier(config)
 
     def evaluate(
@@ -79,7 +90,9 @@ class ToolPolicy:
             )
         if action.type is ActionType.FINISH_PHASE:
             return self._evaluate_finish_phase(phase, state)
-        if action.type in {ActionType.ASK_USER, ActionType.FINAL}:
+        if action.type is ActionType.ASK_USER:
+            return self._evaluate_ask_user(action, phase, state)
+        if action.type is ActionType.FINAL:
             return _allowed(phase)
         if action.type is not ActionType.TOOL_CALL or action.tool_name is None:
             return _denied(
@@ -169,6 +182,58 @@ class ToolPolicy:
             "path_out_of_scope",
             "Use a configured artifact or source path inside the workspace.",
         )
+
+    def _evaluate_ask_user(
+        self, action: Action, phase: Phase, state: TaskState
+    ) -> PolicyDecision:
+        if self._config.interaction_mode != "ask_user":
+            return _denied(
+                phase,
+                "Human interaction is disabled by configuration.",
+                "interaction_disabled",
+                "Set interaction_mode to ask_user before requesting input.",
+            )
+
+        question = action.args.get("question")
+        if not isinstance(question, str) or not question.strip():
+            return _denied(
+                phase,
+                "ASK_USER requires a non-empty question.",
+                "interaction_question_required",
+                "Provide one precise non-empty question.",
+            )
+        if len(question) > self._config.max_interaction_question_chars:
+            return _denied(
+                phase,
+                "ASK_USER question exceeds the configured length limit.",
+                "interaction_question_too_long",
+                "Shorten the question to the configured character limit.",
+            )
+        if state.pending_interaction_id is not None:
+            return _denied(
+                phase,
+                "An interaction is already waiting for an answer.",
+                "interaction_already_pending",
+                "Answer the pending interaction before asking another question.",
+            )
+        phase_interactions = sum(
+            interaction.phase is phase for interaction in state.interactions
+        )
+        if phase_interactions >= self._config.max_interactions_per_phase:
+            return _denied(
+                phase,
+                "The interaction limit for this phase has been reached.",
+                "interaction_limit_exceeded",
+                "Continue using the available context instead of asking another question.",
+            )
+        if _contains_secret_request(question):
+            return _denied(
+                phase,
+                "ASK_USER cannot request credentials or other secrets.",
+                "interaction_secret_request_denied",
+                "Ask only for non-sensitive project information.",
+            )
+        return _allowed(phase)
 
     @staticmethod
     def _evaluate_source_write(phase: Phase, state: TaskState) -> PolicyDecision:
@@ -260,6 +325,13 @@ def _is_clean_relative_path(target: str) -> bool:
         and path.as_posix() == normalized
         and all(part not in {"", ".", ".."} for part in path.parts)
     )
+
+
+def _contains_secret_request(question: str) -> bool:
+    normalized = " ".join(
+        question.lower().replace("_", " ").replace("-", " ").split()
+    )
+    return any(marker in normalized for marker in _SECRET_REQUEST_MARKERS)
 
 
 def _allowed(

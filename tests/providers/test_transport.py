@@ -9,6 +9,8 @@ from hancode.providers.transport import (
     ProviderTransportResponseTooLarge,
     HttpxProviderTransport,
 )
+from hancode.providers.openai_compatible import decode_response
+from hancode.providers.errors import ProviderError
 
 
 def _make_request(**overrides: object) -> ProviderRequest:
@@ -139,3 +141,21 @@ def test_httpx_transport_rejects_stream_after_limit(
         HttpxProviderTransport().send(
             _make_request(max_response_bytes=5)
         )
+
+
+def test_httpx_transport_invalid_utf8_becomes_invalid_provider_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    response = _FakeStreamResponse([b'{"choices":\xff'])
+    client = _FakeHttpxClient(response)
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+
+    transport_response = HttpxProviderTransport().send(
+        _make_request(max_response_bytes=1024)
+    )
+    assert transport_response.json_body is None
+    with pytest.raises(ProviderError) as exc_info:
+        decode_response(transport_response, max_response_bytes=1024)
+    assert exc_info.value.structured_error.error_code == "provider_invalid_response"

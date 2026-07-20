@@ -9,6 +9,7 @@ import typer
 
 from hancode.app.auth_service import AuthService
 from hancode.app.delivery_service import DeliveryService
+from hancode.app.interaction_service import InteractionService
 from hancode.app.project_service import ProjectService
 from hancode.app.task_service import TaskService
 from hancode.app.credentials import CredentialProvider
@@ -37,6 +38,7 @@ app.add_typer(task_app, name="task")
 credential_provider = CredentialProvider()
 project_service = ProjectService()
 task_service = TaskService()
+interaction_service = InteractionService()
 delivery_service = DeliveryService()
 
 
@@ -325,6 +327,7 @@ def task_status(
                 "command": "task status",
                 "status": "completed",
                 "task": summary.to_dict(),
+                "interaction": summary.pending_interaction,
             }
         )
     except HanCodeError as exc:
@@ -407,6 +410,53 @@ def run_command(
         ) from None
 
 
+@task_app.command("answer")
+def task_answer(
+    task_id: str = typer.Argument(..., help="Task ID with pending input."),
+    answer_file: Path | None = typer.Option(
+        None,
+        "--answer-file",
+        "--file",
+        help="Read the answer from a UTF-8 text file.",
+    ),
+    interaction_id: str | None = typer.Option(
+        None, "--interaction-id", help="Expected interaction ID."
+    ),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Answer a pending interaction without echoing the answer."""
+    try:
+        answer = _read_interaction_answer(answer_file)
+        summary = interaction_service.answer(
+            project_root,
+            task_id,
+            answer,
+            interaction_id=interaction_id,
+        )
+        _emit(
+            {
+                "command": "task answer",
+                "status": "completed",
+                "task": summary.to_dict(),
+            }
+        )
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_answer_input_failed",
+                    "The interaction answer could not be read.",
+                    "Check the answer file path and UTF-8 encoding before retrying.",
+                    denied_rule="interaction_answer_input_required",
+                )
+            )
+        ) from None
+
+
 def _set_auth_credential(command: str, provider: str) -> None:
     try:
         auth_service = _auth_service()
@@ -474,7 +524,15 @@ def _task_exit_code(status: TaskStatus) -> int:
         return 1
     if status is TaskStatus.INCONSISTENT:
         return 3
+    if status is TaskStatus.WAITING_INPUT:
+        return 4
     return 1
+
+
+def _read_interaction_answer(answer_file: Path | None) -> str:
+    if answer_file is not None:
+        return answer_file.read_text(encoding="utf-8")
+    return typer.get_text_stream("stdin").read()
 
 
 def _handle_error(error: HanCodeError, *, exit_code: int | None = None) -> int:

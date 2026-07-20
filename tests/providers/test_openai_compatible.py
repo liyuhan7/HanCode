@@ -79,6 +79,7 @@ def _make_provider(
     transport: _ScriptedTransport,
     sleeper: object = None,
     max_retries: int = 2,
+    interaction_enabled: bool = False,
 ) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
         model_name="test-model",
@@ -92,6 +93,7 @@ def _make_provider(
         transport=transport,
         sleeper=sleeper if sleeper is not None else (lambda _: None),
         tool_catalog=_make_catalog(),
+        interaction_enabled=interaction_enabled,
     )
 
 
@@ -316,6 +318,16 @@ def test_provider_request_contains_authorization_header() -> None:
     assert request.headers["Authorization"] == "Bearer test-key"
     assert request.headers["Content-Type"] == "application/json"
     assert "User-Agent" in request.headers
+
+
+def test_provider_can_enable_ask_user_schema() -> None:
+    transport = _ScriptedTransport([_ok_response()])
+    provider = _make_provider(transport=transport, interaction_enabled=True)
+
+    provider.next_action(_make_context())
+
+    user_message = transport.requests[0].json_body["messages"][1]["content"]
+    assert "ask_user" in user_message
 
 
 def test_provider_credential_not_in_request_body() -> None:

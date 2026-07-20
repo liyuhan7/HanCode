@@ -1619,3 +1619,23 @@
   - `uv run --no-sync mypy src`：`Success: no issues found in 57 source files`
   - `uv build`：成功生成 `hancode-0.1.0.tar.gz` 和 `hancode-0.1.0-py3-none-any.whl`
 - 当前状态：审核列出的 6 项阻塞问题已修复；工作区改动未提交，等待人工决定 commit。
+
+---
+
+### 2026-07-20 — Stage 3 — S3 Human-in-the-Loop
+
+- 使用的技能：`brainstorming`、`writing-plans`、`test-driven-development`、`verification-before-completion`。
+- 范围：按 `docs/PLAN.md` 的 S3-0 → S3-9 顺序实现 ASK_USER、回答持久化、跨进程恢复和 Headless CLI；不实现 TUI、REPL 或 WebUI；不依赖真实网络 LLM。
+- TDD Red → Green：
+  - S3-0：先锁定每个工具的 `tool_name.const` 与对应 `args_schema`，非法 UTF-8 响应统一为 `provider_invalid_response`。
+  - S3-1/S3-2：新增 `InteractionRecord`、`WAITING_INPUT`、state 交互字段及旧 state 兼容；修复 waiting state 测试构造以满足状态不变量。
+  - S3-3/S3-4：新增默认关闭的 interaction 配置、Provider/Prompt 装配、ASK_USER Schema 问题长度、秘密请求、phase 次数和 pending 校验。
+  - S3-5/S3-7：AgentLoop 持久化问题并安全返回 `WAITING_INPUT`；回答前不调用 Provider，回答后恢复 `RUNNING`，answered history 进入 Context。
+  - S3-6：新增 `InteractionService` 和共享 `.agent-loop.lock`，实现回答幂等、冲突拒绝、ID/长度校验、脱敏和 interaction trace。
+  - S3-8/S3-9：新增 `task answer`、status pending 展示和退出码 4；FakeTransport 完成 ask → answer → resume → write_file → finish_phase → provider failure 链路。
+- 新增/修改关键文件：`core/interactions.py`、`app/interaction_service.py`、`storage/task_lock.py`、`core/state.py`、`core/router.py`、`runtime/agent_loop.py`、`runtime/context.py`、`app/task_models.py`、`interfaces/cli.py`、Provider/Policy/Config 相关文件、README 和 S3 测试。
+- 安全边界：回答只在 state 中保存脱敏值；trace 只记录 interaction ID、长度和 redacted 标志；CLI 不回显回答；仅敏感内容的回答拒绝；ASK_USER 不调用工具、不创建 checkpoint、不消耗 retry budget、不触发 rollback。
+- 验证结果：全量 `uv run --no-sync pytest -q -p no:cacheprovider --basetemp C:\Temp\HanCode\pytest-s3-full2` 为 `968 passed, 14 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 60 source files`；`uv build` 成功生成 sdist/wheel。
+- 提交：未提交，按用户要求保留当前工作区改动。
+- 人工干预：将新 task 初始化 state 同步加入空 interaction 字段；同步更新 README、PLAN、AGENT_LOG 和既有 workspace 测试期望。
+- 剩余风险：TUI/REPL/WebUI 不在 S3；Windows symlink/junction 测试仍可能因平台权限 skip；真实 Provider smoke 仍默认不联网。
