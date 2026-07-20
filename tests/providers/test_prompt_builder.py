@@ -97,6 +97,58 @@ def test_prompt_user_message_contains_available_tools() -> None:
     assert "Read a file inside the allowed workspace." in user_content
 
 
+def test_prompt_user_message_contains_tool_args_schema() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+    )
+
+    payload = json.loads(prompt.messages[1].content)
+    read_file = next(
+        tool for tool in payload["available_tools"] if tool["name"] == "read_file"
+    )
+    assert read_file["args_schema"]["properties"]["path"] == {"type": "string"}
+
+
+def test_prompt_filters_tools_by_phase() -> None:
+    catalog = (
+        ToolDescriptor("read_file", "Read.", {"type": "object"}),
+        ToolDescriptor("list_files", "List.", {"type": "object"}),
+        ToolDescriptor("search_text", "Search.", {"type": "object"}),
+        ToolDescriptor("write_file", "Write.", {"type": "object"}),
+        ToolDescriptor("edit_file", "Edit.", {"type": "object"}),
+        ToolDescriptor("run_tests", "Test.", {"type": "object"}),
+        ToolDescriptor("rollback_last_checkpoint", "Rollback.", {"type": "object"}),
+    )
+    prompt = PromptBuilder().build(
+        context=_make_context(phase=Phase.TEST),
+        tool_catalog=catalog,
+    )
+
+    payload = json.loads(prompt.messages[1].content)
+    names = {tool["name"] for tool in payload["available_tools"]}
+    assert names == {"read_file", "write_file", "run_tests"}
+    schema_tools = prompt.action_schema["oneOf"][0]["properties"]["tool_name"]["enum"]
+    assert set(schema_tools) == names
+
+
+def test_prompt_contains_artifact_targets() -> None:
+    context = _make_context(
+        artifact_targets={
+            "SPEC.md": ".hancode/tasks/task-001/SPEC.md",
+            "PLAN.md": ".hancode/tasks/task-001/PLAN.md",
+        },
+        task_workspace=".hancode/tasks/task-001",
+    )
+    prompt = PromptBuilder().build(context=context, tool_catalog=_make_catalog())
+    payload = json.loads(prompt.messages[1].content)
+    assert payload["context"]["task_workspace"] == ".hancode/tasks/task-001"
+    assert payload["context"]["artifact_targets"]["SPEC.md"] == (
+        ".hancode/tasks/task-001/SPEC.md"
+    )
+
+
 def test_prompt_user_message_contains_action_schema() -> None:
     builder = PromptBuilder()
     prompt = builder.build(

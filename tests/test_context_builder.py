@@ -32,6 +32,8 @@ def test_context_builder_includes_course_context(tmp_path: Path) -> None:
     assert context["task_id"] == "task-001"
     assert context["phase"] == "spec"
     assert context["goal"] == "Implement the assignment."
+    assert context["task_workspace"] == ".hancode/tasks/task-001"
+    assert context["artifact_targets"]["SPEC.md"] == ".hancode/tasks/task-001/SPEC.md"
     assert context["sections"]["course_context"] == "# Course Context\n\nFollow the grading rubric.\n"
     assert context["sections"]["project_memory"] == "# Project Memory\n"
     assert context["sections"]["experience"] == "# Experience\n"
@@ -362,7 +364,12 @@ def test_context_builder_respects_max_context_chars(tmp_path: Path) -> None:
     assert "project_memory" not in context["sections"]
     assert context["truncation"] == {
         "applied": True,
-        "omitted_sections": ["project_memory", "experience"],
+        "omitted_sections": [
+            "artifact_targets",
+            "task_workspace",
+            "project_memory",
+            "experience",
+        ],
         "truncated_sections": ["course_context"],
     }
 

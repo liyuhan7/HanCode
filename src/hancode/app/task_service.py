@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+import inspect
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
-from hancode.app.credentials import CredentialProvider
+from hancode.app.credentials import CredentialProvider, CredentialSource
 from hancode.app.task_models import TaskSummary
 from hancode.core.config import HanCodeConfig, load_config
 from hancode.core.errors import HanCodeError, StructuredError
@@ -121,7 +123,19 @@ class TaskService:
         if config.llm_provider == "mock":
             return None
         try:
-            return self._credential_provider.get_secret(config.llm_provider)
+            get_secret = self._credential_provider.get_secret
+            parameters = inspect.signature(get_secret).parameters
+            supports_context = "source" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            if supports_context:
+                return get_secret(
+                    config.llm_provider,
+                    source=cast(CredentialSource | None, config.credential_source),
+                    project_root=config.project_root,
+                )
+            return get_secret(config.llm_provider)
         except HanCodeError as exc:
             if exc.structured_error.error_code == "credential_missing":
                 raise HanCodeError(

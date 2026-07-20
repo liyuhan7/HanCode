@@ -7,7 +7,13 @@ from hancode.providers.base import ToolDescriptor
 from hancode.providers.errors import ProviderError
 from hancode.providers.openai_compatible import OpenAICompatibleProvider
 from hancode.providers.prompt_builder import PromptBuilder
-from hancode.providers.transport import ProviderRequest, ProviderResponse
+from hancode.providers.transport import (
+    ProviderRequest,
+    ProviderResponse,
+    ProviderTransportNetworkError,
+    ProviderTransportResponseTooLarge,
+    ProviderTransportTimeout,
+)
 
 
 class _ScriptedTransport:
@@ -137,7 +143,9 @@ def test_provider_retries_on_408_timeout() -> None:
 
 def test_provider_retries_on_network_error() -> None:
     sleep_calls: list[float] = []
-    transport = _ScriptedTransport([ConnectionError("network down"), _ok_response()])
+    transport = _ScriptedTransport(
+        [ProviderTransportNetworkError(), _ok_response()]
+    )
     provider = _make_provider(transport=transport, sleeper=sleep_calls.append)
 
     action = provider.next_action(_make_context())
@@ -145,6 +153,47 @@ def test_provider_retries_on_network_error() -> None:
     assert action["type"] == "finish_phase"
     assert len(transport.requests) == 2
     assert sleep_calls == [1.0]
+
+
+def test_provider_retries_transport_timeout_as_provider_timeout() -> None:
+    sleep_calls: list[float] = []
+    transport = _ScriptedTransport([ProviderTransportTimeout(), _ok_response()])
+    provider = _make_provider(transport=transport, sleeper=sleep_calls.append)
+
+    action = provider.next_action(_make_context())
+
+    assert action["type"] == "finish_phase"
+    assert sleep_calls == [1.0]
+
+
+def test_provider_timeout_error_code_after_retry_budget() -> None:
+    transport = _ScriptedTransport(
+        [ProviderTransportTimeout(), ProviderTransportTimeout()]
+    )
+    provider = _make_provider(transport=transport, max_retries=1)
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.next_action(_make_context())
+
+    assert exc_info.value.structured_error.error_code == "provider_timeout"
+
+
+def test_provider_does_not_mask_programming_errors() -> None:
+    transport = _ScriptedTransport([IndexError("script exhausted")])
+    provider = _make_provider(transport=transport)
+
+    with pytest.raises(IndexError, match="script exhausted"):
+        provider.next_action(_make_context())
+
+
+def test_provider_maps_transport_response_too_large() -> None:
+    transport = _ScriptedTransport([ProviderTransportResponseTooLarge()])
+    provider = _make_provider(transport=transport)
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.next_action(_make_context())
+
+    assert exc_info.value.structured_error.error_code == "provider_response_too_large"
 
 
 def test_provider_stops_after_max_retries() -> None:
@@ -191,6 +240,16 @@ def test_provider_does_not_retry_401() -> None:
     assert not exc_info.value.retryable
     assert len(transport.requests) == 1
     assert sleep_calls == []
+
+
+def test_provider_error_uses_current_code_phase() -> None:
+    transport = _ScriptedTransport([_error_response(401)])
+    provider = _make_provider(transport=transport)
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.next_action(_make_context(Phase.CODE))
+
+    assert exc_info.value.structured_error.phase == Phase.CODE.value
 
 
 def test_provider_does_not_retry_403() -> None:

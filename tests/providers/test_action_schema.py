@@ -51,6 +51,20 @@ def test_schema_includes_tool_call_branch() -> None:
     assert "write_file" in branch["properties"]["tool_name"]["enum"]
 
 
+def test_schema_exposes_tool_argument_schemas() -> None:
+    schema = build_action_schema(
+        phase=Phase.SPEC, tool_catalog=_make_catalog()
+    )
+    tool_call_branch = next(
+        b for b in schema["oneOf"] if b["properties"]["type"]["const"] == "tool_call"
+    )
+    argument_schemas = tool_call_branch["properties"]["args"]["oneOf"]
+    assert any(
+        argument_schema["properties"].get("path") == {"type": "string"}
+        for argument_schema in argument_schemas
+    )
+
+
 def test_schema_includes_finish_phase_branch() -> None:
     schema = build_action_schema(
         phase=Phase.PLAN, tool_catalog=_make_catalog()

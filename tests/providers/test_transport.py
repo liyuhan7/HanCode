@@ -6,6 +6,8 @@ from hancode.providers.transport import (
     FakeTransport,
     ProviderRequest,
     ProviderResponse,
+    ProviderTransportResponseTooLarge,
+    HttpxProviderTransport,
 )
 
 
@@ -74,3 +76,66 @@ def test_fake_transport_request_headers_contain_authorization() -> None:
     recorded = transport.requests[0]
     assert "Authorization" in recorded.headers
     assert recorded.headers["Authorization"] == "Bearer test-key"
+
+
+class _FakeStreamResponse:
+    status_code = 200
+    headers: dict[str, str] = {"content-type": "application/json"}
+
+    def __init__(self, chunks: list[bytes], *, content_length: str | None = None) -> None:
+        self._chunks = chunks
+        if content_length is not None:
+            self.headers["content-length"] = content_length
+
+    def __enter__(self) -> "_FakeStreamResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def iter_bytes(self):
+        yield from self._chunks
+
+
+class _FakeHttpxClient:
+    def __init__(self, response: _FakeStreamResponse) -> None:
+        self.response = response
+
+    def __enter__(self) -> "_FakeHttpxClient":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def stream(self, *args: object, **kwargs: object) -> _FakeStreamResponse:
+        return self.response
+
+
+def test_httpx_transport_rejects_content_length_before_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    response = _FakeStreamResponse([b"ignored"], content_length="10")
+    client = _FakeHttpxClient(response)
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+
+    with pytest.raises(ProviderTransportResponseTooLarge):
+        HttpxProviderTransport().send(
+            _make_request(max_response_bytes=5)
+        )
+
+
+def test_httpx_transport_rejects_stream_after_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    response = _FakeStreamResponse([b"123", b"456"])
+    client = _FakeHttpxClient(response)
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+
+    with pytest.raises(ProviderTransportResponseTooLarge):
+        HttpxProviderTransport().send(
+            _make_request(max_response_bytes=5)
+        )

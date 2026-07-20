@@ -7,6 +7,7 @@ import re
 from typing import Mapping
 
 from hancode.core.errors import StructuredError
+from hancode.core.models import Phase
 from hancode.providers.base import ToolDescriptor
 from hancode.providers.errors import ProviderError
 from hancode.providers.prompt_builder import PromptBuilder, ProviderPrompt
@@ -14,6 +15,9 @@ from hancode.providers.transport import (
     ProviderRequest,
     ProviderResponse,
     ProviderTransport,
+    ProviderTransportNetworkError,
+    ProviderTransportResponseTooLarge,
+    ProviderTransportTimeout,
     Sleeper,
 )
 
@@ -58,6 +62,7 @@ class OpenAICompatibleProvider:
         self._tool_catalog = tool_catalog
 
     def next_action(self, context: Mapping[str, object]) -> dict[str, object]:
+        phase = _context_phase(context)
         prompt = self._prompt_builder.build(
             context=context,
             tool_catalog=self._tool_catalog,
@@ -65,10 +70,12 @@ class OpenAICompatibleProvider:
         )
         request = self._build_request(prompt)
 
-        response = self._send_with_retry(request)
+        response = self._send_with_retry(request, phase)
 
         return decode_response(
-            response, max_response_bytes=self._max_response_bytes
+            response,
+            max_response_bytes=self._max_response_bytes,
+            phase=phase.value,
         )
 
     def _build_request(self, prompt: ProviderPrompt) -> ProviderRequest:
@@ -94,25 +101,45 @@ class OpenAICompatibleProvider:
             headers=headers,
             json_body=body,
             timeout_seconds=self._timeout_seconds,
+            max_response_bytes=self._max_response_bytes,
         )
 
-    def _send_with_retry(self, request: ProviderRequest) -> ProviderResponse:
+    def _send_with_retry(self, request: ProviderRequest, phase: Phase) -> ProviderResponse:
         last_error: ProviderError | None = None
         for attempt in range(self._max_retries + 1):
             try:
                 response = self._transport.send(request)
-            except Exception:
-                error = _network_error()
+            except ProviderTransportTimeout:
+                error = _provider_error(
+                    "provider_timeout",
+                    "The provider request timed out.",
+                    phase=phase.value,
+                    retryable=True,
+                )
                 last_error = error
                 if attempt < self._max_retries:
                     self._sleeper(2 ** attempt)
                     continue
                 raise error from None
+            except ProviderTransportNetworkError:
+                error = _network_error(phase.value)
+                last_error = error
+                if attempt < self._max_retries:
+                    self._sleeper(2 ** attempt)
+                    continue
+                raise error from None
+            except ProviderTransportResponseTooLarge:
+                raise _provider_error(
+                    "provider_response_too_large",
+                    "Provider response exceeded the configured size limit.",
+                    phase=phase.value,
+                    retryable=False,
+                ) from None
 
             if response.status_code < 400:
                 return response
 
-            error = _classify_http_error(response.status_code)
+            error = _classify_http_error(response.status_code, phase.value)
             last_error = error
             if not error.retryable or attempt >= self._max_retries:
                 raise error from None
@@ -122,54 +149,62 @@ class OpenAICompatibleProvider:
         raise last_error
 
 
-def _classify_http_error(status_code: int) -> ProviderError:
+def _classify_http_error(status_code: int, phase: str = "spec") -> ProviderError:
     if status_code == 400:
         return _provider_error(
             "provider_request_rejected",
             "The provider rejected the request.",
+            phase=phase,
             retryable=False,
         )
     if status_code in (401, 403):
         return _provider_error(
             "provider_auth_failed",
             "Provider authentication failed.",
+            phase=phase,
             retryable=False,
         )
     if status_code == 404:
         return _provider_error(
             "provider_endpoint_not_found",
             "The provider endpoint was not found.",
+            phase=phase,
             retryable=False,
         )
     if status_code == 408:
         return _provider_error(
             "provider_timeout",
             "The provider request timed out.",
+            phase=phase,
             retryable=True,
         )
     if status_code == 429:
         return _provider_error(
             "provider_rate_limited",
             "The provider rate limited the request.",
+            phase=phase,
             retryable=True,
         )
     if 500 <= status_code < 600:
         return _provider_error(
             "provider_server_error",
             "The provider returned a server error.",
+            phase=phase,
             retryable=True,
         )
     return _provider_error(
         "provider_request_rejected",
         f"The provider returned an unexpected status: {status_code}.",
+        phase=phase,
         retryable=False,
     )
 
 
-def _network_error() -> ProviderError:
+def _network_error(phase: str = "spec") -> ProviderError:
     return _provider_error(
         "provider_network_error",
         "A network error occurred while contacting the provider.",
+        phase=phase,
         retryable=True,
     )
 
@@ -178,13 +213,14 @@ def _provider_error(
     error_code: str,
     message: str,
     *,
+    phase: str = "spec",
     retryable: bool,
 ) -> ProviderError:
     return ProviderError(
         StructuredError(
             error_code=error_code,
             message=message,
-            phase="spec",
+            phase=phase,
             denied_rule="provider_available",
             suggested_fix="Check provider configuration and retry.",
         ),
@@ -196,6 +232,7 @@ def decode_response(
     response: ProviderResponse,
     *,
     max_response_bytes: int,
+    phase: str = "spec",
 ) -> dict[str, object]:
     """Extract an Action dict from an OpenAI-compatible HTTP response."""
     if response.body_size > max_response_bytes:
@@ -203,7 +240,7 @@ def decode_response(
             StructuredError(
                 error_code="provider_response_too_large",
                 message="Provider response exceeded the configured size limit.",
-                phase="spec",
+                phase=phase,
                 denied_rule="provider_response_size_limit",
                 suggested_fix="Reduce the response size or increase provider_max_response_bytes.",
             ),
@@ -212,34 +249,36 @@ def decode_response(
 
     body = response.json_body
     if not isinstance(body, dict):
-        raise _invalid_response("Provider response body is not a JSON object.")
+        raise _invalid_response("Provider response body is not a JSON object.", phase)
 
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise _invalid_response("Provider response has no choices.")
+        raise _invalid_response("Provider response has no choices.", phase)
 
     first_choice = choices[0]
     if not isinstance(first_choice, dict):
-        raise _invalid_response("Provider response choice is not an object.")
+        raise _invalid_response("Provider response choice is not an object.", phase)
 
     message = first_choice.get("message")
     if not isinstance(message, dict):
-        raise _invalid_response("Provider response has no message.")
+        raise _invalid_response("Provider response has no message.", phase)
 
     parsed = message.get("parsed")
     if parsed is not None:
         if isinstance(parsed, dict):
             return parsed
-        raise _invalid_response("Provider response message.parsed is not an object.")
+        raise _invalid_response(
+            "Provider response message.parsed is not an object.", phase
+        )
 
     content = message.get("content")
     if not isinstance(content, str) or not content.strip():
-        raise _invalid_response("Provider response message.content is empty.")
+        raise _invalid_response("Provider response message.content is empty.", phase)
 
-    return _parse_content(content)
+    return _parse_content(content, phase)
 
 
-def _parse_content(content: str) -> dict[str, object]:
+def _parse_content(content: str, phase: str) -> dict[str, object]:
     stripped = content.strip()
     fence_match = _CODE_FENCE_RE.match(stripped)
     if fence_match is not None:
@@ -248,22 +287,32 @@ def _parse_content(content: str) -> dict[str, object]:
     try:
         decoded = json.loads(stripped)
     except json.JSONDecodeError:
-        raise _invalid_response("Provider response content is not valid JSON.") from None
+        raise _invalid_response(
+            "Provider response content is not valid JSON.", phase
+        ) from None
 
     if not isinstance(decoded, dict):
-        raise _invalid_response("Provider response content is not a JSON object.")
+        raise _invalid_response("Provider response content is not a JSON object.", phase)
 
     return decoded
 
 
-def _invalid_response(message: str) -> ProviderError:
+def _invalid_response(message: str, phase: str = "spec") -> ProviderError:
     return ProviderError(
         StructuredError(
             error_code="provider_invalid_response",
             message=message,
-            phase="spec",
+            phase=phase,
             denied_rule="provider_response_valid",
             suggested_fix="Check the provider model configuration and response format.",
         ),
         retryable=False,
     )
+
+
+def _context_phase(context: Mapping[str, object]) -> Phase:
+    raw_phase = context.get("phase")
+    try:
+        return Phase(raw_phase)
+    except (TypeError, ValueError):
+        raise ValueError("Provider context must contain a supported phase.") from None

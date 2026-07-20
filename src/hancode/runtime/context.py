@@ -56,6 +56,14 @@ _SENSITIVE_KEY_MARKERS = (
     "token",
 )
 _MAX_TRACE_TRANSITION_DEPTH = 8
+_ARTIFACT_NAMES = (
+    "SPEC.md",
+    "PLAN.md",
+    "TEST_REPORT.md",
+    "REVIEW.md",
+    "KNOWLEDGE.md",
+    "DELIVERABLES.md",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +185,11 @@ def build_context(
         "task_id": task_id,
         "phase": phase.value,
         "goal": None if current_state.goal is None else redact_text(current_state.goal),
+        "task_workspace": task_root.relative_to(resolved_project_root).as_posix(),
+        "artifact_targets": {
+            name: f"{task_root.relative_to(resolved_project_root).as_posix()}/{name}"
+            for name in _ARTIFACT_NAMES
+        },
         "sections": sections,
         "context_risks": risks,
         "truncation": {
@@ -204,6 +217,14 @@ def _apply_context_budget(
     if not isinstance(omitted, list) or not isinstance(truncated, list):
         raise AssertionError("truncation shape must remain internal and deterministic")
     truncation["applied"] = True
+
+    for metadata_name in ("artifact_targets", "task_workspace"):
+        if metadata_name not in context:
+            continue
+        del context[metadata_name]
+        omitted.append(metadata_name)
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
 
     for section_name in _TRUNCATION_ORDER[phase]:
         if section_name not in _OMITTABLE_SECTIONS or section_name not in sections:

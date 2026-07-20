@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from hancode.core.models import Phase
+from hancode.policy.tool_policy import allowed_tools_for_phase
 from hancode.providers.action_schema import build_action_schema
 from hancode.providers.base import ToolDescriptor
 
@@ -64,18 +65,19 @@ class PromptBuilder:
         interaction_enabled: bool = False,
     ) -> ProviderPrompt:
         phase = _require_phase(context)
+        phase_catalog = _phase_tool_catalog(phase, tool_catalog)
 
         system_content = _build_system_message(phase)
         user_content = _build_user_message(
             context=context,
-            tool_catalog=tool_catalog,
+            tool_catalog=phase_catalog,
             phase=phase,
             interaction_enabled=interaction_enabled,
         )
 
         action_schema = build_action_schema(
             phase=phase,
-            tool_catalog=tool_catalog,
+            tool_catalog=phase_catalog,
             interaction_enabled=interaction_enabled,
         )
 
@@ -120,12 +122,24 @@ def _build_user_message(
         "instruction": "Select the next single action.",
         "context": safe_context,
         "available_tools": [
-            {"name": tool.name, "description": tool.description}
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "args_schema": dict(tool.args_schema),
+            }
             for tool in tool_catalog
         ],
         "output_contract": action_schema,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _phase_tool_catalog(
+    phase: Phase,
+    tool_catalog: tuple[ToolDescriptor, ...],
+) -> tuple[ToolDescriptor, ...]:
+    allowed_names = set(allowed_tools_for_phase(phase))
+    return tuple(tool for tool in tool_catalog if tool.name in allowed_names)
 
 
 _SENSITIVE_CONTEXT_KEYS = frozenset(

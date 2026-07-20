@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Mapping, Protocol
 
 __all__ = [
@@ -11,8 +12,28 @@ __all__ = [
     "ProviderRequest",
     "ProviderResponse",
     "ProviderTransport",
+    "ProviderTransportError",
+    "ProviderTransportNetworkError",
+    "ProviderTransportResponseTooLarge",
+    "ProviderTransportTimeout",
     "Sleeper",
 ]
+
+
+class ProviderTransportError(Exception):
+    """Base class for expected transport failures."""
+
+
+class ProviderTransportTimeout(ProviderTransportError):
+    """The transport timed out before completing the request."""
+
+
+class ProviderTransportNetworkError(ProviderTransportError):
+    """The transport could not connect or complete the network operation."""
+
+
+class ProviderTransportResponseTooLarge(ProviderTransportError):
+    """The response exceeded the configured byte limit while being read."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +43,7 @@ class ProviderRequest:
     headers: Mapping[str, str]
     json_body: Mapping[str, object]
     timeout_seconds: int
+    max_response_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,26 +84,49 @@ class HttpxProviderTransport:
     def send(self, request: ProviderRequest) -> ProviderResponse:
         import httpx
 
-        with httpx.Client(
-            timeout=request.timeout_seconds,
-            follow_redirects=False,
-            verify=True,
-        ) as client:
-            response = client.request(
-                method=request.method,
-                url=request.url,
-                headers=dict(request.headers),
-                json=dict(request.json_body),
-            )
-
         try:
-            json_body: object = response.json()
-        except Exception:
-            json_body = None
+            with httpx.Client(
+                timeout=request.timeout_seconds,
+                follow_redirects=False,
+                verify=True,
+            ) as client:
+                with client.stream(
+                    method=request.method,
+                    url=request.url,
+                    headers=dict(request.headers),
+                    json=dict(request.json_body),
+                ) as response:
+                    limit = request.max_response_bytes
+                    content_length = response.headers.get("content-length")
+                    if limit is not None and content_length is not None:
+                        try:
+                            declared_size = int(content_length)
+                        except ValueError:
+                            declared_size = None
+                        if declared_size is not None and declared_size > limit:
+                            raise ProviderTransportResponseTooLarge
 
-        return ProviderResponse(
-            status_code=response.status_code,
-            headers=dict(response.headers),
-            json_body=json_body,
-            body_size=len(response.content),
-        )
+                    chunks: list[bytes] = []
+                    total_size = 0
+                    for chunk in response.iter_bytes():
+                        total_size += len(chunk)
+                        if limit is not None and total_size > limit:
+                            raise ProviderTransportResponseTooLarge
+                        chunks.append(chunk)
+                    raw_body = b"".join(chunks)
+                    try:
+                        json_body: object = json.loads(raw_body)
+                    except json.JSONDecodeError:
+                        json_body = None
+                    return ProviderResponse(
+                        status_code=response.status_code,
+                        headers=dict(response.headers),
+                        json_body=json_body,
+                        body_size=total_size,
+                    )
+        except ProviderTransportError:
+            raise
+        except httpx.TimeoutException:
+            raise ProviderTransportTimeout from None
+        except httpx.TransportError:
+            raise ProviderTransportNetworkError from None

@@ -441,6 +441,50 @@ def test_task_service_prepare_provider_resolves_credential(
     assert isinstance(provider, MockLLM)
 
 
+def test_task_service_passes_credential_source_and_project_root(
+    tmp_path: Path,
+) -> None:
+    _make_project(tmp_path)
+    project_file = tmp_path / ".hancode" / "project.json"
+    import json
+
+    data = json.loads(project_file.read_text(encoding="utf-8"))
+    data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "test-model",
+            "credential_source": "env",
+            "provider_base_url": "https://example.invalid/v1",
+        }
+    )
+    project_file.write_text(json.dumps(data), encoding="utf-8")
+
+    class RecordingCredentialProvider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str | None, Path | None]] = []
+
+        def get_secret(self, provider: str, *, source=None, project_root=None) -> str:
+            self.calls.append((provider, source, project_root))
+            return "fake-secret"
+
+    class FakeFactory:
+        def __call__(self, config, *, credential=None, **kwargs):
+            from hancode.providers.mock import MockLLM
+
+            return MockLLM([])
+
+    credentials = RecordingCredentialProvider()
+    service = TaskService(
+        credential_provider=credentials, provider_factory=FakeFactory()
+    )
+
+    service.prepare_provider(tmp_path)
+
+    assert credentials.calls == [
+        ("openai_compatible", "env", tmp_path.resolve())
+    ]
+
+
 def test_task_service_credential_missing_raises_provider_error(
     tmp_path: Path,
 ) -> None:

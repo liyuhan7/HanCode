@@ -1599,3 +1599,23 @@
     - `tests/integration/test_real_provider_smoke.py`：真实 Provider smoke test，默认跳过（HANCODE_RUN_PROVIDER_SMOKE=1 开启），验证能发出请求、得到合法 Action dict、通过 parse_action、secret 不在输出中。
 - 验证结果：全量 pytest 898 passed, 14 skipped（smoke test 默认跳过）；Ruff、MyPy 通过。
 - 阶段二完成：25 条验收标准全部满足。
+
+---
+
+### 2026-07-20 — Stage 2.1 — 审核修复与端到端链路补强
+
+- 依据：针对 `3c9b4e6` 的代码审核，先逐项复核实际代码和可复现行为，再按 TDD 修复；未执行 commit。
+- 根因复现：原 FakeTransport 集成测试仅返回 `finish_phase`，没有 dispatch 工具；补充 `write_file` 后确认任务级 `SPEC.md`、`state.artifacts` 和 `tool_called` trace 均可真实产生。脚本耗尽曾暴露为 `IndexError` → inconsistent，测试改为显式 HTTP 400 结束，避免用异常耗尽伪造正常链路。
+- 修复摘要：
+  - `PromptBuilder` 现在向模型发送每个工具的 `args_schema`，并按 `allowed_tools_for_phase` 过滤工具。
+  - `build_action_schema` 的 tool args 暴露参数 `oneOf`；Context 增加 `task_workspace` 和 `artifact_targets`，小 context budget 下显式记录省略元数据。
+  - `HttpxProviderTransport` 改为 streaming，先检查 Content-Length，再按累计字节限制读取；新增 timeout/network/response-too-large Transport 异常。
+  - `OpenAICompatibleProvider` 只捕获专用 Transport 异常，编程异常不再伪装成网络错误；timeout、response decoder 和 HTTP 错误均携带当前 phase。
+  - `CredentialProvider.get_secret` 支持 `source` 与 `project_root`；TaskService 将配置来源传入，env/dotenv 不再被 keyring 优先级覆盖，dotenv 使用项目根目录。
+- TDD 证据：新增并通过真实工具链路、Prompt 参数/phase 过滤、Context artifact targets、streaming 大小限制、真实 timeout/network 分类、当前 phase、credential source/project-root dotenv 测试。
+- 最终验证：
+  - `uv run --no-sync pytest -p no:cacheprovider --basetemp C:\Temp\HanCode\pytest-s21-final -q`：`912 passed, 14 skipped`
+  - `uv run --no-sync ruff check src tests --no-cache`：通过
+  - `uv run --no-sync mypy src`：`Success: no issues found in 57 source files`
+  - `uv build`：成功生成 `hancode-0.1.0.tar.gz` 和 `hancode-0.1.0-py3-none-any.whl`
+- 当前状态：审核列出的 6 项阻塞问题已修复；工作区改动未提交，等待人工决定 commit。

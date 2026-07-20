@@ -3697,6 +3697,29 @@ class TaskService:
 - Ruff：All checks passed!
 - MyPy：Success: no issues found in 57 source files
 
+#### S2.1：审核修复与真实工具链路补强
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-0~S2-8                              |
+| 目标            | 修复端到端工具链路、Prompt 契约、Transport 限制、错误分类和凭据来源装配 |
+
+实现内容：
+
+* FakeTransport 集成测试真实执行 `write_file`，写入 `.hancode/tasks/task-001/SPEC.md`，断言 `tool_calls`、artifact state 和 `tool_called` trace。
+* Prompt 发送 `args_schema`，按当前 phase 过滤工具；Action Schema 暴露工具参数；Context 增加 `task_workspace` 和 `artifact_targets`，小预算时确定性省略并记录 truncation。
+* HttpxProviderTransport 使用 streaming 和 `Content-Length`/累计字节双重限制；超限在 JSON 解析前失败。
+* Transport 只定义并捕获 timeout/network/response-too-large 异常；编程异常不再伪装成网络错误；ProviderError 使用当前 phase。
+* `credential_source` 支持定向 keyring/env/dotenv 读取，dotenv 运行时使用 project root 下的 `.env`。
+
+实际验证：
+
+* 全量 pytest：`912 passed, 14 skipped`
+* Ruff：`All checks passed!`
+* MyPy：`Success: no issues found in 57 source files`
+* Package build：`uv build` 成功生成 sdist/wheel
+
 ### 阶段验收标准
 
 1. `openai_compatible` 不再返回 `provider_not_implemented`。

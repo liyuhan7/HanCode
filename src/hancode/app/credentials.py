@@ -72,7 +72,13 @@ class CredentialProvider:
         )
         self._dotenv_loader = dotenv_values if dotenv_loader is None else dotenv_loader
 
-    def status(self, provider: str) -> CredentialStatus:
+    def status(
+        self,
+        provider: str,
+        *,
+        source: CredentialSource | None = None,
+        project_root: Path | None = None,
+    ) -> CredentialStatus:
         self._validate_provider(provider)
         if provider in _NO_CREDENTIAL_PROVIDERS:
             return CredentialStatus(
@@ -81,8 +87,10 @@ class CredentialProvider:
                 source="missing",
             )
 
-        secret, source = self._resolve_secret(provider)
-        if secret is None or source is None:
+        secret, resolved_source = self._resolve_secret(
+            provider, source=source, project_root=project_root
+        )
+        if secret is None or resolved_source is None:
             return CredentialStatus(
                 configured=False,
                 provider=provider,
@@ -91,11 +99,17 @@ class CredentialProvider:
         return CredentialStatus(
             configured=True,
             provider=provider,
-            source=source,
+            source=resolved_source,
             masked_id=_mask_secret(secret),
         )
 
-    def get_secret(self, provider: str) -> str:
+    def get_secret(
+        self,
+        provider: str,
+        *,
+        source: CredentialSource | None = None,
+        project_root: Path | None = None,
+    ) -> str:
         self._validate_provider(provider)
         if provider in _NO_CREDENTIAL_PROVIDERS:
             raise _credential_error(
@@ -105,7 +119,9 @@ class CredentialProvider:
                 denied_rule="provider_credential_not_required",
             )
 
-        secret, _ = self._resolve_secret(provider)
+        secret, _ = self._resolve_secret(
+            provider, source=source, project_root=project_root
+        )
         if secret is None:
             raise _credential_error(
                 "credential_missing",
@@ -188,8 +204,31 @@ class CredentialProvider:
             ) from None
 
     def _resolve_secret(
-        self, provider: str
+        self,
+        provider: str,
+        *,
+        source: CredentialSource | None = None,
+        project_root: Path | None = None,
     ) -> tuple[str | None, CredentialSource | None]:
+        if source == "env":
+            return self._resolve_external_secret(provider, source="env")
+        if source == "dotenv":
+            return self._resolve_external_secret(
+                provider, source="dotenv", project_root=project_root
+            )
+        if source == "keyring":
+            keyring_secret, keyring_unavailable = self._read_keyring(provider)
+            if keyring_secret is not None:
+                return keyring_secret, "keyring"
+            if keyring_unavailable:
+                raise _credential_error(
+                    "credential_keyring_unavailable",
+                    "The operating-system credential store is unavailable.",
+                    "Enable a supported keyring backend or configure an approved fallback source.",
+                    denied_rule="secure_credential_store_required",
+                )
+            return None, None
+
         keyring_secret, keyring_unavailable = self._read_keyring(provider)
         if keyring_secret is not None:
             return keyring_secret, "keyring"
@@ -207,16 +246,22 @@ class CredentialProvider:
         return None, None
 
     def _resolve_external_secret(
-        self, provider: str
+        self,
+        provider: str,
+        *,
+        source: Literal["env", "dotenv"] | None = None,
+        project_root: Path | None = None,
     ) -> tuple[str | None, CredentialSource | None]:
         environment_name = _ENVIRONMENT_NAMES[provider]
-        environment_secret = _non_empty(self._environ.get(environment_name))
-        if environment_secret is not None:
-            return environment_secret, "env"
+        if source in {None, "env"}:
+            environment_secret = _non_empty(self._environ.get(environment_name))
+            if environment_secret is not None:
+                return environment_secret, "env"
 
-        dotenv_secret = self._read_dotenv(environment_name)
-        if dotenv_secret is not None:
-            return dotenv_secret, "dotenv"
+        if source in {None, "dotenv"}:
+            dotenv_secret = self._read_dotenv(environment_name, project_root=project_root)
+            if dotenv_secret is not None:
+                return dotenv_secret, "dotenv"
         return None, None
 
     def _read_keyring(self, provider: str) -> tuple[str | None, bool]:
@@ -226,8 +271,14 @@ class CredentialProvider:
         except Exception:
             return None, True
 
-    def _read_dotenv(self, environment_name: str) -> str | None:
-        path = self._dotenv_path
+    def _read_dotenv(
+        self, environment_name: str, *, project_root: Path | None = None
+    ) -> str | None:
+        path = (
+            project_root.resolve() / ".env"
+            if project_root is not None
+            else self._dotenv_path
+        )
         try:
             if path.is_symlink():
                 raise _credential_error(

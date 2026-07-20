@@ -40,6 +40,34 @@ def test_fake_credential_provider_uses_keyring_first(tmp_path: Path) -> None:
     assert provider.get_secret("openai_compatible") == "keyring-secret-9f2a"
 
 
+def test_credential_source_env_ignores_keyring(tmp_path: Path) -> None:
+    store = FakeCredentialStore()
+    store.set_password("hancode", "openai_compatible", "old-keyring-secret")
+    provider = CredentialProvider(
+        keyring_backend=store,
+        environ={"OPENAI_API_KEY": "environment-secret"},
+        dotenv_path=tmp_path / ".env",
+    )
+
+    assert provider.get_secret(
+        "openai_compatible", source="env", project_root=tmp_path
+    ) == "environment-secret"
+
+
+def test_credential_source_dotenv_uses_project_root(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=project-dotenv-secret\n", encoding="utf-8"
+    )
+    provider = CredentialProvider(
+        keyring_backend=FakeCredentialStore(),
+        environ={"OPENAI_API_KEY": "wrong-working-directory-secret"},
+    )
+
+    assert provider.get_secret(
+        "openai_compatible", source="dotenv", project_root=tmp_path
+    ) == "project-dotenv-secret"
+
+
 def test_credential_status_falls_back_to_environment(tmp_path: Path) -> None:
     provider = CredentialProvider(
         keyring_backend=FakeCredentialStore(),

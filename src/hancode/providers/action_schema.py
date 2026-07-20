@@ -22,12 +22,9 @@ def build_action_schema(
     interaction_enabled: bool = False,
 ) -> dict[str, object]:
     """Build a JSON Schema describing the actions a model may return."""
-    tool_names = [tool.name for tool in tool_catalog]
     branches: list[dict[str, object]] = []
 
-    branches.append(
-        _tool_call_branch(phase, tool_names)
-    )
+    branches.append(_tool_call_branch(phase, tool_catalog))
     branches.append(
         _control_branch(phase, "finish_phase")
     )
@@ -41,7 +38,7 @@ def build_action_schema(
 
 
 def _tool_call_branch(
-    phase: Phase, tool_names: list[str]
+    phase: Phase, tool_catalog: tuple[ToolDescriptor, ...]
 ) -> dict[str, object]:
     return {
         "type": "object",
@@ -50,8 +47,11 @@ def _tool_call_branch(
             "type": {"const": "tool_call"},
             "phase": {"const": phase.value},
             "reason": {"type": "string", "minLength": 1},
-            "tool_name": {"enum": tool_names},
-            "args": {"type": "object"},
+            "tool_name": {"enum": [tool.name for tool in tool_catalog]},
+            "args": {
+                "type": "object",
+                "oneOf": [dict(tool.args_schema) for tool in tool_catalog],
+            },
         },
         "additionalProperties": False,
     }
