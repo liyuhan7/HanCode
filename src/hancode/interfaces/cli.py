@@ -242,6 +242,18 @@ def task_create(
         )
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_task_operation_failed",
+                    "The task operation could not access its workspace.",
+                    "Check project workspace permissions and retry.",
+                    denied_rule="task_workspace_access_required",
+                ),
+                exit_code=2,
+            )
+        ) from None
 
 
 @task_app.command("run")
@@ -257,6 +269,18 @@ def task_run(
         _emit_task_result("task run", result)
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_task_operation_failed",
+                    "The task operation could not access its workspace.",
+                    "Check project workspace permissions and retry.",
+                    denied_rule="task_workspace_access_required",
+                ),
+                exit_code=2,
+            )
+        ) from None
 
 
 @task_app.command("resume")
@@ -272,6 +296,18 @@ def task_resume(
         _emit_task_result("task resume", result)
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_task_operation_failed",
+                    "The task operation could not access its workspace.",
+                    "Check project workspace permissions and retry.",
+                    denied_rule="task_workspace_access_required",
+                ),
+                exit_code=2,
+            )
+        ) from None
 
 
 @task_app.command("status")
@@ -293,6 +329,18 @@ def task_status(
         )
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_task_operation_failed",
+                    "The task operation could not access its workspace.",
+                    "Check project workspace permissions and retry.",
+                    denied_rule="task_workspace_access_required",
+                ),
+                exit_code=2,
+            )
+        ) from None
 
 
 @task_app.command("list")
@@ -327,9 +375,21 @@ def run_command(
     try:
         task = task_service.create(project_root, goal, task_id=task_id)
         result = task_service.run(project_root, task.task_id, resume=False)
-        _emit_task_result("run", result, task_summary=task.to_dict())
+        _emit_task_result("run", result)
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_task_operation_failed",
+                    "The task operation could not access its workspace.",
+                    "Check project workspace permissions and retry.",
+                    denied_rule="task_workspace_access_required",
+                ),
+                exit_code=2,
+            )
+        ) from None
 
 
 def _set_auth_credential(command: str, provider: str) -> None:
@@ -375,20 +435,17 @@ def _emit(payload: dict[str, object]) -> None:
 def _emit_task_result(
     command: str,
     result: object,
-    *,
-    task_summary: dict[str, object] | None = None,
 ) -> None:
     """Emit a structured task run result with exit code."""
     from hancode.app.task_models import TaskRunSummary
 
     summary = TaskRunSummary.from_result(result)  # type: ignore[arg-type]
-    task_dict = task_summary if task_summary is not None else summary.task.to_dict()
     status_value = summary.task.status.value
     _emit(
         {
             "command": command,
             "status": status_value,
-            "task": task_dict,
+            "task": summary.task.to_dict(),
             "run": summary.to_dict(),
         }
     )

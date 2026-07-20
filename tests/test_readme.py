@@ -29,7 +29,8 @@ def test_readme_mentions_no_real_credentials() -> None:
 
 def test_readme_documents_known_limitations() -> None:
     assert "## 已知限制" in README
-    assert "`hancode run` 尚未实现" in README
+    assert "`hancode run` 已实现 Headless" in README
+    assert "但默认 mock Provider 没有开放式 Action 序列" in README
     assert "REPL/TUI/WebUI 尚未实现" in README
     assert "真实 Provider 执行尚未实现" in README
     assert "Docker 不是当前必需分发路径" in README
@@ -66,7 +67,8 @@ def test_readme_scopes_available_and_installed_commands() -> None:
     available_commands = _section("## 当前可用命令")
     wheel_commands = _section("### wheel 安装后的命令")
 
-    assert "hancode run" not in available_commands
+    assert "hancode run" in available_commands
+    assert "hancode task create" in available_commands
     assert "REPL/TUI/WebUI" not in available_commands
     assert "真实 Provider 执行" not in available_commands
     assert "hancode --help" in wheel_commands

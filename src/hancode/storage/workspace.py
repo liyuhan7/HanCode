@@ -199,14 +199,32 @@ def init_task_workspace(
 def list_task_ids(project_root: Path) -> tuple[str, ...]:
     """Return sorted task IDs for a project workspace.
 
-    Fails closed when the tasks directory or any task state is invalid.
+    Fails closed when the project is not initialized, or when the tasks
+    directory or any task state is invalid.
     """
     _project_root, workspace = _workspace_paths(project_root)
+    required_files = [
+        workspace / "project.json",
+        *(workspace / filename for filename in _PROJECT_MARKDOWN_FILES),
+    ]
+    if not (workspace / "tasks").is_dir() or any(
+        _is_link(path) or not path.is_file() for path in required_files
+    ):
+        raise HanCodeError(
+            StructuredError(
+                error_code="project_workspace_not_initialized",
+                message="Project workspace is not initialized.",
+                phase="spec",
+                denied_rule="project_workspace_required",
+                suggested_fix=(
+                    "Initialize the project workspace before listing tasks."
+                ),
+            )
+        )
+    load_project_metadata(workspace / "project.json")
     tasks_dir = workspace / "tasks"
     if _is_link(tasks_dir):
         raise _workspace_boundary_error()
-    if not tasks_dir.is_dir():
-        return ()
 
     task_ids: list[str] = []
     for entry in sorted(tasks_dir.iterdir()):

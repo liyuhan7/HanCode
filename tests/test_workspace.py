@@ -619,3 +619,15 @@ def test_list_task_ids_rejects_missing_state_json(tmp_path: Path) -> None:
         list_task_ids(tmp_path)
 
     assert exc_info.value.structured_error.error_code == "task_list_failed"
+
+
+def test_list_task_ids_rejects_uninitialized_project(tmp_path: Path) -> None:
+    from hancode.storage.workspace import list_task_ids
+
+    with pytest.raises(HanCodeError) as exc_info:
+        list_task_ids(tmp_path)
+
+    assert (
+        exc_info.value.structured_error.error_code
+        == "project_workspace_not_initialized"
+    )

@@ -291,6 +291,17 @@ def test_cli_task_list_returns_sorted_tasks(
     assert payload["tasks"][1]["task_id"] == "task-002"
 
 
+def test_cli_task_list_rejects_uninitialized_project(tmp_path: Path) -> None:
+    result = runner.invoke(
+        cli.app,
+        ["task", "list", "--project-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 2
+    payload = _payload(result)
+    assert payload["error"]["error_code"] == "project_workspace_not_initialized"
+
+
 # =========================================================================
 # task run and resume
 # =========================================================================
@@ -368,6 +379,25 @@ def test_cli_run_creates_then_runs_task(
     assert payload["command"] == "run"
     assert payload["task"]["task_id"] == "task-001"
     assert payload["task"]["goal"] == "Implement login"
+    # Top-level task must reflect final run state, not pre-run creation state
+    assert payload["task"]["status"] == "blocked"
+
+
+def test_cli_run_top_level_task_matches_run_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _make_project(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        ["run", "test goal", "--project-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    # Top-level task.status must equal run.task.status
+    assert payload["task"]["status"] == payload["run"]["task"]["status"]
+    assert payload["task"]["task_id"] == payload["run"]["task"]["task_id"]
 
 
 def test_cli_run_returns_task_id_when_agent_blocks(
@@ -455,3 +485,28 @@ def test_cli_task_inconsistent_returns_exit_three(
     )
 
     assert result.exit_code == 3
+
+
+# =========================================================================
+# OSError boundary
+# =========================================================================
+
+
+def test_cli_task_create_filesystem_failure_returns_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _make_project(tmp_path)
+
+    def fake_create(self, project_root: Path, goal: str, *, task_id: str | None = None) -> object:
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(TaskService, "create", fake_create)
+
+    result = runner.invoke(
+        cli.app,
+        ["task", "create", "test", "--project-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 2
+    payload = _payload(result)
+    assert payload["error"]["error_code"] == "cli_task_operation_failed"

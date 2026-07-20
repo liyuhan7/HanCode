@@ -3472,7 +3472,7 @@ from hancode.demo_support.runner import run_mock_demo, run_packaged_mock_demo
 | 可并行           | 不并行；应用层入口任务                          |
 | Worktree / PR | 当前结构调整会话                         |
 | 主贡献相关         | 否；应用入口与任务生命周期                       |
-| Commit        | 未提交（用户未要求提交）                  |
+| Commit        | `a337ea3`                  |
 
 ### 目标
 
