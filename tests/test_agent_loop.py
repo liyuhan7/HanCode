@@ -832,6 +832,67 @@ def test_resume_with_answered_interaction_returns_to_running() -> None:
     assert context_builder.calls[0][2].interactions[0].answer == "Yes"
 
 
+def test_ask_user_trace_failure_keeps_valid_waiting_state() -> None:
+    trace_appender = FailingTraceAppender(fail_on="interaction_requested")
+    loop, _, _, _, _, _ = _build_loop(
+        [_ask_user_action()], trace_appender=trace_appender
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.WAITING_INPUT
+    assert result.final_state.status is TaskStatus.WAITING_INPUT
+    assert result.final_state.pending_interaction_id == "ask-000001"
+    assert result.error is not None
+    assert result.error.error_code == "trace_write_error"
+    assert len(result.trace_events) == 1
+    assert result.trace_events[0].event_type == "phase_started"
+
+
+def test_ask_user_redacts_secret_in_question() -> None:
+    action = {
+        "type": "ask_user",
+        "phase": "code",
+        "tool_name": None,
+        "args": {"question": "Is sk-abc123 the intended key?"},
+        "reason": None,
+    }
+    loop, _, _, _, _, _ = _build_loop([action])
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.WAITING_INPUT
+    assert len(result.final_state.interactions) == 1
+    question = result.final_state.interactions[0].question
+    assert "sk-abc123" not in question
+    assert "[REDACTED]" in question
+
+
+def test_ask_user_rejects_secret_only_question() -> None:
+    state_store = StubStateStore(_task_state())
+    loop, _, _, _, _, _ = _build_loop(
+        [
+            {
+                "type": "ask_user",
+                "phase": "code",
+                "tool_name": None,
+                "args": {"question": "sk-abc123"},
+                "reason": None,
+            }
+        ],
+        state_store=state_store,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert (
+        result.error.error_code == "interaction_question_contains_only_sensitive_content"
+    )
+    assert state_store.state.interactions == ()
+
+
 def test_agent_loop_rejects_non_positive_max_steps() -> None:
     with pytest.raises(ValueError, match="max_steps must be positive"):
         _build_loop([_finish_action()], max_steps=0)

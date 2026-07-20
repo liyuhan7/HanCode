@@ -370,6 +370,8 @@ class AgentLoop:
             state,
             status=TaskStatus.INCONSISTENT,
             inconsistent=True,
+            pending_interaction_id=None,
+            interactions=(),
         )
         try:
             self._state_store.save(task_id, inconsistent_state)
@@ -846,12 +848,23 @@ class AgentLoop:
                 continue
 
             if action.type is ActionType.ASK_USER:
-                state, interaction = self._request_user_input(
-                    task_id,
-                    state,
-                    action,
-                    routing.phase,
-                )
+                try:
+                    state, interaction = self._request_user_input(
+                        task_id,
+                        state,
+                        action,
+                        routing.phase,
+                    )
+                except HanCodeError as exc:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        exc.structured_error,
+                        state,
+                    )
                 trace_error = self._append_trace(
                     task_id,
                     trace_events,
@@ -864,16 +877,17 @@ class AgentLoop:
                     },
                 )
                 if trace_error is not None:
-                    state, state_error = self._mark_inconsistent(
-                        task_id, state, trace_error
-                    )
                     return _result(
-                        TaskStatus.INCONSISTENT,
+                        TaskStatus.WAITING_INPUT,
                         step,
                         tuple(tool_calls),
-                        observation,
-                        state_error,
+                        {
+                            "interaction_id": interaction.interaction_id,
+                            "question": interaction.question,
+                        },
+                        trace_error,
                         state,
+                        risks=(_trace_failure_risk(trace_error),),
                     )
                 return _result(
                     TaskStatus.WAITING_INPUT,
@@ -1721,9 +1735,20 @@ class AgentLoop:
                 continue
 
             if action.type is ActionType.FINISH_PHASE:
+                had_interactions = bool(state.interactions)
                 state = self._save_if_changed(
                     task_id, state, _state_after_phase_finish(state, routing.phase)
                 )
+                if had_interactions:
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="interaction_history_cleared",
+                        phase=routing.phase,
+                        status="succeeded",
+                    )
+                    if trace_error is not None:
+                        pending_risks.append(_trace_failure_risk(trace_error))
                 trace_error = self._append_trace(
                     task_id,
                     trace_events,
@@ -1884,8 +1909,8 @@ class AgentLoop:
         action: Action,
         phase: Phase,
     ) -> tuple[TaskState, InteractionRecord]:
-        question = action.args.get("question")
-        if not isinstance(question, str) or not question.strip():
+        raw_question = action.args.get("question")
+        if not isinstance(raw_question, str) or not raw_question.strip():
             raise HanCodeError(
                 StructuredError(
                     error_code="interaction_question_required",
@@ -1895,10 +1920,21 @@ class AgentLoop:
                     suggested_fix="Provide one precise non-empty question.",
                 )
             )
+        safe_question = redact_text(raw_question.strip())
+        if not safe_question.strip() or safe_question.strip() == "[REDACTED]":
+            raise HanCodeError(
+                StructuredError(
+                    error_code="interaction_question_contains_only_sensitive_content",
+                    message="The ASK_USER question contains only sensitive content.",
+                    phase=phase.value,
+                    denied_rule="interaction_question_safe_required",
+                    suggested_fix="Do not include credentials or secrets in ASK_USER questions.",
+                )
+            )
         interaction = InteractionRecord(
             interaction_id=f"ask-{state.interaction_seq + 1:06d}",
             phase=phase,
-            question=question,
+            question=safe_question,
             answer=None,
             status=InteractionStatus.WAITING,
         )
@@ -1931,6 +1967,8 @@ class AgentLoop:
             status=TaskStatus.INCONSISTENT,
             inconsistent=True,
             rollback_required=state.rollback_required or can_recover_checkpoint,
+            pending_interaction_id=None,
+            interactions=(),
         )
         try:
             self._state_store.save(task_id, inconsistent_state)
@@ -3419,6 +3457,12 @@ def _is_sha256(value: object) -> bool:
 def _state_after_phase_finish(state: TaskState, phase: Phase) -> TaskState:
     phase_completed = dict(state.phase_completed)
     phase_completed[phase.value] = True
+    base = replace(
+        state,
+        phase_completed=phase_completed,
+        interactions=(),
+        pending_interaction_id=None,
+    )
     if (
         phase is Phase.REVIEW
         and state.latest_test_status == "failed"
@@ -3427,8 +3471,8 @@ def _state_after_phase_finish(state: TaskState, phase: Phase) -> TaskState:
     ):
         phase_completed[Phase.CODE.value] = False
         return replace(
-            state,
+            base,
             phase_completed=phase_completed,
             test_status_consumed=True,
         )
-    return replace(state, phase_completed=phase_completed)
+    return base

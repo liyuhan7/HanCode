@@ -126,18 +126,30 @@ class InteractionService:
                 ),
             )
             save_state(root, updated)
-            append_trace(
-                root,
-                event_type="interaction_answered",
-                task_id=task_id,
-                phase=state.current_phase,
-                status="succeeded",
-                observation={
-                    "interaction_id": interaction.interaction_id,
-                    "answer_length": len(answer.strip()),
-                    "redacted": safe_answer != answer.strip(),
-                },
-            )
+            try:
+                append_trace(
+                    root,
+                    event_type="interaction_answered",
+                    task_id=task_id,
+                    phase=state.current_phase,
+                    status="succeeded",
+                    observation={
+                        "interaction_id": interaction.interaction_id,
+                        "answer_length": len(answer.strip()),
+                        "redacted": safe_answer != answer.strip(),
+                    },
+                )
+            except HanCodeError:
+                try:
+                    save_state(root, state)
+                except HanCodeError:
+                    raise _interaction_error(
+                        "interaction_persistence_inconsistent",
+                        "The interaction answer was recorded but the audit trace could not be written, and state rollback also failed.",
+                        state.current_phase,
+                        "Manually verify the task state and trace before retrying.",
+                    )
+                raise
             return TaskSummary.from_state(updated)
 
 

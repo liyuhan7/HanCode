@@ -172,18 +172,28 @@ class TaskState:
         ):
             raise _invalid_state_field("pending_interaction_id")
         if self.status is TaskStatus.WAITING_INPUT:
-            if self.pending_interaction_id is None or (
-                waiting_interactions
-                and waiting_interactions[0].interaction_id != self.pending_interaction_id
-                and not any(
+            if self.pending_interaction_id is None:
+                raise _invalid_state_field("pending_interaction_id")
+            if waiting_interactions:
+                if waiting_interactions[0].interaction_id != self.pending_interaction_id:
+                    raise _invalid_state_field("pending_interaction_id")
+            else:
+                pending_is_answered = any(
                     interaction.interaction_id == self.pending_interaction_id
                     and interaction.status is InteractionStatus.ANSWERED
                     for interaction in self.interactions
                 )
-            ):
-                raise _invalid_state_field("pending_interaction_id")
+                if not pending_is_answered:
+                    raise _invalid_state_field("pending_interaction_id")
         elif waiting_interactions or self.pending_interaction_id is not None:
             raise _invalid_state_field("interactions")
+        if self.interactions:
+            max_suffix = max(
+                int(interaction.interaction_id.split("-")[1])
+                for interaction in self.interactions
+            )
+            if self.interaction_seq < max_suffix:
+                raise _invalid_state_field("interaction_seq")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )

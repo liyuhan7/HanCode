@@ -213,3 +213,38 @@ def test_answer_propagates_busy_task_mutation_lock(tmp_path: Path) -> None:
         )
 
     assert exc_info.value.structured_error.error_code == "mutation_lock_busy"
+
+
+def test_answer_trace_failure_restores_waiting_interaction(tmp_path: Path) -> None:
+    project_root, task_id = _make_waiting_task(tmp_path)
+
+    import hancode.app.interaction_service as svc
+
+    original_append = svc.append_trace
+    call_count = 0
+
+    def _failing_append(*args: object, **kwargs: object) -> object:
+        nonlocal call_count
+        call_count += 1
+        raise HanCodeError(
+            StructuredError(
+                error_code="trace_write_error",
+                message="Simulated trace write failure.",
+                phase="spec",
+                denied_rule="trace_write_required",
+                suggested_fix="Restore trace storage.",
+            )
+        )
+
+    svc.append_trace = _failing_append
+    try:
+        with pytest.raises(HanCodeError) as exc_info:
+            InteractionService().answer(project_root, task_id, "src/main.py")
+        assert exc_info.value.structured_error.error_code == "trace_write_error"
+    finally:
+        svc.append_trace = original_append
+
+    state = load_state(task_path(project_root, task_id))
+    assert state.interactions[0].status is InteractionStatus.WAITING
+    assert state.interactions[0].answer is None
+    assert state.status is TaskStatus.WAITING_INPUT

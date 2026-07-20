@@ -93,8 +93,49 @@ def test_state_roundtrips_interactions(tmp_path: Path) -> None:
             "pending_interaction_id": "ask-000001",
             "status": "waiting_input",
         },
+        {
+            "interactions": [
+                {
+                    "interaction_id": "ask-000001",
+                    "phase": "spec",
+                    "question": "Answered?",
+                    "answer": "yes",
+                    "status": "answered",
+                },
+                {
+                    "interaction_id": "ask-000002",
+                    "phase": "spec",
+                    "question": "Waiting?",
+                    "answer": None,
+                    "status": "waiting",
+                },
+            ],
+            "interaction_seq": 2,
+            "pending_interaction_id": "ask-000001",
+            "status": "waiting_input",
+        },
+        {
+            "interactions": [
+                {
+                    "interaction_id": "ask-000001",
+                    "phase": "spec",
+                    "question": "Question?",
+                    "answer": "yes",
+                    "status": "answered",
+                }
+            ],
+            "interaction_seq": 0,
+            "pending_interaction_id": "ask-000001",
+            "status": "waiting_input",
+        },
     ],
-    ids=["dangling_pending_id", "multiple_waiting", "cross_phase"],
+    ids=[
+        "dangling_pending_id",
+        "multiple_waiting",
+        "cross_phase",
+        "waiting_not_pending_with_answered_pending",
+        "interaction_seq_below_max_suffix",
+    ],
 )
 def test_state_rejects_invalid_interaction_invariants(
     tmp_path: Path, updates: dict[str, object]

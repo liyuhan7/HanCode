@@ -231,6 +231,14 @@ def _apply_context_budget(
         raise AssertionError("truncation shape must remain internal and deterministic")
     truncation["applied"] = True
 
+    interaction_history = context.get("interaction_history")
+    if isinstance(interaction_history, list) and len(interaction_history) > 1:
+        while len(interaction_history) > 1 and len(_canonical_json(context)) > max_context_chars:
+            interaction_history.pop(0)
+            omitted.append("oldest_interaction")
+            if len(_canonical_json(context)) <= max_context_chars:
+                return context
+
     for metadata_name in ("artifact_targets", "task_workspace"):
         if metadata_name not in context:
             continue
