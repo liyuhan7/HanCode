@@ -361,6 +361,18 @@ def task_list(
         )
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_task_operation_failed",
+                    "The task operation could not access its workspace.",
+                    "Check project workspace permissions and retry.",
+                    denied_rule="task_workspace_access_required",
+                ),
+                exit_code=2,
+            )
+        ) from None
 
 
 @app.command("run")
@@ -373,8 +385,11 @@ def run_command(
 ) -> None:
     """Create a task and immediately run it."""
     try:
+        provider = task_service.prepare_provider(project_root)
         task = task_service.create(project_root, goal, task_id=task_id)
-        result = task_service.run(project_root, task.task_id, resume=False)
+        result = task_service.run(
+            project_root, task.task_id, resume=False, provider=provider
+        )
         _emit_task_result("run", result)
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None

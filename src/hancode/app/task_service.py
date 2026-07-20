@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
+from hancode.app.credentials import CredentialProvider
 from hancode.app.task_models import TaskSummary
+from hancode.core.config import HanCodeConfig, load_config
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.state import load_state, reconcile_state
 from hancode.providers.base import LLMClient
+from hancode.providers.factory import create_provider_adapter
 from hancode.runtime.agent_loop import AgentRunResult
 from hancode.runtime.engine import run_task
 from hancode.storage.workspace import (
@@ -20,6 +24,21 @@ _TASK_ID_PATTERN = re.compile(r"^task-(\d+)$")
 
 class TaskService:
     """Application facade for task initialization and execution."""
+
+    def __init__(
+        self,
+        *,
+        credential_provider: CredentialProvider | None = None,
+        provider_factory: Callable[..., LLMClient] = create_provider_adapter,
+    ) -> None:
+        self._credential_provider = credential_provider or CredentialProvider()
+        self._provider_factory = provider_factory
+
+    def prepare_provider(self, project_root: Path) -> LLMClient:
+        """Resolve credentials and create a provider before task creation."""
+        config = load_config(project_root)
+        credential = self._resolve_credential(config)
+        return self._provider_factory(config, credential=credential)
 
     def initialize(
         self,
@@ -78,7 +97,16 @@ class TaskService:
         resume: bool = False,
         provider: LLMClient | None = None,
     ) -> AgentRunResult:
-        return run_task(project_root, task_id, resume=resume, provider=provider)
+        selected_provider = provider
+        if selected_provider is None:
+            config = load_config(project_root, task_id)
+            credential = self._resolve_credential(config)
+            selected_provider = self._provider_factory(
+                config, credential=credential
+            )
+        return run_task(
+            project_root, task_id, resume=resume, provider=selected_provider
+        )
 
     def resume(
         self,
@@ -88,6 +116,24 @@ class TaskService:
         provider: LLMClient | None = None,
     ) -> AgentRunResult:
         return self.run(project_root, task_id, resume=True, provider=provider)
+
+    def _resolve_credential(self, config: HanCodeConfig) -> str | None:
+        if config.llm_provider == "mock":
+            return None
+        try:
+            return self._credential_provider.get_secret(config.llm_provider)
+        except HanCodeError as exc:
+            if exc.structured_error.error_code == "credential_missing":
+                raise HanCodeError(
+                    StructuredError(
+                        error_code="provider_credential_missing",
+                        message="The configured provider credential is missing.",
+                        phase="spec",
+                        denied_rule="provider_credential_required",
+                        suggested_fix="Configure the provider credential and retry the task.",
+                    )
+                ) from None
+            raise
 
 
 def _next_task_id(project_root: Path) -> str:

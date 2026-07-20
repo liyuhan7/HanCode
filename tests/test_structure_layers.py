@@ -81,18 +81,24 @@ def test_package_root_contains_only_allowed_entries() -> None:
     assert actual_entries == allowed_entries
 
 
-def test_provider_factory_supports_only_mock() -> None:
+def test_provider_factory_supports_mock_and_openai_compatible() -> None:
     from hancode.providers.factory import create_provider_adapter
 
     mock_config = cast(HanCodeConfig, SimpleNamespace(llm_provider="mock"))
     provider = create_provider_adapter(mock_config)
     assert isinstance(provider, MockLLM)
 
-    unsupported_config = cast(
+    openai_config = cast(
         HanCodeConfig, SimpleNamespace(llm_provider="openai_compatible")
     )
+    with pytest.raises(HanCodeError, match="provider_credential_missing"):
+        create_provider_adapter(openai_config)
+
+    unsupported_config = cast(
+        HanCodeConfig, SimpleNamespace(llm_provider="anthropic")
+    )
     with pytest.raises(HanCodeError, match="provider_not_implemented"):
-        create_provider_adapter(unsupported_config)
+        create_provider_adapter(unsupported_config, credential="test-key")
 
 
 def test_engine_accepts_injected_provider(tmp_path: Path) -> None:

@@ -24,6 +24,7 @@ from hancode.storage.checkpoints import (
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.tooling.file_tools import redact_text
 from hancode.providers.base import LLMClient
+from hancode.providers.errors import ProviderError
 from hancode.providers.mock import MockLLMExhausted
 from hancode.core.models import OperationStatus, Phase, Risk, TaskStatus
 from hancode.policy.path_policy import PathZone
@@ -714,6 +715,37 @@ class AgentLoop:
                     tuple(tool_calls),
                     observation,
                     error,
+                    state,
+                )
+            except ProviderError as exc:
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="provider_call_failed",
+                    phase=routing.phase,
+                    status="failed",
+                    observation={
+                        "error_code": exc.structured_error.error_code,
+                    },
+                    error_summary=redact_text(exc.structured_error.message),
+                )
+                state = self._block(task_id, state)
+                if trace_error is not None:
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        exc.structured_error,
+                        state,
+                        risks=(_trace_failure_risk(trace_error),),
+                    )
+                return _result(
+                    TaskStatus.BLOCKED,
+                    step,
+                    tuple(tool_calls),
+                    observation,
+                    exc.structured_error,
                     state,
                 )
 

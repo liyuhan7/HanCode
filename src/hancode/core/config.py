@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import cast
+from urllib.parse import urlparse
 
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.storage.workspace import load_project_metadata, task_path
@@ -60,6 +61,7 @@ _OPTIONAL_STRING_FIELDS = (
     "credential_source",
     "test_command",
     "build_command",
+    "provider_base_url",
 )
 _INTEGER_FIELDS = (
     "max_steps",
@@ -68,9 +70,23 @@ _INTEGER_FIELDS = (
     "max_observation_bytes",
     "max_context_chars",
     "max_trace_events",
+    "provider_timeout_seconds",
+    "provider_max_retries",
+    "provider_max_output_tokens",
+    "provider_max_response_bytes",
+)
+_PROVIDER_INTEGER_FIELDS = frozenset(
+    {
+        "provider_timeout_seconds",
+        "provider_max_retries",
+        "provider_max_output_tokens",
+        "provider_max_response_bytes",
+    }
 )
 _POSITIVE_INTEGER_FIELDS = tuple(
-    field for field in _INTEGER_FIELDS if field != "retry_budget"
+    field
+    for field in _INTEGER_FIELDS
+    if field != "retry_budget" and field not in _PROVIDER_INTEGER_FIELDS
 )
 _STRING_LIST_FIELDS = ("protected_patterns", "writable_roots")
 _SUPPORTED_LLM_PROVIDERS = frozenset(
@@ -86,6 +102,12 @@ _SENSITIVE_FIELD_MARKERS = (
     "authorization",
     "privatekey",
     "credential",
+)
+_PROVIDER_FIELD_EXEMPTIONS = frozenset(
+    {
+        "credentialsource",
+        "providermaxoutputtokens",
+    }
 )
 _PROJECT_METADATA_FIELDS = frozenset(
     {"workspace_version", "project_id", "course_name", "assignment_name", "project_root"}
@@ -105,6 +127,11 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "max_trace_events",
         "protected_patterns",
         "writable_roots",
+        "provider_base_url",
+        "provider_timeout_seconds",
+        "provider_max_retries",
+        "provider_max_output_tokens",
+        "provider_max_response_bytes",
     }
 )
 _ALLOWED_PROJECT_FIELDS = _PROJECT_METADATA_FIELDS | _ACTIVE_CONFIG_FIELDS
@@ -129,6 +156,11 @@ class HanCodeConfig:
     max_trace_events: int
     protected_patterns: tuple[str, ...]
     writable_roots: tuple[Path, ...]
+    provider_base_url: str | None = None
+    provider_timeout_seconds: int = 60
+    provider_max_retries: int = 2
+    provider_max_output_tokens: int = 2048
+    provider_max_response_bytes: int = 1048576
 
 
 def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig:
@@ -177,6 +209,21 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         writable_roots=tuple(
             _resolve_writable_root(resolved_project_root, value)
             for value in writable_root_values
+        ),
+        provider_base_url=cast(
+            str | None, project_data.get("provider_base_url")
+        ),
+        provider_timeout_seconds=cast(
+            int, project_data.get("provider_timeout_seconds", 60)
+        ),
+        provider_max_retries=cast(
+            int, project_data.get("provider_max_retries", 2)
+        ),
+        provider_max_output_tokens=cast(
+            int, project_data.get("provider_max_output_tokens", 2048)
+        ),
+        provider_max_response_bytes=cast(
+            int, project_data.get("provider_max_response_bytes", 1048576)
         ),
     )
 
@@ -242,6 +289,8 @@ def _read_project_config(project_file: Path) -> dict[str, object]:
     ):
         raise _invalid_project_config_error("credential_source")
 
+    _validate_provider_connection_fields(project_data, provider)
+
     return project_data
 
 
@@ -299,6 +348,131 @@ def _unknown_llm_provider_error() -> HanCodeError:
     )
 
 
+def _validate_provider_connection_fields(
+    project_data: dict[str, object],
+    provider: str,
+) -> None:
+    base_url = cast(str | None, project_data.get("provider_base_url"))
+
+    if provider in _REMOTE_LLM_PROVIDERS:
+        if base_url is None or not base_url.strip():
+            raise _provider_base_url_invalid_error(
+                "Provider base URL is required for remote providers.",
+                "Set provider_base_url to a valid HTTPS URL.",
+            )
+        _validate_provider_base_url(base_url)
+
+    if "provider_timeout_seconds" in project_data:
+        timeout = cast(int, project_data["provider_timeout_seconds"])
+        if timeout <= 0:
+            raise _provider_timeout_invalid_error()
+
+    if "provider_max_retries" in project_data:
+        retries = cast(int, project_data["provider_max_retries"])
+        if retries < 0:
+            raise _provider_retry_config_invalid_error()
+
+    if "provider_max_output_tokens" in project_data:
+        tokens = cast(int, project_data["provider_max_output_tokens"])
+        if tokens <= 0:
+            raise _provider_output_limit_invalid_error()
+
+    if "provider_max_response_bytes" in project_data:
+        size = cast(int, project_data["provider_max_response_bytes"])
+        if size <= 0:
+            raise _provider_output_limit_invalid_error()
+
+
+def _validate_provider_base_url(base_url: str) -> None:
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise _provider_base_url_invalid_error(
+            "Provider base URL is malformed.",
+            "Set provider_base_url to a valid HTTPS URL.",
+        )
+
+    if parsed.scheme not in ("http", "https"):
+        raise _provider_base_url_invalid_error(
+            "Provider base URL must use HTTP or HTTPS.",
+            "Use an HTTPS URL or http://localhost for local debugging.",
+        )
+
+    if parsed.scheme == "http" and parsed.hostname not in (
+        "localhost",
+        "127.0.0.1",
+    ):
+        raise _provider_base_url_invalid_error(
+            "Provider base URL must use HTTPS for remote hosts.",
+            "Use an HTTPS URL or http://localhost for local debugging.",
+        )
+
+    if parsed.username or parsed.password:
+        raise _provider_base_url_invalid_error(
+            "Provider base URL must not contain embedded credentials.",
+            "Remove credentials from the URL and use credential_source.",
+        )
+
+    if parsed.query:
+        raise _provider_base_url_invalid_error(
+            "Provider base URL must not contain a query string.",
+            "Remove query parameters from provider_base_url.",
+        )
+
+
+def _provider_base_url_invalid_error(
+    message: str,
+    suggested_fix: str,
+) -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="provider_base_url_invalid",
+            message=message,
+            phase="spec",
+            denied_rule="valid_provider_config_required",
+            suggested_fix=suggested_fix,
+        )
+    )
+
+
+def _provider_timeout_invalid_error() -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="provider_timeout_invalid",
+            message="Provider timeout must be a positive integer.",
+            phase="spec",
+            denied_rule="valid_provider_config_required",
+            suggested_fix="Set provider_timeout_seconds to a positive integer.",
+        )
+    )
+
+
+def _provider_retry_config_invalid_error() -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="provider_retry_config_invalid",
+            message="Provider retry count must be a non-negative integer.",
+            phase="spec",
+            denied_rule="valid_provider_config_required",
+            suggested_fix="Set provider_max_retries to a non-negative integer.",
+        )
+    )
+
+
+def _provider_output_limit_invalid_error() -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="provider_output_limit_invalid",
+            message="Provider output limits must be positive integers.",
+            phase="spec",
+            denied_rule="valid_provider_config_required",
+            suggested_fix=(
+                "Set provider_max_output_tokens and "
+                "provider_max_response_bytes to positive integers."
+            ),
+        )
+    )
+
+
 def _config_path_outside_project_root_error() -> HanCodeError:
     return HanCodeError(
         StructuredError(
@@ -332,7 +506,7 @@ def _is_plaintext_secret_field(field_name: str) -> bool:
         character for character in field_name.lower() if character.isalnum()
     )
     return (
-        normalized_name != "credentialsource"
+        normalized_name not in _PROVIDER_FIELD_EXEMPTIONS
         and any(marker in normalized_name for marker in _SENSITIVE_FIELD_MARKERS)
     )
 

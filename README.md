@@ -170,17 +170,51 @@ hancode auth clear --provider openai_compatible
 
 ## MockLLM 与真实 Provider
 
-MockLLM 是当前可运行的确定性路径：它使用固定 Action 序列、无需真实凭据、无需网络，并用于验证 Phase Gate、Tool Policy、Feedback、Trace、Checkpoint 和 Delivery 等 Harness 机制。
+MockLLM 是确定性离线路径：它使用固定 Action 序列、无需真实凭据、无需网络，用于验证 Phase Gate、Tool Policy、Feedback、Trace、Checkpoint 和 Delivery 等 Harness 机制。
 
-CredentialProvider 已提供 provider 凭据状态与安全存取边界，但真实 Provider 执行尚未实现。配置了 `openai_compatible` 或 `anthropic` 凭据，不代表当前 CLI 已经可以执行真实模型任务。
+`openai_compatible` Provider 已实现：配置 `provider_base_url` 和凭据后，`hancode run` 可以通过真实 OpenAI-Compatible API 生成 Action。Provider 重试不消耗任务 retry budget；Provider 失败后任务进入 `blocked` 而非 `inconsistent`，可以 `task resume` 恢复。`anthropic` 和 `local` 尚未实现。
+
+## 真实 Provider 配置
+
+在 `project.json` 中配置 `openai_compatible`：
+
+```json
+{
+  "llm_provider": "openai_compatible",
+  "model_name": "configured-model-name",
+  "credential_source": "keyring",
+  "provider_base_url": "https://example-provider.invalid/v1",
+  "provider_timeout_seconds": 60,
+  "provider_max_retries": 2,
+  "provider_max_output_tokens": 2048,
+  "provider_max_response_bytes": 1048576
+}
+```
+
+配置规则：
+
+- `provider_base_url` 对远程地址必须使用 HTTPS（`http://localhost` 允许用于本地调试）。
+- URL 禁止内嵌 username/password 或 query string。
+- `provider_timeout_seconds` 必须为正整数。
+- `provider_max_retries` 必须为非负整数。
+- API key 不允许出现在 `project.json` 中。
+
+配置凭据后运行：
+
+```powershell
+hancode auth login --provider openai_compatible
+hancode run "分析课程作业要求并生成 SPEC.md" --project-root .
+```
 
 ## 已知限制
 
 当前 README 只描述已经可用的能力，不把未来能力写成现成能力：
 
-- `hancode run` 已实现 Headless 任务入口，但默认 mock Provider 没有开放式 Action 序列。普通 `hancode run` 会成功创建并启动任务，但通常因 MockLLM action 耗尽而以 `blocked` 状态结束。真实开放式编码需要后续 ProviderAdapter。
+- `hancode run` 已实现 Headless 任务入口。默认 mock Provider 因 MockLLM action 耗尽会以 `blocked` 结束；配置 `openai_compatible` 和凭据后可由真实模型驱动。
+- `anthropic` 和 `local` Provider 尚未实现。
+- ASK_USER 交互式暂停和恢复尚未实现。
+- Streaming 尚未实现。
 - REPL/TUI/WebUI 尚未实现。
-- 真实 Provider 执行尚未实现；当前可运行 Demo 只有 MockLLM。
 - Demo 使用固定的离线 fixture，不是开放式自然语言编码会话。
 - Docker 不是当前必需分发路径，也不作为本任务的可运行交互入口。
 - 支持 Python 3.11+；OS keyring 后端是否可用取决于目标机配置。`TEMP` / `TMP` 不可写时 MockLLM demo 无法完成临时 workspace 生命周期。部分 Windows symlink/junction 测试可能因权限跳过。

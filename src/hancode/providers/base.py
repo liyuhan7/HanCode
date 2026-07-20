@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Mapping, Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDescriptor:
+    name: str
+    description: str
+    args_schema: Mapping[str, object]
 
 
 class LLMClient(Protocol):

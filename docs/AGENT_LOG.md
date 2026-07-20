@@ -1471,3 +1471,131 @@
   ```
   未新增 TaskController，未修改 AgentLoop 内核，state.json schema version 保持 1。
 - 未完成项：真实 Provider、ASK_USER、实时事件流、TUI 仍属后续阶段。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-0 阶段一收尾
+
+- 使用的技能：test-driven-development
+- 使用的智能体：OpenCode Codex
+- 关键提示词 / 上下文：阶段二设计要求在进入 S2-1 前先补齐 `task list` 的 OSError 结构化边界，作为阶段二进入门禁。
+- TDD Red → Green：
+  - Red：新增 `test_cli_task_list_filesystem_failure_returns_json`，monkeypatch `TaskService.list_tasks` 抛出 `OSError`，断言 exit code 2 和 `cli_task_operation_failed` 错误码；修复前 `task_list()` 只捕获 `HanCodeError`，OSError 向外传播。
+  - Green：`task_list()` 增加 `except OSError` 分支，返回与 create/run/resume/status 一致的结构化错误。
+- 验证结果：全量 pytest 801 passed, 13 skipped；Ruff、MyPy 通过。
+- 范围：仅补齐 CLI 异常边界；未修改 Provider、AgentLoop 或 config。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-1 Provider 配置
+
+- 使用的技能：test-driven-development、brainstorming
+- 使用的智能体：OpenCode Codex
+- 关键提示词 / 上下文：用户提供了完整的阶段二设计文档，要求以 `154a7ec` 为基线实现真实 OpenAI-Compatible ProviderAdapter。S2-1 为 Provider 配置层，在 `HanCodeConfig` 增加 provider 连接字段并增加 URL/数值校验。
+- TDD Red → Green：
+  - Red：新增 20 个 config 测试，覆盖 openai_compatible 配置接受、base_url 必填、HTTP 远程拒绝、localhost HTTP 允许、URL 内嵌凭据拒绝、URL query 拒绝、timeout/retries/output_tokens/response_bytes 数值边界、默认值、mock 不要求 base_url。同时更新 `test_config_loads_defaults` 和 `test_config_loads_project_json_overrides` 加入新字段断言。22 个测试失败（字段不存在、校验缺失）。
+  - Green：
+    - `HanCodeConfig` 新增 5 个字段：`provider_base_url`、`provider_timeout_seconds`、`provider_max_retries`、`provider_max_output_tokens`、`provider_max_response_bytes`，均有默认值。
+    - `_OPTIONAL_STRING_FIELDS`、`_INTEGER_FIELDS`、`_ACTIVE_CONFIG_FIELDS` 同步扩展。
+    - 新增 `_validate_provider_connection_fields` 和 `_validate_provider_base_url`：校验远程 provider 必填 base_url、HTTPS scheme（localhost 允许 HTTP）、禁止 URL 内嵌凭据、禁止 query string、数值边界。
+    - 新增 4 个错误码：`provider_base_url_invalid`、`provider_timeout_invalid`、`provider_retry_config_invalid`、`provider_output_limit_invalid`，均使用 `valid_provider_config_required` denied_rule。
+    - 修复 `provider_max_output_tokens` 字段名含 "token" 被 plaintext secret 检测器误拦的问题：将 `providermaxoutputtokens` 加入 `_PROVIDER_FIELD_EXEMPTIONS` 豁免集。
+    - provider 数值字段不进入 `_POSITIVE_INTEGER_FIELDS`，避免 generic `invalid_project_config` 覆盖 specific error code。
+- 实现摘要：
+  - `load_config` 读取新字段并应用默认值（timeout=60, retries=2, output_tokens=2048, response_bytes=1048576）。
+  - URL 校验使用 `urllib.parse.urlparse`，检查 scheme、hostname、username、password、query。
+  - plaintext secret 规则不退化：`_is_plaintext_secret_field` 仍拒绝 `api_key`、`access_token` 等字段，仅豁免 `credential_source` 和 `provider_max_output_tokens`。
+- 验证结果：
+  - config 专项：62 passed（基线 40，新增 22）
+  - 全量 pytest：821 passed, 13 skipped（基线 801，新增 20）
+  - Ruff：All checks passed!
+  - MyPy：Success: no issues found in 54 source files
+- 范围：仅修改 config 层；未修改 Provider、Transport、PromptBuilder、AgentLoop 或 CLI。
+- 未完成项：S2-2~S2-8 待实现。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-2 Prompt 与 Action Schema
+
+- 使用的技能：test-driven-development
+- 使用的智能体：OpenCode Codex
+- TDD Red → Green：
+  - Red：新增 29 个测试（action_schema 17 + prompt_builder 12），覆盖 tool_call/finish_phase/final 分支、ASK_USER 排除、phase 常量、reason 非空、additionalProperties 禁止、parse_action 契约、system prompt 内容、user message JSON 结构、确定性序列化、凭据不泄漏。
+  - Green：
+    - `providers/base.py` 新增 `ToolDescriptor` dataclass。
+    - `providers/action_schema.py` 实现 `build_action_schema()`：生成 oneOf JSON Schema，按 phase 动态构造 tool_call/finish_phase/final 分支，interaction_enabled 控制是否开放 ask_user。
+    - `providers/prompt_builder.py` 实现 `PromptBuilder`、`ChatMessage`、`ProviderPrompt`：system prompt 包含 Harness 行为契约和 phase 指令；user message 为确定性 JSON（instruction/context/available_tools/output_contract）；保留 `build_prompt` 兼容函数。
+    - `tooling/factory.py` 新增 `build_default_tool_catalog()`：返回 7 个工具的 ToolDescriptor。
+- 验证结果：全量 pytest 850 passed, 13 skipped；Ruff、MyPy 通过。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-3 Transport 与 Decoder
+
+- 使用的技能：test-driven-development
+- TDD Red → Green：
+  - Red：新增 16 个测试（transport 6 + response_decoder 10），覆盖 ProviderRequest/Response frozen、FakeTransport 行为、decoder 解析 message.parsed/content/code_fence、拒绝 plain_text/json_array/missing_choices/empty/oversized、不泄漏 raw body。
+  - Green：
+    - `providers/transport.py`：ProviderRequest、ProviderResponse（frozen dataclass）、ProviderTransport Protocol、Sleeper Protocol、FakeTransport、HttpxProviderTransport（lazy import httpx）。
+    - `providers/errors.py`：ProviderError 继承 HanCodeError，增加 retryable 属性。
+    - `providers/openai_compatible.py`：`decode_response()` 解析 choices[0].message.parsed → content → JSON code fence，校验 dict 类型，错误不包含 raw body。
+    - `pyproject.toml`：新增 httpx>=0.27 依赖。
+- 验证结果：全量 pytest 866 passed, 13 skipped；Ruff、MyPy 通过。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-4 Adapter、错误和重试
+
+- 使用的技能：test-driven-development
+- TDD Red → Green：
+  - Red：新增 15 个测试，覆盖成功返回、429/500/408/network error 重试、max_retries 后停止、400/401/403/404/invalid_response 不重试、注入 Sleeper、Authorization header、credential 不在 body/error 中。
+  - Green：
+    - `providers/openai_compatible.py` 新增 `OpenAICompatibleProvider` 类：构造 ProviderRequest（model/messages/temperature=0/max_tokens/response_format=json_object + Authorization/Content-Type/User-Agent headers），RetryPolicy 重试 timeout/network/408/429/5xx，不重试 400/401/403/404/invalid_response，退避 2^attempt 秒，错误映射到 provider_request_rejected/auth_failed/endpoint_not_found/timeout/rate_limited/server_error/network_error。
+- 验证结果：全量 pytest 881 passed, 13 skipped；Ruff、MyPy 通过。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-5 Factory 与 Credential 装配
+
+- 使用的技能：test-driven-development
+- TDD Red → Green：
+  - Red：更新 factory 测试（openai_compatible 不再返回 provider_not_implemented），新增 task_service credential 解析测试（prepare_provider、credential_missing 转 provider_credential_missing、injected provider 跳过 credential 解析）。
+  - Green：
+    - `providers/factory.py`：`create_provider_adapter` 接收 credential/transport/sleeper kwargs；mock 返回 MockLLM([])；openai_compatible 校验 credential 后创建 OpenAICompatibleProvider；anthropic/local 返回 provider_not_implemented。
+    - `app/task_service.py`：TaskService 新增 `__init__`（credential_provider + provider_factory）、`prepare_provider()`（预检 config + 解析 credential + 创建 provider）、`run()` 在 provider 未注入时自动解析 credential 并创建 provider；`_resolve_credential()` 将 credential_missing 转为 provider_credential_missing。
+- 验证结果：全量 pytest 886 passed, 13 skipped；Ruff、MyPy 通过。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-6 AgentLoop ProviderError 语义
+
+- 使用的技能：test-driven-development
+- TDD Red → Green：
+  - Red：新增 9 个测试，覆盖 ProviderError → blocked（非 inconsistent）、不消耗 retry_budget、不触发 rollback、保持 phase、trace 记录 provider_call_failed、trace 不泄漏 secret、可 resume、valid provider action 到达 parse_action。
+  - Green：
+    - `runtime/agent_loop.py`：在 `except MockLLMExhausted` 之后新增 `except ProviderError` 分支：append trace（event_type=provider_call_failed，observation 只含 error_code，error_summary 脱敏），block state，返回 BLOCKED + structured_error；trace 失败时返回 BLOCKED + trace failure risk。
+- 验证结果：全量 pytest 895 passed, 13 skipped；Ruff、MyPy 通过。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-7 CLI 和 FakeTransport 集成
+
+- 使用的技能：test-driven-development
+- TDD Red → Green：
+  - Red：新增 3 个 FakeTransport 集成测试，覆盖 Provider → AgentLoop → Tool 链路、无真实网络访问、credential 不在 request body 中。
+  - Green：
+    - `interfaces/cli.py`：root `run` 命令改为先 `prepare_provider` 再 `create` 再 `run`，避免 credential 缺失时创建无意义 task。
+- 验证结果：全量 pytest 898 passed, 13 skipped；Ruff、MyPy 通过。
+
+---
+
+### 2026-07-20 — Stage 2 — S2-8 文档和真实 Smoke
+
+- 使用的技能：test-driven-development
+- TDD Red → Green：
+  - Red：更新 README 测试以匹配新内容（移除"真实 Provider 执行尚未实现"，新增 anthropic/local 限制检查）。
+  - Green：
+    - `README.md`：新增"真实 Provider 配置"章节（project.json 示例、配置规则、运行命令）；更新"MockLLM 与真实 Provider"章节说明 openai_compatible 已实现；更新"已知限制"移除"真实 Provider 执行尚未实现"，新增 ASK_USER/Streaming/anthropic/local 限制。
+    - `tests/integration/test_real_provider_smoke.py`：真实 Provider smoke test，默认跳过（HANCODE_RUN_PROVIDER_SMOKE=1 开启），验证能发出请求、得到合法 Action dict、通过 parse_action、secret 不在输出中。
+- 验证结果：全量 pytest 898 passed, 14 skipped（smoke test 默认跳过）；Ruff、MyPy 通过。
+- 阶段二完成：25 条验收标准全部满足。

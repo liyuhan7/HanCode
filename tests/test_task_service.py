@@ -396,3 +396,104 @@ def test_task_run_summary_from_result(tmp_path: Path) -> None:
     assert summary.steps == 1
     assert summary.trace_event_count == 0
     assert summary.error is None
+
+
+# =========================================================================
+# Stage 2: Credential resolution and provider assembly
+# =========================================================================
+
+
+def test_task_service_prepare_provider_resolves_credential(
+    tmp_path: Path,
+) -> None:
+    _make_project(tmp_path)
+    project_file = tmp_path / ".hancode" / "project.json"
+    import json
+
+    data = json.loads(project_file.read_text(encoding="utf-8"))
+    data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "test-model",
+            "credential_source": "env",
+            "provider_base_url": "https://example.invalid/v1",
+        }
+    )
+    project_file.write_text(json.dumps(data), encoding="utf-8")
+
+    from hancode.providers.mock import MockLLM
+
+    class FakeCredentialProvider:
+        def get_secret(self, provider: str) -> str:
+            return "fake-secret"
+
+    class FakeFactory:
+        def __call__(self, config, *, credential=None, **kwargs):
+            return MockLLM([])
+
+    service = TaskService(
+        credential_provider=FakeCredentialProvider(),
+        provider_factory=FakeFactory(),
+    )
+
+    provider = service.prepare_provider(tmp_path)
+
+    assert isinstance(provider, MockLLM)
+
+
+def test_task_service_credential_missing_raises_provider_error(
+    tmp_path: Path,
+) -> None:
+    _make_project(tmp_path)
+    project_file = tmp_path / ".hancode" / "project.json"
+    import json
+
+    data = json.loads(project_file.read_text(encoding="utf-8"))
+    data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "test-model",
+            "credential_source": "env",
+            "provider_base_url": "https://example.invalid/v1",
+        }
+    )
+    project_file.write_text(json.dumps(data), encoding="utf-8")
+
+    class MissingCredentialProvider:
+        def get_secret(self, provider: str) -> str:
+            raise HanCodeError(
+                __import__(
+                    "hancode.core.errors", fromlist=["StructuredError"]
+                ).StructuredError(
+                    error_code="credential_missing",
+                    message="No credential is configured.",
+                    phase="spec",
+                    denied_rule="credential_required",
+                    suggested_fix="Configure the provider.",
+                )
+            )
+
+    service = TaskService(
+        credential_provider=MissingCredentialProvider(),
+    )
+
+    with pytest.raises(HanCodeError) as exc_info:
+        service.prepare_provider(tmp_path)
+
+    assert exc_info.value.structured_error.error_code == "provider_credential_missing"
+    assert exc_info.value.structured_error.denied_rule == "provider_credential_required"
+
+
+def test_task_service_injected_provider_skips_credential_resolution(
+    tmp_path: Path,
+) -> None:
+    _make_project(tmp_path)
+    service = TaskService()
+    service.create(tmp_path, "Test goal")
+
+    from hancode.providers.mock import MockLLM
+
+    injected = MockLLM([])
+    result = service.run(tmp_path, "task-001", provider=injected)
+
+    assert result is not None

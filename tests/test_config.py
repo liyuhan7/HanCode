@@ -86,6 +86,11 @@ def test_config_loads_defaults(tmp_path: Path) -> None:
             "*.token",
         ),
         writable_roots=(tmp_path.resolve() / "src", tmp_path.resolve() / "tests"),
+        provider_base_url=None,
+        provider_timeout_seconds=60,
+        provider_max_retries=2,
+        provider_max_output_tokens=2048,
+        provider_max_response_bytes=1048576,
     )
 
 
@@ -189,7 +194,12 @@ def test_config_loads_project_json_overrides(tmp_path: Path) -> None:
   "max_context_chars": 16000,
   "max_trace_events": 25,
   "protected_patterns": ["docs/SPEC.md", "fixtures/**"],
-  "writable_roots": ["src/**", "tests"]
+  "writable_roots": ["src/**", "tests"],
+  "provider_base_url": "https://example-provider.invalid/v1",
+  "provider_timeout_seconds": 45,
+  "provider_max_retries": 3,
+  "provider_max_output_tokens": 1024,
+  "provider_max_response_bytes": 524288
 }
 """,
         encoding="utf-8",
@@ -214,6 +224,11 @@ def test_config_loads_project_json_overrides(tmp_path: Path) -> None:
         tmp_path.resolve() / "src",
         tmp_path.resolve() / "tests",
     )
+    assert config.provider_base_url == "https://example-provider.invalid/v1"
+    assert config.provider_timeout_seconds == 45
+    assert config.provider_max_retries == 3
+    assert config.provider_max_output_tokens == 1024
+    assert config.provider_max_response_bytes == 524288
 
 
 def test_config_requires_initialized_project_workspace(tmp_path: Path) -> None:
@@ -671,6 +686,383 @@ def test_config_reuses_task_id_path_boundary(tmp_path: Path, task_id: str) -> No
         "denied_rule": "workspace_root_boundary",
         "suggested_fix": "Use a relative task ID without parent-directory segments.",
     }
+
+
+def test_config_accepts_openai_compatible_settings(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": "https://example-provider.invalid/v1",
+            "provider_timeout_seconds": 45,
+            "provider_max_retries": 3,
+            "provider_max_output_tokens": 1024,
+            "provider_max_response_bytes": 524288,
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.llm_provider == "openai_compatible"
+    assert config.provider_base_url == "https://example-provider.invalid/v1"
+    assert config.provider_timeout_seconds == 45
+    assert config.provider_max_retries == 3
+    assert config.provider_max_output_tokens == 1024
+    assert config.provider_max_response_bytes == 524288
+
+
+def test_config_requires_provider_base_url_for_openai_compatible(
+    tmp_path: Path,
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "provider_base_url_invalid",
+        "message": "Provider base URL is required for remote providers.",
+        "phase": "spec",
+        "denied_rule": "valid_provider_config_required",
+        "suggested_fix": "Set provider_base_url to a valid HTTPS URL.",
+    }
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://example.com/v1",
+        "http://10.0.0.1/v1",
+        "http://provider.invalid/v1",
+    ],
+    ids=["hostname", "ip", "remote_host"],
+)
+def test_config_rejects_http_remote_url(tmp_path: Path, base_url: str) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": base_url,
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "provider_base_url_invalid",
+        "message": "Provider base URL must use HTTPS for remote hosts.",
+        "phase": "spec",
+        "denied_rule": "valid_provider_config_required",
+        "suggested_fix": "Use an HTTPS URL or http://localhost for local debugging.",
+    }
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8080/v1",
+        "http://127.0.0.1:8080/v1",
+        "http://localhost/v1",
+    ],
+    ids=["localhost_port", "loopback_ip", "localhost_no_port"],
+)
+def test_config_allows_http_localhost(tmp_path: Path, base_url: str) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": base_url,
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.provider_base_url == base_url
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://user:pass@example.com/v1",
+        "https://apikey@gateway.invalid/v1",
+    ],
+    ids=["user_password", "token_only"],
+)
+def test_config_rejects_url_embedded_credentials(
+    tmp_path: Path, base_url: str
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": base_url,
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "provider_base_url_invalid",
+        "message": "Provider base URL must not contain embedded credentials.",
+        "phase": "spec",
+        "denied_rule": "valid_provider_config_required",
+        "suggested_fix": "Remove credentials from the URL and use credential_source.",
+    }
+    assert "user" not in str(exc_info.value)
+    assert "pass" not in str(exc_info.value)
+    assert "apikey" not in str(exc_info.value)
+
+
+def test_config_rejects_url_with_query(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": "https://example.invalid/v1?key=value",
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "provider_base_url_invalid",
+        "message": "Provider base URL must not contain a query string.",
+        "phase": "spec",
+        "denied_rule": "valid_provider_config_required",
+        "suggested_fix": "Remove query parameters from provider_base_url.",
+    }
+
+
+def test_config_rejects_negative_provider_retries(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": "https://example.invalid/v1",
+            "provider_max_retries": -1,
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "provider_retry_config_invalid",
+        "message": "Provider retry count must be a non-negative integer.",
+        "phase": "spec",
+        "denied_rule": "valid_provider_config_required",
+        "suggested_fix": "Set provider_max_retries to a non-negative integer.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("provider_timeout_seconds", 0),
+        ("provider_timeout_seconds", -5),
+    ],
+    ids=["zero_timeout", "negative_timeout"],
+)
+def test_config_rejects_invalid_provider_timeout(
+    tmp_path: Path, field: str, value: int
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": "https://example.invalid/v1",
+            field: value,
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "provider_timeout_invalid",
+        "message": "Provider timeout must be a positive integer.",
+        "phase": "spec",
+        "denied_rule": "valid_provider_config_required",
+        "suggested_fix": "Set provider_timeout_seconds to a positive integer.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("provider_max_output_tokens", 0),
+        ("provider_max_response_bytes", 0),
+        ("provider_max_output_tokens", -1),
+        ("provider_max_response_bytes", -1),
+    ],
+    ids=[
+        "zero_output_tokens",
+        "zero_response_bytes",
+        "negative_output_tokens",
+        "negative_response_bytes",
+    ],
+)
+def test_config_rejects_invalid_provider_output_limits(
+    tmp_path: Path, field: str, value: int
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": "https://example.invalid/v1",
+            field: value,
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict() == {
+        "error_code": "provider_output_limit_invalid",
+        "message": "Provider output limits must be positive integers.",
+        "phase": "spec",
+        "denied_rule": "valid_provider_config_required",
+        "suggested_fix": "Set provider_max_output_tokens and provider_max_response_bytes to positive integers.",
+    }
+
+
+def test_config_provider_fields_default_when_missing(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "llm_provider": "openai_compatible",
+            "model_name": "configured-model",
+            "credential_source": "keyring",
+            "provider_base_url": "https://example.invalid/v1",
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.provider_timeout_seconds == 60
+    assert config.provider_max_retries == 2
+    assert config.provider_max_output_tokens == 2048
+    assert config.provider_max_response_bytes == 1048576
+
+
+def test_config_mock_provider_does_not_require_base_url(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.llm_provider == "mock"
+    assert config.provider_base_url is None
 
 
 def _link_directory(link_path: Path, target_path: Path) -> None:

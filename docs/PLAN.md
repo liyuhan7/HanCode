@@ -3520,6 +3520,213 @@ class TaskService:
 
 ---
 
+## S2：真实 OpenAI-Compatible ProviderAdapter
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S1 (Headless 任务生命周期)               |
+| 基线            | `154a7ec`                              |
+| 主贡献相关         | 否；Provider 适配层                       |
+
+### 阶段目标
+
+实现真实 OpenAI-Compatible ProviderAdapter，使 HanCode 能由真实模型驱动，同时仍受自研 phase、policy、checkpoint、feedback 和 rollback 内核约束。完成后 `openai_compatible` 不再返回 `provider_not_implemented`。
+
+### 阶段边界
+
+**实现**：OpenAI-Compatible ProviderAdapter、真实 HTTP 请求、Context 转消息、System Prompt、Action JSON Schema、凭据读取、timeout、429/5xx/网络失败重试、401/403 结构化错误、无效响应解析、Provider 错误进入 blocked、Provider 错误 trace、FakeTransport 离线测试、可选真实模型 smoke test。
+
+**不实现**：Anthropic Provider、本地模型 Provider、Streaming、原生 Function Calling、ASK_USER、TUI、Token 成本统计、多轮聊天历史恢复、自动模型发现、任意 HTTP Header 配置、自动 fallback。
+
+### 核心架构约束
+
+* AgentLoop 不知道 HTTP / OpenAI / API key，只知道 `next_action(context)`。
+* ProviderAdapter 只能生成 Action，不能直接执行工具/访问 workspace/修改 state/创建 checkpoint/运行测试。
+* Provider 重试与任务 retry_budget 是两种独立机制，Provider 重试不消耗 retry_budget。
+* API key 不进入 stdout / state / trace / error message。
+
+### 新增文件
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/hancode/providers/openai_compatible.py` | OpenAI-Compatible ProviderAdapter |
+| `src/hancode/providers/transport.py` | HTTP Transport 抽象与默认实现 |
+| `src/hancode/providers/errors.py` | ProviderError 和错误映射 |
+| `tests/providers/test_openai_compatible.py` | Adapter 单元测试 |
+| `tests/providers/test_transport.py` | Transport 和 timeout 测试 |
+| `tests/providers/test_provider_integration.py` | FakeTransport → AgentLoop 集成测试 |
+
+### 修改文件
+
+`providers/base.py`、`providers/factory.py`、`providers/prompt_builder.py`、`providers/action_schema.py`、`core/config.py`、`app/task_service.py`、`runtime/agent_loop.py`、`runtime/engine.py`、`interfaces/cli.py`、`pyproject.toml`、`uv.lock`、`README.md`、`docs/PLAN.md`、`docs/AGENT_LOG.md`。
+
+### TDD 实现顺序
+
+#### S2-0：阶段一最后收尾
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 涉及文件        | `src/hancode/interfaces/cli.py`, `tests/test_cli_tasks.py` |
+| 目标            | `task list` 的 OSError 结构化边界       |
+| 验证            | `test_cli_task_list_filesystem_failure_returns_json` 通过；全量 801 passed, 13 skipped |
+
+#### S2-1：Provider 配置
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-0                                   |
+| 涉及文件        | `src/hancode/core/config.py`, `tests/test_config.py` |
+| 目标            | 在 HanCodeConfig 增加 provider 连接字段并增加 URL/数值校验，保证 plaintext secret 规则不退化 |
+
+新增配置字段：`provider_base_url`、`provider_timeout_seconds`、`provider_max_retries`、`provider_max_output_tokens`、`provider_max_response_bytes`。
+
+校验规则：远程地址必须 HTTPS（localhost 允许 HTTP）；URL 禁止 username/password/query；timeout 正整数；retries 非负整数；output_tokens 正整数；response_bytes 正整数。
+
+完成条件：配置失败测试通过；URL scheme/credential/query 校验生效；数值边界校验生效；plaintext secret 规则不退化。
+
+实际验证：
+- 全量 pytest：821 passed, 13 skipped（基线 801，新增 20 个 config 测试）
+- Ruff：All checks passed!
+- MyPy：Success: no issues found in 54 source files
+
+#### S2-2：Prompt 与 Action Schema
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-1                                   |
+| 涉及文件        | `src/hancode/providers/prompt_builder.py`, `src/hancode/providers/action_schema.py`, `src/hancode/providers/base.py`, `src/hancode/tooling/factory.py`, `tests/providers/test_prompt_builder.py`, `tests/providers/test_action_schema.py` |
+| 目标            | 实现 system prompt、phase 指令、user message 和动态 Action JSON Schema |
+| 完成条件        | 给定相同 context 输出完全确定；Schema 示例能通过现有 parse_action；ASK_USER 不对模型开放 |
+
+实际验证：
+- 全量 pytest：850 passed, 13 skipped（基线 821，新增 29 个测试）
+- Ruff：All checks passed!
+- MyPy：Success: no issues found in 54 source files
+
+#### S2-3：Transport 与 Decoder
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-2                                   |
+| 涉及文件        | `src/hancode/providers/transport.py`, `src/hancode/providers/errors.py`, `src/hancode/providers/openai_compatible.py`, `pyproject.toml`, `tests/providers/test_transport.py`, `tests/providers/test_response_decoder.py` |
+| 目标            | 实现 ProviderTransport 抽象、HttpxProviderTransport、FakeTransport 和 ResponseDecoder |
+| 完成条件        | FakeTransport 可完全替代真实 HTTP；Decoder 可以得到 Action dict；响应体和 header 不泄漏 |
+
+实际验证：
+- 全量 pytest：866 passed, 13 skipped（基线 850，新增 16 个测试）
+- Ruff：All checks passed!
+- MyPy：Success: no issues found in 57 source files
+
+#### S2-4：Adapter、错误和重试
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-3                                   |
+| 涉及文件        | `src/hancode/providers/openai_compatible.py`, `tests/providers/test_openai_compatible.py` |
+| 目标            | 实现 ProviderError、错误映射和 RetryPolicy |
+| 完成条件        | 429/timeout/5xx 重试；401/400 不重试；达到上限后返回 ProviderError；使用注入 Sleeper |
+
+实际验证：
+- 全量 pytest：881 passed, 13 skipped（基线 866，新增 15 个测试）
+- Ruff：All checks passed!
+- MyPy：Success: no issues found in 57 source files
+
+#### S2-5：Factory 与 Credential 装配
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-4                                   |
+| 涉及文件        | `src/hancode/providers/factory.py`, `src/hancode/app/task_service.py`, `tests/test_provider_factory.py`, `tests/test_task_service.py`, `tests/test_structure_layers.py` |
+| 目标            | 修改 ProviderFactory 接口接收 credential/transport/sleeper；TaskService 解析凭据并装配真实 Provider |
+| 完成条件        | mock 继续离线；openai_compatible 能创建真实 Adapter；secret 通过内存注入；显式 provider 注入仍然有效 |
+
+实际验证：
+- 全量 pytest：886 passed, 13 skipped（基线 881，新增 5 个测试）
+- Ruff：All checks passed!
+- MyPy：Success: no issues found in 57 source files
+
+#### S2-6：AgentLoop ProviderError 语义
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-5                                   |
+| 涉及文件        | `src/hancode/runtime/agent_loop.py`, `tests/test_provider_failure_loop.py` |
+| 目标            | AgentLoop 捕获 ProviderError，进入 blocked 而非 inconsistent |
+| 完成条件        | Provider 失败 → blocked；不进入 inconsistent；不消耗 retry budget；不触发 rollback；可 resume；trace 脱敏 |
+
+实际验证：
+- 全量 pytest：895 passed, 13 skipped（基线 886，新增 9 个测试）
+- Ruff：All checks passed!
+- MyPy：Success: no issues found in 57 source files
+
+#### S2-7：CLI 和 FakeTransport 集成
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-6                                   |
+| 涉及文件        | `src/hancode/interfaces/cli.py`, `tests/providers/test_provider_integration.py` |
+| 目标            | 根级 run 预检 Provider；FakeTransport 端到端跑通 Provider → AgentLoop → Tool |
+| 完成条件        | hancode run 预检 provider；FakeTransport 能跑通 Provider → AgentLoop；所有输出仍为结构化 JSON |
+
+实际验证：
+- 全量 pytest：898 passed, 13 skipped（基线 895，新增 3 个集成测试）
+- Ruff：All checks passed!
+- MyPy：Success: no issues found in 57 source files
+
+#### S2-8：文档和真实 Smoke
+
+| 元信息           | 值                                      |
+| --------------- | -------------------------------------- |
+| 状态            | [x] 已完成                              |
+| 依赖            | S2-7                                   |
+| 涉及文件        | `README.md`, `tests/integration/test_real_provider_smoke.py`, `tests/test_readme.py` |
+| 目标            | README 准确区分 Mock 和真实 Provider；真实 smoke 默认跳过 |
+| 完成条件        | 文档只描述已实现能力；真实 smoke 默认跳过；不提交真实凭据 |
+
+实际验证：
+- 全量 pytest：898 passed, 14 skipped（smoke test 默认跳过）
+- Ruff：All checks passed!
+- MyPy：Success: no issues found in 57 source files
+
+### 阶段验收标准
+
+1. `openai_compatible` 不再返回 `provider_not_implemented`。
+2. MockLLM 路径保持完全离线。
+3. ProviderAdapter 实现 `LLMClient.next_action(context)`。
+4. Context 能转换为稳定的 system/user messages。
+5. Action Schema 与现有 ActionParser 契约一致。
+6. 模型响应能转换为 Action dict。
+7. Provider 不直接执行工具。
+8. 401、403 返回结构化认证错误。
+9. timeout、429、5xx 按配置重试。
+10. Provider 重试不消耗任务 retry budget。
+11. Provider 最终失败后任务进入 blocked。
+12. Provider 失败后可以 `task resume`。
+13. Provider 错误不会触发 rollback。
+14. Provider 错误不会把状态标记为 inconsistent。
+15. API key 不进入 stdout。
+16. API key 不进入 state。
+17. API key 不进入 trace。
+18. API key 不进入错误 message。
+19. 所有核心测试不依赖网络。
+20. FakeTransport 能跑通 Provider → AgentLoop → Tool 的完整链路。
+21. 真实网络 smoke 默认跳过。
+22. `hancode run` 能使用真实 Provider 产生至少一个合法 Action。
+23. 现有 Demo、MockLLM 和阶段一任务生命周期测试全部通过。
+24. Ruff、MyPy、package build 全部通过。
+25. README 准确区分 Mock 模式和真实 Provider 模式。
+
+---
+
 # 8. 需求→任务追溯
 
 | SPEC 锚点                                  | 对应任务                         | 状态  |

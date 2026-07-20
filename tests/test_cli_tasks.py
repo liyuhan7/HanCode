@@ -510,3 +510,23 @@ def test_cli_task_create_filesystem_failure_returns_json(
     assert result.exit_code == 2
     payload = _payload(result)
     assert payload["error"]["error_code"] == "cli_task_operation_failed"
+
+
+def test_cli_task_list_filesystem_failure_returns_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _make_project(tmp_path)
+
+    def fake_list_tasks(self, project_root: Path) -> tuple:
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(TaskService, "list_tasks", fake_list_tasks)
+
+    result = runner.invoke(
+        cli.app,
+        ["task", "list", "--project-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 2
+    payload = _payload(result)
+    assert payload["error"]["error_code"] == "cli_task_operation_failed"
