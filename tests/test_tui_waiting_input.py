@@ -99,3 +99,91 @@ def test_waiting_input_updates_composer_placeholder_and_focus(tmp_path: Path) ->
     # Placeholder should prompt for an answer, and the composer should be focused.
     assert "回答" in str(captured["placeholder"])
     assert captured["focused"] is True
+
+
+def test_switching_from_waiting_task_clears_old_question(
+    tmp_path: Path,
+) -> None:
+    from hancode.app.task_models import TaskSummary
+    from textual.widgets import Static
+
+    _enable_interaction(tmp_path)
+
+    waiting = TaskSummary(
+        task_id="task-001",
+        goal="Write the spec.",
+        status=TaskStatus.WAITING_INPUT,
+        current_phase=Phase.SPEC,
+        retry_budget_remaining=2,
+        latest_test_status="none",
+        files_changed=(),
+        tests_run=(),
+        latest_checkpoint=None,
+        rollback_required=False,
+        inconsistent=False,
+        artifacts={},
+        resumable=False,
+        requires_input=True,
+        pending_interaction={
+            "interaction_id": "ask-000001",
+            "phase": "spec",
+            "question": "Which framework should be used?",
+            "answer_received": False,
+        },
+    )
+
+    normal = TaskSummary(
+        task_id="task-002",
+        goal="Write tests.",
+        status=TaskStatus.CREATED,
+        current_phase=Phase.SPEC,
+        retry_budget_remaining=2,
+        latest_test_status="none",
+        files_changed=(),
+        tests_run=(),
+        latest_checkpoint=None,
+        rollback_required=False,
+        inconsistent=False,
+        artifacts={},
+        resumable=False,
+        requires_input=False,
+        pending_interaction=None,
+    )
+
+    class _TaskService:
+        def get(self, project_root: Path, task_id: str) -> TaskSummary:
+            return waiting if task_id == "task-001" else normal
+
+        def list_tasks(
+            self,
+            project_root: Path,
+        ) -> tuple[TaskSummary, ...]:
+            return waiting, normal
+
+    app = HanCodeTuiApp(
+        project_root=tmp_path,
+        task_service=_TaskService(),  # type: ignore[arg-type]
+    )
+
+    captured: dict[str, str] = {}
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._select("task-001")
+            await pilot.pause()
+
+            panel = app.screen.query_one("#tui-detail-panel", Static)
+            assert "Which framework should be used?" in str(panel.render())
+
+            app._select("task-002")
+            await pilot.pause()
+
+            captured["detail"] = str(panel.render())
+
+    asyncio.run(_run())
+
+    assert "Which framework should be used?" not in captured["detail"]
+    assert "task-002" in captured["detail"]
+    assert "created" in captured["detail"]

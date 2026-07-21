@@ -95,10 +95,17 @@ class HanCodeTuiApp(App[None]):
         item_id = event.item.id
         if item_id is None or not item_id.startswith("task-"):
             return
+        task_id = item_id[len("task-") :]
+        # Guard: _refresh_task_list preserves the visual highlight by setting
+        # view.index, which fires ListView.Selected.  If the highlighted item
+        # already matches the active task, skip _select to avoid a cascading
+        # event chain (select → _reflect_waiting_input → _render_detail).
+        if task_id == self.controller.state.active_task_id:
+            return
         if not self.controller.can_mutate():
             self._notify("任务正在运行，无法切换。")
             return
-        self._select(item_id[len("task-") :])
+        self._select(task_id)
 
     # -- composer submission --------------------------------------------
 
@@ -448,12 +455,15 @@ class HanCodeTuiApp(App[None]):
         self._refresh_phase_bar()
         self._reflect_waiting_input()
         self._refresh_task_list_data_only()
+        self._refresh_task_list()
 
     def on_run_failed(self, message: RunFailed) -> None:
         self.controller.on_run_finished()
         self._notify(message.error.message)
         self._refresh_phase_bar()
+        self._reflect_waiting_input()
         self._refresh_task_list_data_only()
+        self._refresh_task_list()
 
     def _reflect_waiting_input(self) -> None:
         """When paused for input, surface the question and focus the composer."""
@@ -465,6 +475,7 @@ class HanCodeTuiApp(App[None]):
             or state.pending_question is None
         ):
             self._reset_composer_placeholder()
+            self._render_active_task_detail()
             return
         interaction_id = state.pending_interaction_id or ""
         self._render_detail(
@@ -489,6 +500,27 @@ class HanCodeTuiApp(App[None]):
         # Worker completion is surfaced via explicit RunFinished/RunFailed
         # messages; this hook is intentionally a no-op placeholder.
         pass
+
+    def _render_active_task_detail(self) -> None:
+        """Render a safe summary when the active task is not waiting for input."""
+        summary = self.controller.state.active_task
+
+        if summary is None:
+            self._render_detail("")
+            return
+
+        checkpoint = summary.latest_checkpoint or "none"
+        test_status = summary.latest_test_status or "none"
+
+        self._render_detail(
+            f"# {summary.task_id}\n\n"
+            f"Goal: {summary.goal}\n\n"
+            f"Status: {summary.status.value}\n\n"
+            f"Phase: {summary.current_phase.value}\n\n"
+            f"Retry budget: {summary.retry_budget_remaining}\n\n"
+            f"Latest test: {test_status}\n\n"
+            f"Latest checkpoint: {checkpoint}"
+        )
 
     # -- widget refresh helpers -----------------------------------------
 
@@ -520,24 +552,35 @@ class HanCodeTuiApp(App[None]):
             return
         self._refresh_task_list()
 
+    
     def _refresh_task_list(self) -> None:
+        """Update task labels in-place to avoid Textual layout cascade."""
         try:
-            from textual.widgets import ListItem, ListView, Label
+            from textual.widgets import Label, ListItem, ListView
 
             view = self.screen.query_one("#tui-task-list", ListView)
         except Exception:
             return
-        try:
-            view.clear()
-            for summary in self.controller.state.tasks:
+        tasks = self.controller.state.tasks
+        old_count = len(view.children)
+        for index, summary in enumerate(tasks):
+            if index < old_count:
+                item = view.children[index]
+                for child in item.walk_children():
+                    if isinstance(child, Label):
+                        child.update(
+                            f"{summary.task_id} \u00b7 {summary.status.value}"
+                        )
+                        break
+            else:
                 view.append(
                     ListItem(
-                        Label(f"{summary.task_id} · {summary.status.value}"),
+                        Label(f"{summary.task_id} \u00b7 {summary.status.value}"),
                         id=f"task-{summary.task_id}",
                     )
                 )
-        except Exception:
-            pass
+        while len(view.children) > len(tasks):
+            view.children[-1].remove()
 
     def _notify(self, text: str) -> None:
         try:
