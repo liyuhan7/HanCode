@@ -5267,6 +5267,301 @@ S3 的核心不是增加一个 CLI 提示，而是建立：
 
 ---
 
+## S4：REPL/TUI 终端交互层与实时运行事件桥接
+
+| 元信息   | 值                                                    |
+| ----- | ---------------------------------------------------- |
+| 状态    | [x] 已完成（S4-T1 至 S4-T8 TDD、静态门禁、全量回归与构建通过）        |
+| 依赖    | S3（Human-in-the-Loop ASK_USER 状态机）                   |
+| 主贡献相关 | 是；终端交互产品形态                                            |
+| Commit | 未提交（按用户要求保留在当前工作区）                    |
+
+### S4.1 阶段定位
+
+S3 完成后，HanCode 的交互内核已经可通过 Headless CLI 驱动：
+
+```text
+自然语言目标
+→ hancode task create / run
+→ AgentLoop（真实 Provider 或 MockLLM）
+→ ASK_USER 暂停 → hancode task answer → hancode task resume
+→ 六阶段产物与最终状态
+```
+
+S4 在此之上封装类似 Claude Code 的简化终端 Coding Agent 产品：
+
+```text
+hancode tui
+→ 输入课程项目目标
+→ 实时展示 phase / tool / test / checkpoint / risk
+→ Agent 请求澄清时暂停并聚焦输入框
+→ 用户直接回答，自动 resume
+→ 查看 SPEC / PLAN / TEST_REPORT / REVIEW / KNOWLEDGE
+→ 查看最终状态和风险
+```
+
+S4 只新增 Presentation Layer，不重新实现 AgentLoop、ProviderAdapter、ToolPolicy、CheckpointManager、RollbackManager、ContextBuilder、Interaction 状态机、Trace 协议或六阶段 Router。
+
+### S4.2 与现有代码的接口对齐（实现前已核验）
+
+下列内核接口在实现 S4 前已对照源码确认存在，S4 直接复用，不得旁路：
+
+* `TaskService.create / get / list_tasks / run / resume`（`app/task_service.py`），`run` / `resume` 返回 `AgentRunResult`。
+* `InteractionService.answer(project_root, task_id, answer, *, interaction_id=None)`（`app/interaction_service.py`），内部已做 mutation lock、脱敏、幂等、`interaction_answered` trace 与补偿回滚。TUI 不得自行修改 `state.json`。
+* `TaskSummary`（`app/task_models.py`）已含 `status / current_phase / retry_budget_remaining / latest_test_status / files_changed / tests_run / latest_checkpoint / rollback_required / inconsistent / artifacts / resumable / requires_input / pending_interaction`。
+* `AgentRunResult`（`runtime/agent_loop.py`）已含 `status / steps / tool_calls / risks / final_observation / error / final_state / retry_budget_remaining / trace_events`。
+* `TraceEvent`（`storage/trace.py`）已含 `event_id / seq / event_type / task_id / phase / timestamp / status / action / observation / error_summary / state_transition`，写入前已结构化脱敏，S4 不再定义重复事件 Schema。
+* `TraceAppender`（`runtime/agent_loop.py`）是 `Protocol`，签名为 `append(self, task_id, *, event_type, phase, status, action=None, observation=None, error_summary=None, state_transition=None) -> TraceEvent`。
+* `create_agent_loop`（`runtime/engine.py`）已支持注入 `trace_appender`，`trace_observer` 为纯增量参数。
+
+### S4.3 阶段范围
+
+#### 3.1 本阶段实现
+
+| 能力 | 是否实现 |
+|---|---:|
+| `hancode tui` 显式入口 | 是 |
+| `ObservedTraceAppender` 持久化后实时通知 UI | 是 |
+| `runtime.engine` / `TaskService.run/resume` 透传 `trace_observer` | 是 |
+| 后台 Worker 执行 AgentLoop，主线程只渲染 | 是 |
+| 单 TUI Session 单活跃 Task Worker | 是 |
+| `TuiViewState` 不可变状态 + reducer | 是 |
+| CommandParser（slash command + 普通文本语义） | 是 |
+| TaskList / PhaseBar / ActivityLog / DetailPanel / Composer | 是 |
+| WAITING_INPUT 显示问题、回答后自动 resume | 是 |
+| `InspectionService` 恢复历史 Trace 与安全 Artifact 预览 | 是 |
+| `RecoveryService` 受控 rollback（显式确认） | 是 |
+| 重启 TUI 后恢复 Task 列表与历史 Trace | 是 |
+| Answer 正文不回显、credential 不进入界面 | 是 |
+
+#### 3.2 本阶段不实现
+
+| 能力 | 原因 |
+|---|---|
+| 多 Task 并行运行 / 多 Agent 协作 | 单 Session 单 Worker |
+| 流式 LLM Token 展示 | 展示单位是可审计 Action / TraceEvent，非 Token 流 |
+| 自由聊天上下文 / 追加 Prompt | 避免变成无边界 Agent |
+| 任意 Shell passthrough / `!command` | 安全边界 |
+| 完整代码编辑器 / Diff 编辑 / 源码浏览 | 超出 MVP |
+| 裸 `hancode` 自动进入 TUI | 延后到 `hancode tui` 稳定后 |
+| 强制 Cancel 正在运行的 Worker | 需 AgentLoop 支持 CancellationToken |
+| WebUI / 远程执行 / MCP / 语音输入 | 非当前产品形态 |
+
+### S4.4 目标架构与边界
+
+```text
+Textual TUI App (TaskList / PhaseBar / ActivityLog / DetailPanel / Composer)
+        │ command / text
+        ▼
+TuiSessionController (CommandParser / ViewStateReducer / Worker)
+        │
+        ├── TaskService / InteractionService / InspectionService / RecoveryService
+        ▼
+runtime.engine → AgentLoop → ObservedTraceAppender
+                                   ├─ trace.jsonl（先持久化）
+                                   └─ TraceObserver → Textual Message Queue（后通知）
+```
+
+必须保持 `TUI → Application Service → Engine → AgentLoop`。禁止：`TUI → AgentLoop private method`、`TUI → ToolRegistry.dispatch()`、`TUI → write state.json`、`TUI → append trace.jsonl`、`TUI → rollback_last_checkpoint()`、`TUI → ProviderAdapter.next_action()`。
+
+### S4.5 核心机制约束
+
+* **Trace 先落盘再通知**：`ObservedTraceAppender.append()` 先调用内层 `TraceAppender.append()` 完成持久化，成功后再 `observer.on_trace(event)`；Observer 抛异常必须被吞掉，不改变 AgentLoop 运行结果、不产生 `INCONSISTENT`。
+* **签名一致性（MyPy strict）**：`ObservedTraceAppender.append` 必须完整复刻 `TraceAppender` Protocol 的关键字签名（`task_id` 位置参数、其余 keyword-only），不使用 `**kwargs`，以保持内层调用的类型安全。
+* **可选透传**：`create_agent_loop` / `run_task` / `TaskService.run` / `TaskService.resume` 增加的 `trace_observer: TraceObserver | None = None` 必须是可选关键字参数，Headless CLI 与现有测试行为不变。
+* **后台 Worker**：Provider 请求、AgentLoop、文件工具、测试、checkpoint、rollback、Trace / Artifact 加载均在 Worker 中运行；Observer 不得直接操作 Widget，只能 `post_message`。
+* **单运行约束**：`ViewState.busy=True` 时禁止再次 `/run`、切换 active task、`/rollback`、提交新 goal；文件系统 mutation lock 仍是最终并发保护。
+* **UI 事件缓存上限**：界面最多缓存最近 500 个 `TraceEvent`；删除最旧 UI Event 不影响 `trace.jsonl` 完整审计。
+* **纯文本渲染**：所有用户文本与 Trace 文本按纯文本处理，禁用用户输入的 Rich markup / ANSI 注入。
+
+### S4.6 新增与修改文件
+
+新增：`runtime/observation.py`（`TraceObserver`、`ObservedTraceAppender`）、`app/inspection_service.py`、`app/recovery_service.py`、`interfaces/tui/`（`app.py` / `controller.py` / `commands.py` / `messages.py` / `view_state.py` / `formatters.py` / `screens/main.py` / `widgets/*`）。
+
+修改：`runtime/engine.py`、`app/task_service.py`、`interfaces/cli.py`、`pyproject.toml`（锁定 Textual 版本）、`uv.lock`、`README.md`、`docs/PLAN.md`、`docs/AGENT_LOG.md`。
+
+### S4.7 TDD 实现顺序
+
+#### S4-T1：TUI 依赖与空壳入口
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S3 |
+| 涉及文件 | `pyproject.toml`, `uv.lock`, `interfaces/cli.py`, `interfaces/tui/__init__.py`, `interfaces/tui/app.py`, `interfaces/tui/screens/main.py`, `tests/test_tui_app.py` |
+| 目标 | 锁定 Textual 版本，新增显式 `hancode tui` 子命令并挂载基础主屏 |
+
+* 先写测试：`test_tui_command_is_registered`、`test_tui_app_mounts_main_screen`、`test_headless_cli_output_remains_json`、`test_existing_cli_help_is_unchanged`。
+* 完成判定：TUI 可启动；现有 CLI JSON 输出与 `--help` 不变；无 Provider / Workspace 时给出结构化提示而非崩溃。
+* 边界：本任务只加显式 `hancode tui`，不改 `no_args_is_help`，不实现裸 `hancode` 进入 TUI；不得引入 Textual 私有 API。
+
+实际验证（2026-07-21）：
+
+* 依赖：`pyproject.toml` 增加 `textual>=0.60`，`uv lock` 解析到 `textual v8.2.8`，`uv sync --extra dev` 完成安装。
+* Red：新增 `tests/test_tui_app.py` 后，`test_tui_command_is_registered`（`--help` 无 `tui`）与 `test_tui_app_mounts_main_screen`（`ModuleNotFoundError: hancode.interfaces.tui`）如期失败，2 passed / 2 failed。
+* Green：新增 `interfaces/tui/{__init__,app}.py` 与 `screens/main.py`（Header/Static/Footer 空壳），CLI 增加 `@app.command("tui")` 惰性导入并 `HanCodeTuiApp(project_root=...).run()`；Textual `run_test()` 通过 `asyncio.run` 驱动，未引入 pytest-asyncio。专项 `4 passed`。
+* 门禁：`ruff check`（新增 TUI 代码 + 测试 + cli）通过；`mypy src` 为 64 源文件无问题；全量 `pytest` 为 `978 passed, 14 skipped`；`uv build` 成功生成 sdist/wheel（已清理 dist/build/egg-info）。
+* 入口：`hancode --help` 显示 `tui  Launch the interactive terminal session (REPL/TUI).`。
+* 剩余：`mypy tests/test_tui_app.py` 单独检查时报 Textual `import-untyped`，属第三方库无 `py.typed`；项目标准门禁为 `mypy src`，不受影响。Commit 待用户决定。
+
+#### S4-T2：ObservedTraceAppender 与 Engine 透传
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-T1 |
+| 涉及文件 | `runtime/observation.py`, `runtime/engine.py`, `app/task_service.py`, `tests/test_observed_trace.py`, `tests/test_app_layers.py`, `tests/test_task_service.py` |
+| 目标 | 持久化 Trace 成功后实时通知 UI，且不改变 Harness 运行结果 |
+
+* 先写测试：`test_observer_receives_event_after_trace_persistence`、`test_observer_failure_does_not_change_agent_result`、`test_observer_never_receives_unpersisted_event`、`test_task_service_forwards_trace_observer`、`test_observer_receives_events_in_seq_order_during_mock_run`（另含 engine 装配透传的两条）。
+* 完成判定：MockLLM 运行过程中 Observer 按 `seq` 接收事件；Observer 异常被吞、不影响 `AgentRunResult`、不产生 `INCONSISTENT`；无 observer 时行为与现状一致。
+
+实际验证（2026-07-21）：
+
+* Red：新增 `tests/test_observed_trace.py` 后收集期 `ModuleNotFoundError: hancode.runtime.observation`。
+* Green：新增 `runtime/observation.py`（`TraceObserver` Protocol + `ObservedTraceAppender`，完整复刻 `TraceAppender` 关键字签名、不使用 `**kwargs`，先持久化再通知、Observer 异常吞掉）；`create_agent_loop` / `run_task` / `TaskService.run` / `resume` 增加可选 `trace_observer` 关键字透传。专项 `7 passed`（含 MockLLM 端到端按 seq 接收事件）。
+* 回归修复：`test_app_layers.py`、`test_task_service.py` 中三个 monkeypatch 的 fake `run_task` 增补可选 `trace_observer` 形参（`run` 现始终转发该 kwarg）。
+* 门禁：`ruff check`（src + 相关测试）通过；`mypy src` 为 65 源文件无问题；全量 `pytest` 为 `985 passed, 14 skipped`。Commit 待用户决定。
+
+#### S4-T3：InspectionService
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-T2 |
+| 涉及文件 | `app/inspection_service.py`, `tests/test_inspection_service.py` |
+| 目标 | 分页恢复历史 Trace 与 allow-list Artifact 安全预览 |
+
+* 接口：`read_trace(project_root, task_id, *, after_seq=0, limit=200) -> TracePage`；`read_artifact(project_root, task_id, artifact_name, *, max_chars=50_000) -> ArtifactPreview`。
+* 先写测试：`test_read_trace_returns_events_in_seq_order`、`test_read_trace_rejects_gapped_sequence`、`test_read_trace_rejects_symlink`、`test_read_trace_rejects_wrong_task_id`、`test_read_artifact_allows_declared_artifact`、`test_read_artifact_rejects_source_file`、`test_read_artifact_rejects_credentials`、`test_read_artifact_truncates_large_preview`（另含 after_seq/limit 分页与 undeclared 拒绝）。
+* Artifact allow-list 仅：`SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`，且要求 `state.artifacts[name] == True`；拒绝 `.env` / 凭据 / 任意源码 / 教师测试 / 评分脚本 / 任务目录外 / symlink。
+* 完成判定：重启 TUI 后可恢复 Task 列表、当前状态与历史 Trace。
+
+实际验证（2026-07-21）：
+
+* Red：新增 `tests/test_inspection_service.py` 后收集期 `ModuleNotFoundError: hancode.app.inspection_service`。
+* Green：新增 `app/inspection_service.py`（`TracePage` / `ArtifactPreview` / `InspectionService`）。`read_trace` 复用与 `storage/trace.py` 一致的完整性校验（逐行 JSON object、`seq` 从 1 连续、`event_id=evt-NNNNNN`、`task_id` 绑定），拒绝 symlink trace，按 `after_seq`/`limit` 分页。`read_artifact` 走固定 allow-list + `state.artifacts[name] == True` + 非 symlink + `redact_text` 脱敏 + `max_chars` 截断。专项 `9 passed, 1 skipped`（symlink 用例在无权限 Windows 环境 skip）。
+* 门禁：`ruff` 通过；`mypy src` 66 源文件无问题（修正一处 `error_summary` 的 `object` 收窄）；全量 `pytest` 为 `994 passed, 15 skipped`。Commit 待用户决定。
+
+#### S4-T4：CommandParser 与 TuiViewState
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-T1 |
+| 涉及文件 | `interfaces/tui/commands.py`, `interfaces/tui/view_state.py`, `tests/test_tui_commands.py`, `tests/test_tui_view_state.py` |
+| 目标 | 建立与 Textual 无关的命令解析与不可变状态转换 |
+
+* 先写测试：`test_parse_task_command_with_goal`、`test_parse_use_command`、`test_unknown_command_returns_structured_error`、`test_plain_text_creates_task_when_no_active_task`、`test_plain_text_answers_when_waiting_input`、`test_plain_text_is_rejected_during_normal_idle`、`test_view_state_reducer_preserves_event_order`、`test_view_state_caps_event_buffer`。
+* Slash 命令 MVP：`/help /task /tasks /use /run /resume /status /trace /artifacts /open /rollback /clear /quit`。
+* 普通文本语义：无 active task → 创建并运行；WAITING_INPUT → answer + resume；其他 idle → 结构化拒绝，不作为追加 Prompt。
+* 完成判定：命令语义可完全用普通单元测试验证；事件缓存上限（500）生效。
+
+实际验证（2026-07-21）：
+
+* Red：新增两个测试模块后收集期 `ModuleNotFoundError: hancode.interfaces.tui.commands / view_state`。
+* Green：新增 `commands.py`（`parse_command` 返回 `TuiCommand | TuiCommandError`，`shlex` 拆分、空/未知/缺参/多参/引号包裹/长度上限校验；`classify_plain_text` → `CREATE_TASK / ANSWER / REJECT`）与 `view_state.py`（冻结 `TuiViewState` + 纯 reducer，事件缓存上限 500、丢最旧不动 trace 文件）。专项 `16 passed`。
+* 门禁：`ruff` 通过；`mypy src` 68 源文件无问题。CommandParser 不执行任何业务操作。Commit 待用户决定。
+
+#### S4-T5：主界面与实时运行
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-T2, S4-T3, S4-T4 |
+| 涉及文件 | `interfaces/tui/controller.py`, `interfaces/tui/messages.py`, `interfaces/tui/app.py`, `interfaces/tui/widgets/{phase_bar,activity_log}.py`, `interfaces/tui/screens/main.py`, `tests/test_tui_controller.py` |
+| 目标 | TaskList / PhaseBar / ActivityLog / DetailPanel / Composer 与后台 Worker |
+
+* Textual Message：`TraceArrived / RunFinished / RunFailed / TaskSummaryChanged`。
+* 先写测试：`test_selecting_task_refreshes_summary`、`test_run_disables_mutating_commands`、`test_trace_message_updates_activity_log`、`test_run_finished_refreshes_task_state`、`test_phase_bar_follows_task_summary`、`test_small_terminal_uses_compact_layout`（另含未知事件渲染、waiting/inconsistent 相位、app 端到端流式事件）。
+* PhaseBar 只从 `TaskSummary`（`current_phase` + `status`）派生，不自行推进 phase；ActivityLog 每个 TraceEvent 独立成行，未知事件显示 `[phase] event_type status` 而非丢弃。
+* 完成判定：运行 MockLLM Demo 时事件在运行结束前逐条出现。
+
+实际验证（2026-07-21）：
+
+* Red：新增 `tests/test_tui_controller.py` 后收集期 `ModuleNotFoundError: hancode.interfaces.tui.controller`。
+* Green：新增 Textual 无关的 `TuiSessionController`（持有 `TuiViewState`，`can_mutate()` 单运行约束，`select_task`/`mark_running`/`on_trace`/`on_run_finished`）、纯派生的 `phase_bar.phase_cells` / `activity_log.format_event`、`messages.py`（4 个 Message），主屏加 `is_compact_width` 与真实 widget 布局，`app.py` 用后台线程 Worker + `_WorkerTraceObserver`（`call_from_thread` post message，绝不直接操作 widget）串起 composer→service→run。
+* 专项 `TUI 全套 29 passed`，含一条 app 级端到端：`submit_input("Write the spec.")` → 后台 MockLLM run → 事件经 observer/message 流入 activity log、结束后 `busy=False`。
+* 门禁：`ruff` 通过；`mypy src` 73 源文件无问题；全量 `pytest` 为 `1019 passed, 15 skipped`。Commit 待用户决定。
+
+#### S4-T6：HITL 自动回答与恢复
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-T5 |
+| 涉及文件 | `interfaces/tui/app.py`（`submit_answer` 编排）, `tests/test_tui_hitl.py` |
+| 目标 | 完成 ask → pause → display → answer → resume 表现层编排 |
+
+* 编排：`InteractionService.answer(...)` 成功后调用 `TaskService.run(..., resume=True, trace_observer=observer)`；不修改 S3 状态机；Headless CLI 仍保持 answer / resume 两步。
+* 先写测试：`test_answer_uses_pending_interaction_id`、`test_answer_success_automatically_resumes_task`、`test_answer_failure_does_not_resume`、`test_secret_only_answer_is_rejected_without_echo`、`test_answer_confirmation_reports_length_not_content`、`test_answer_without_pending_interaction_is_noop`、`test_end_to_end_ask_answer_resume_writes_spec`。
+* 完成判定：同一 TUI 会话内完成一次 ASK_USER 后继续写入 SPEC；提交后仅显示 `Answer submitted · N chars`，不回显正文。
+
+实际验证（2026-07-21）：
+
+* Red/Green：`submit_answer` 在 S4-T5 已随 app 落地；本任务补齐 7 条 HITL 断言。`answer` 成功→自动 `run(resume=True)`；`answer` 失败（含 stale id / secret-only）→不 resume；确认提示只显示 `Answer submitted · N chars`，通知与错误均不含 answer 正文；无 pending 时 no-op。
+* 真实端到端：MockLLM 序列 `ask_user`（`interaction_mode=ask_user`）→ WAITING_INPUT → `submit_answer("Use FastAPI.")` → 自动 resume → `write_file` → `finish_phase`，最终 `SPEC.md` 落盘且含回答内容。
+* 门禁：`ruff` 通过；`mypy src` 73 源文件无问题；HITL 专项 `7 passed`。Commit 待用户决定。
+
+#### S4-T7：Artifact 与 Rollback 操作
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-T3, S4-T5 |
+| 涉及文件 | `app/recovery_service.py`, `interfaces/tui/app.py`（rollback/artifact 编排）, `tests/test_recovery_service.py` |
+| 目标 | `/artifacts`、`/open <name>`、`/rollback`（显式确认） |
+
+* `RecoveryService.rollback_last(project_root, task_id) -> RecoverySummary`：reconcile → 校验 latest checkpoint → 取 mutation lock → 调用 `rollback_last_checkpoint` → 返回摘要；`preview_last` 从 checkpoint manifest 读取受影响文件。TUI 只调用该服务，确认信息只来源于 manifest。
+* 先写测试：`test_rollback_requires_confirmation`、`test_cancelled_rollback_does_not_mutate_state`、`test_confirmed_rollback_executes`、`test_rollback_last_uses_rollback_manager`、`test_preview_last_reports_no_checkpoint`、`test_rollback_last_without_checkpoint_is_structured_error`。
+* 完成判定：TUI 不直接调用 storage 模块；rollback 必须经用户确认。
+
+实际验证（2026-07-21）：
+
+* Red：新增 `tests/test_recovery_service.py` 后收集期 `ModuleNotFoundError: hancode.app.recovery_service`。
+* Green：新增 `app/recovery_service.py`（`RecoveryService` + `RollbackPreview` + `RecoverySummary`）。`preview_last` 只从 manifest 读取 `files`/`rollback_available`；`rollback_last` 在共享 `FilesystemTaskMutationGuard` 下委托 `rollback_last_checkpoint`，非成功抛结构化错误。app 增加 `request_rollback`（预览+待确认）/`confirm_rollback`（执行+刷新 summary）/`cancel_rollback`，以及 `/rollback`、`/artifacts`、`/open <name>`（走 InspectionService）命令。
+* 专项 `6 passed`；确认前不执行、取消不改状态、确认才委托 RollbackManager 均验证。
+* 门禁：`ruff` 通过；`mypy src` 74 源文件无问题；全量 `pytest` 为 `1032 passed, 15 skipped`。Commit 待用户决定。
+
+#### S4-T8：端到端测试与交付
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-T1~S4-T7 |
+| 涉及文件 | `tests/test_tui_e2e.py`（另含 `tests/test_observed_trace.py` 已在 S4-T2 建立） |
+| 目标 | 建立完整 MockLLM TUI 演示并完成全量门禁 |
+
+* 场景：启动 TUI → 输入目标 → 创建 task → spec phase 请求澄清 → 用户回答 → 自动 resume → 写 SPEC → 完成 spec；随后以全新会话经 InspectionService 恢复完整 trace 并按 allow-list 预览产物。
+* 验证：`pytest`、`ruff`、`mypy` strict、`uv build`、CLI smoke、TUI smoke、MockLLM TUI E2E。
+
+实际验证（2026-07-21）：
+
+* 新增 `tests/test_tui_e2e.py` 两条端到端：
+  * `test_tui_full_ask_answer_resume_and_inspection`：`submit_input(目标)` → 创建并运行 → WAITING_INPUT（trace 已实时流入）→ `submit_answer` → 自动 resume → `SPEC.md` 落盘含 "FastAPI"；再用 `InspectionService.read_trace` 以全新会话恢复，`seq` 有序、含 `interaction_requested`/`interaction_answered`，且 answer 正文不出现在任何持久化 trace。
+  * `test_tui_artifact_preview_after_completion`：完成后 `read_artifact("SPEC.md")` 经 allow-list 成功预览。
+* 全量门禁：`ruff check src tests` 通过；`mypy src` 74 源文件无问题；全量 `pytest` 为 `1034 passed, 15 skipped`；`uv build` 成功且 wheel 含完整 `interfaces/tui/` 包；`hancode --help` 显示 `tui`；`hancode demo --provider mock` 返回 `completed`。构建产物已清理。
+* 文档：`README.md` 新增「终端交互（TUI）」章节（`hancode tui` 用法、slash 命令、展示层边界、回答不回显），并把 TUI 从「已知限制」移出、仅保留 WebUI/Streaming 未实现；`tests/test_readme.py` 先补 `test_readme_documents_tui` 与 available-commands 断言（先红后绿）。全量回归 `1035 passed, 15 skipped`。Commit 待用户决定。
+
+### S4.8 S4 验收标准
+
+**功能**：`hancode tui` 可启动；可创建/选择/运行/恢复 Task；实时展示 TraceEvent 与六阶段状态；展示 tool/test/checkpoint/rollback/risk；WAITING_INPUT 显示问题并可自动 resume；可查看允许的产物；可执行受控 rollback；重启后可恢复 Task 与历史 Trace。
+
+**边界**：TUI 不直接调用 LLM / 执行工具 / 读写 State / 修改 Trace / 调用 RollbackManager；Headless CLI 的 JSON 输出与行为兼容；MockLLM 仍可离线运行；ProviderAdapter 不依赖 Textual。
+
+**安全**：Trace 持久化成功后才进入 UI；answer 正文不回显；credential 不进入界面；Artifact Preview 固定 allow-list；用户文本不能注入终端 markup；Observer 失败不影响 AgentLoop；无 shell passthrough；运行中不强杀 Worker。
+
+**测试**：CommandParser、ViewState reducer、Observer 顺序与容错、InspectionService 安全、HITL TUI 端到端测试全部通过；全量现有测试无回归；Ruff、MyPy strict、package build 通过。
+
+### S4.9 非目标 / 边界
+
+* 不修改 AgentLoop / ProviderAdapter / ToolPolicy / Checkpoint / Trace / State 业务逻辑。
+* 不改变 trace JSONL、state JSON schema version、checkpoint manifest schema 或现有 CLI 命令语义。
+* 不实现多 Task 并行、流式 Token、自由聊天、任意 Shell、代码编辑器、WebUI、远程执行、强制取消。
+* 不引入外部 Agent Framework（OpenCode Loop / Aider / LangChain AgentExecutor / AutoGen / CrewAI）充当交付内核；仅复用 Textual 的布局、键盘事件、后台任务与渲染能力。
+
+---
+
 # 8. 需求→任务追溯
 
 | SPEC 锚点                                  | 对应任务                         | 状态  |

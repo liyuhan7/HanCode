@@ -63,6 +63,7 @@ def test_task_service_delegates_engine_run(
         *,
         resume: bool,
         provider: object,
+        trace_observer: object = None,
     ) -> object:
         assert (project_root, task_id, resume, provider) == (
             tmp_path,

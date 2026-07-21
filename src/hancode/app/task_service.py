@@ -15,6 +15,7 @@ from hancode.providers.base import LLMClient
 from hancode.providers.factory import create_provider_adapter
 from hancode.runtime.agent_loop import AgentRunResult
 from hancode.runtime.engine import run_task
+from hancode.runtime.observation import TraceObserver
 from hancode.storage.workspace import (
     init_task_workspace,
     list_task_ids,
@@ -98,6 +99,7 @@ class TaskService:
         *,
         resume: bool = False,
         provider: LLMClient | None = None,
+        trace_observer: TraceObserver | None = None,
     ) -> AgentRunResult:
         selected_provider = provider
         if selected_provider is None:
@@ -107,7 +109,11 @@ class TaskService:
                 config, credential=credential
             )
         return run_task(
-            project_root, task_id, resume=resume, provider=selected_provider
+            project_root,
+            task_id,
+            resume=resume,
+            provider=selected_provider,
+            trace_observer=trace_observer,
         )
 
     def resume(
@@ -116,8 +122,15 @@ class TaskService:
         task_id: str,
         *,
         provider: LLMClient | None = None,
+        trace_observer: TraceObserver | None = None,
     ) -> AgentRunResult:
-        return self.run(project_root, task_id, resume=True, provider=provider)
+        return self.run(
+            project_root,
+            task_id,
+            resume=True,
+            provider=provider,
+            trace_observer=trace_observer,
+        )
 
     def _resolve_credential(self, config: HanCodeConfig) -> str | None:
         if config.llm_provider == "mock":

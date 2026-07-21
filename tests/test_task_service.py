@@ -286,6 +286,7 @@ def test_task_service_run_keeps_provider_injection(
         *,
         resume: bool,
         provider: object,
+        trace_observer: object = None,
     ) -> object:
         calls.append((project_root, task_id, resume, provider))
         return expected
@@ -314,6 +315,7 @@ def test_task_service_resume_delegates_with_resume_true(
         *,
         resume: bool,
         provider: object,
+        trace_observer: object = None,
     ) -> object:
         calls.append((project_root, task_id, resume))
         return expected

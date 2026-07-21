@@ -410,6 +410,18 @@ def run_command(
         ) from None
 
 
+@app.command("tui")
+def tui(
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Launch the interactive terminal session (REPL/TUI)."""
+    from hancode.interfaces.tui.app import HanCodeTuiApp
+
+    HanCodeTuiApp(project_root=project_root).run()
+
+
 @task_app.command("answer")
 def task_answer(
     task_id: str = typer.Argument(..., help="Task ID with pending input."),

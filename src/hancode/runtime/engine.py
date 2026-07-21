@@ -19,6 +19,7 @@ from hancode.runtime.agent_loop import (
 )
 from hancode.runtime.context import ContextBuilder
 from hancode.runtime.feedback import FeedbackBuilder
+from hancode.runtime.observation import ObservedTraceAppender, TraceObserver
 from hancode.tooling.factory import build_default_tool_registry
 
 
@@ -29,6 +30,7 @@ def create_agent_loop(
     provider: LLMClient | None = None,
     tool_registry: ToolRegistryPort | None = None,
     trace_appender: TraceAppender | None = None,
+    trace_observer: TraceObserver | None = None,
     mutation_guard: MutationGuard | None = None,
     max_steps: int | None = None,
 ) -> AgentLoop:
@@ -42,6 +44,11 @@ def create_agent_loop(
         else build_default_tool_registry(config)
     )
     selected_trace_appender = trace_appender or ports.trace_appender
+    if trace_observer is not None:
+        selected_trace_appender = cast(
+            TraceAppender,
+            ObservedTraceAppender(selected_trace_appender, trace_observer),
+        )
     selected_mutation_guard = mutation_guard or ports.mutation_guard
     selected_max_steps = config.max_steps if max_steps is None else max_steps
 
@@ -68,7 +75,10 @@ def run_task(
     *,
     resume: bool = False,
     provider: LLMClient | None = None,
+    trace_observer: TraceObserver | None = None,
 ) -> AgentRunResult:
     """Create and execute the standard AgentLoop for one task."""
-    loop = create_agent_loop(project_root, task_id, provider=provider)
+    loop = create_agent_loop(
+        project_root, task_id, provider=provider, trace_observer=trace_observer
+    )
     return loop.run(task_id, resume=resume)
