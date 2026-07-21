@@ -147,8 +147,15 @@ def test_schema_requires_reason_non_empty() -> None:
     )
     for branch in schema["oneOf"]:
         reason_schema = branch["properties"]["reason"]
-        assert reason_schema["type"] == "string"
-        assert reason_schema["minLength"] == 1
+        tool_name = branch["properties"].get("tool_name", {})
+        if tool_name.get("const") in {"write_file", "edit_file"}:
+            assert reason_schema["type"] == "string"
+            assert reason_schema["minLength"] == 1
+        else:
+            assert reason_schema["oneOf"] == [
+                {"type": "string", "minLength": 1},
+                {"type": "null"},
+            ]
 
 
 def test_schema_forbids_additional_properties() -> None:

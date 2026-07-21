@@ -6,12 +6,41 @@ from contextlib import AbstractContextManager, contextmanager
 from collections.abc import Callable
 import os
 from pathlib import Path
+import sys
 from typing import Iterator, Protocol
 import uuid
 
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import Phase
 from hancode.storage.workspace import task_path
+
+
+def _is_process_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        SYNCHRONIZE = 0x00100000
+        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _read_owner_pid(lock_path: Path) -> int | None:
+    try:
+        content = lock_path.read_text(encoding="ascii").strip()
+        pid_part = content.split(";pid=")[-1] if ";pid=" in content else ""
+        return int(pid_part) if pid_part else None
+    except (OSError, UnicodeError, ValueError, IndexError):
+        return None
 
 
 class TaskMutationGuard(Protocol):
@@ -41,6 +70,26 @@ class FilesystemTaskMutationGuard:
                 0o600,
             )
         except FileExistsError as exc:
+            owner_pid = _read_owner_pid(lock_path)
+            if owner_pid is not None and not _is_process_alive(owner_pid):
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                else:
+                    try:
+                        file_descriptor = os.open(
+                            lock_path,
+                            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                            0o600,
+                        )
+                    except OSError:
+                        pass
+                    else:
+                        yield from self._locked(
+                            file_descriptor, lock_path, owner_token, phase
+                        )
+                        return
             raise HanCodeError(
                 StructuredError(
                     error_code="mutation_lock_busy",
@@ -61,6 +110,17 @@ class FilesystemTaskMutationGuard:
                 )
             ) from exc
 
+        yield from self._locked(
+            file_descriptor, lock_path, owner_token, phase
+        )
+
+    def _locked(
+        self,
+        file_descriptor: int,
+        lock_path: Path,
+        owner_token: str,
+        phase: Phase,
+    ) -> Iterator[None]:
         cleanup_failed = False
         owner_changed = False
         try:

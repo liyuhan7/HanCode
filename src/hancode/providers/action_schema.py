@@ -38,13 +38,18 @@ def build_action_schema(
 
 
 def _tool_call_branch(phase: Phase, tool: ToolDescriptor) -> dict[str, object]:
+    reason_schema: dict[str, object] = (
+        {"type": "string", "minLength": 1}
+        if tool.name in {"write_file", "edit_file"}
+        else {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
+    )
     return {
         "type": "object",
-        "required": ["type", "phase", "reason", "tool_name", "args"],
+        "required": ["type", "phase", "tool_name", "args"],
         "properties": {
             "type": {"const": "tool_call"},
             "phase": {"const": phase.value},
-            "reason": {"type": "string", "minLength": 1},
+            "reason": reason_schema,
             "tool_name": {"const": tool.name},
             "args": dict(tool.args_schema),
         },
@@ -55,11 +60,11 @@ def _tool_call_branch(phase: Phase, tool: ToolDescriptor) -> dict[str, object]:
 def _control_branch(phase: Phase, action_type: str) -> dict[str, object]:
     return {
         "type": "object",
-        "required": ["type", "phase", "reason", "tool_name", "args"],
+        "required": ["type", "phase", "tool_name", "args"],
         "properties": {
             "type": {"const": action_type},
             "phase": {"const": phase.value},
-            "reason": {"type": "string", "minLength": 1},
+            "reason": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
             "tool_name": {"type": "null"},
             "args": {"type": "object", "maxProperties": 0},
         },
@@ -70,11 +75,11 @@ def _control_branch(phase: Phase, action_type: str) -> dict[str, object]:
 def _ask_user_branch(phase: Phase) -> dict[str, object]:
     return {
         "type": "object",
-        "required": ["type", "phase", "reason", "tool_name", "args"],
+        "required": ["type", "phase", "tool_name", "args"],
         "properties": {
             "type": {"const": "ask_user"},
             "phase": {"const": phase.value},
-            "reason": {"type": "string", "minLength": 1},
+            "reason": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
             "tool_name": {"type": "null"},
             "args": {
                 "type": "object",

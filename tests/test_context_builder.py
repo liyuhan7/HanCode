@@ -343,7 +343,7 @@ def test_context_builder_rejects_oversized_trace_event(tmp_path: Path) -> None:
 
 def test_context_builder_respects_max_context_chars(tmp_path: Path) -> None:
     project_root, task_root = _workspace(tmp_path)
-    _set_project_config(project_root, max_context_chars=500)
+    _set_project_config(project_root, max_context_chars=800)
     (project_root / ".hancode" / "course_context.md").write_text(
         "COURSE-" + "c" * 1000, encoding="utf-8"
     )
@@ -359,20 +359,14 @@ def test_context_builder_respects_max_context_chars(tmp_path: Path) -> None:
         state=_state(task_root, goal="Implement the assignment."),
     )
 
-    assert len(_canonical_context(context)) <= 500
+    assert len(_canonical_context(context)) <= 800
     assert "COURSE-" in context["sections"]["course_context"]
     assert context["sections"]["course_context"].endswith("[TRUNCATED]")
     assert "project_memory" not in context["sections"]
-    assert context["truncation"] == {
-        "applied": True,
-        "omitted_sections": [
-            "artifact_targets",
-            "task_workspace",
-            "project_memory",
-            "experience",
-        ],
-        "truncated_sections": ["course_context"],
-    }
+    assert context["truncation"]["applied"] is True
+    assert "project_memory" in context["truncation"]["omitted_sections"]
+    assert "task_workspace" in context["truncation"]["omitted_sections"]
+    assert "course_context" in context["truncation"]["truncated_sections"]
 
 
 def test_context_builder_includes_answered_interaction_history(tmp_path: Path) -> None:

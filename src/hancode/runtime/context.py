@@ -232,18 +232,20 @@ def _apply_context_budget(
     truncation["applied"] = True
 
     interaction_history = context.get("interaction_history")
-    if isinstance(interaction_history, list) and len(interaction_history) > 1:
+    if isinstance(interaction_history, list):
         while len(interaction_history) > 1 and len(_canonical_json(context)) > max_context_chars:
             interaction_history.pop(0)
             omitted.append("oldest_interaction")
-            if len(_canonical_json(context)) <= max_context_chars:
-                return context
-
-    for metadata_name in ("artifact_targets", "task_workspace"):
-        if metadata_name not in context:
-            continue
-        del context[metadata_name]
-        omitted.append(metadata_name)
+        if interaction_history and len(_canonical_json(context)) > max_context_chars:
+            kept = interaction_history[-1]
+            for field in ("question", "answer"):
+                value = kept.get(field)
+                if not isinstance(value, str) or len(value) <= 64:
+                    continue
+                kept[field] = value[:64] + _TRUNCATION_MARKER
+                truncated.append(f"interaction_{field}")
+                if len(_canonical_json(context)) <= max_context_chars:
+                    break
         if len(_canonical_json(context)) <= max_context_chars:
             return context
 
@@ -252,6 +254,12 @@ def _apply_context_budget(
             continue
         del sections[section_name]
         omitted.append(section_name)
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
+
+    if "task_workspace" in context:
+        del context["task_workspace"]
+        omitted.append("task_workspace")
         if len(_canonical_json(context)) <= max_context_chars:
             return context
 
@@ -267,6 +275,12 @@ def _apply_context_budget(
             sections[section_name] = _TRUNCATION_MARKER
         else:
             sections[section_name] = value[:best_length] + _TRUNCATION_MARKER
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
+
+    if "artifact_targets" in context:
+        del context["artifact_targets"]
+        omitted.append("artifact_targets")
         if len(_canonical_json(context)) <= max_context_chars:
             return context
 

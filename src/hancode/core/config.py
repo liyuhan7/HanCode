@@ -194,7 +194,7 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
     writable_root_values = cast(
         list[str], project_data.get("writable_roots", ["src", "tests"])
     )
-    return HanCodeConfig(
+    config = HanCodeConfig(
         project_root=resolved_project_root,
         hancode_root=resolved_project_root / ".hancode",
         allowed_workspace_root=resolved_project_root,
@@ -252,6 +252,22 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
             int, project_data.get("max_interaction_answer_chars", 8192)
         ),
     )
+    _validate_interaction_config(config)
+    return config
+
+
+def _validate_interaction_config(config: HanCodeConfig) -> None:
+    if config.interaction_mode == "ask_user":
+        if config.max_interaction_question_chars > 2048:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="config_invalid",
+                    message="max_interaction_question_chars cannot exceed 2048 (protocol limit).",
+                    phase="spec",
+                    denied_rule="config_interaction_limit",
+                    suggested_fix="Set max_interaction_question_chars to 2048 or lower.",
+                )
+            )
 
 
 def _read_project_config(project_file: Path) -> dict[str, object]:
