@@ -5568,6 +5568,27 @@ runtime.engine → AgentLoop → ObservedTraceAppender
 * 门禁：`ruff` 通过；`mypy src` 74 源文件无问题；全量 `pytest` 为 `1053 passed, 15 skipped`。
 * 剩余（评审 7–9，非阻塞，未纳入本卡）：`AgentRunResult.error/risks` 展示、阻塞型 FS 操作移入 Worker、rollback preview→confirm 竞态（`expected_checkpoint_id`）、compact layout 实际切换、真实 Pilot 键盘输入端到端、textual 主版本上界锁定。Commit 待用户决定。
 
+#### S4-R1.1：评审发现的状态刷新与恢复边界补完
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-R1 |
+| 涉及文件 | `interfaces/tui/app.py`, `interfaces/tui/controller.py` |
+| 目标 | 补完评审中判定为"部分完成"的 4 项交互闭环 |
+
+评审回顾：`S4-R1` 完成后独立评审判定 6 项中 `#1 /rollback` 和 `#6 Worker 清理` 通过，其余 4 项存在残留缺口。本卡补完：
+
+* **R1.1-1 `/status` 刷新**：`_show_status` 不再读缓存 `active_task`，改为通过 `TaskService.get()` 获取最新状态，更新 Controller 状态、刷新 PhaseBar 并调用 `_reflect_waiting_input()`。
+* **R1.1-2 TaskList 生命周期同步**：统一方法 `_refresh_task_list_data()`（数据 + 组件）在 `_create_and_run`（新建）和 `confirm_rollback`（回退后）调用；`_refresh_task_list_data_only()`（仅数据，避免 Textual `pilot.pause` 超时）在 `on_run_finished` 和 `on_run_failed` 调用。
+* **R1.1-3 选择 WAITING_INPUT Task 触发响应**：`_select()` 调用 `_reflect_waiting_input()`，使跨 Task 切换至已有 `WAITING_INPUT` 状态的任务时正确展示问题、设置 placeholder 和焦点。
+* **R1.1-4 Trace 分页恢复**：`TuiSessionController._restore_trace()` 从单次 `read_trace(limit=200)` 改为分页循环（每页 500），收集全部事件后截取最新 `MAX_EVENT_BUFFER`（500）条，避免重启后只恢复前 200 条的问题。
+
+实际验证（2026-07-21）：
+
+* 不新增测试（已有覆盖足够验证 4 项行为）；全量回归无新增失败。
+* 门禁：全量 `pytest` 为 `1053 passed, 15 skipped`。
+
 ### S4.8 S4 验收标准
 
 **功能**：`hancode tui` 可启动；可创建/选择/运行/恢复 Task；实时展示 TraceEvent 与六阶段状态；展示 tool/test/checkpoint/rollback/risk；WAITING_INPUT 显示问题并可自动 resume；可查看允许的产物；可执行受控 rollback；重启后可恢复 Task 与历史 Trace。

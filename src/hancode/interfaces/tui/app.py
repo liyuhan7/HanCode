@@ -169,6 +169,7 @@ class HanCodeTuiApp(App[None]):
             self._notify(exc.structured_error.message)
             return
         self.controller.set_active_summary(summary)
+        self._refresh_task_list_data()
         self.start_run(resume=False)
 
     def _select(self, task_id: str) -> None:
@@ -182,6 +183,7 @@ class HanCodeTuiApp(App[None]):
             return
         self._rerender_activity()
         self._refresh_phase_bar()
+        self._reflect_waiting_input()
 
     def _rerender_activity(self) -> None:
         """Re-paint the whole activity feed from the current view state."""
@@ -291,6 +293,7 @@ class HanCodeTuiApp(App[None]):
             f"Rolled back to {summary.checkpoint_id} · "
             f"{len(summary.restored_files)} files restored"
         )
+        self._refresh_task_list_data()
         self._refresh_active_summary(task_id)
 
     def cancel_rollback(self) -> None:
@@ -318,10 +321,18 @@ class HanCodeTuiApp(App[None]):
         )
 
     def _show_status(self) -> None:
-        summary = self.controller.state.active_task
-        if summary is None:
+        task_id = self.controller.state.active_task_id
+        if task_id is None:
             self._notify("当前没有选中的任务。使用 /use <id> 或 /task <goal>。")
             return
+        try:
+            summary = self._task_service.get(self._project_root, task_id)
+        except HanCodeError as exc:
+            self._notify(exc.structured_error.message)
+            return
+        self.controller.set_active_summary(summary)
+        self._refresh_phase_bar()
+        self._reflect_waiting_input()
         self._notify(
             f"{summary.task_id} · {summary.status.value} · phase={summary.current_phase.value} "
             f"· retry={summary.retry_budget_remaining}"
@@ -425,15 +436,24 @@ class HanCodeTuiApp(App[None]):
         self.controller.on_trace(message.event)
         self._refresh_activity()
 
+    def _refresh_task_list_data_only(self) -> None:
+        """Update task list data only; does not touch widgets."""
+        try:
+            self.controller.refresh_tasks()
+        except HanCodeError:
+            pass
+
     def on_run_finished(self, message: RunFinished) -> None:
         self.controller.on_run_finished()
         self._refresh_phase_bar()
         self._reflect_waiting_input()
+        self._refresh_task_list_data_only()
 
     def on_run_failed(self, message: RunFailed) -> None:
         self.controller.on_run_finished()
         self._notify(message.error.message)
         self._refresh_phase_bar()
+        self._refresh_task_list_data_only()
 
     def _reflect_waiting_input(self) -> None:
         """When paused for input, surface the question and focus the composer."""
@@ -491,6 +511,14 @@ class HanCodeTuiApp(App[None]):
         except Exception:
             return
         bar.update_summary(self.controller.state.active_task)
+
+    def _refresh_task_list_data(self) -> None:
+        """Refresh the task list data from TaskService and update the ListView."""
+        try:
+            self.controller.refresh_tasks()
+        except HanCodeError:
+            return
+        self._refresh_task_list()
 
     def _refresh_task_list(self) -> None:
         try:

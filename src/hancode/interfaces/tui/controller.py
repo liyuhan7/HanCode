@@ -17,6 +17,7 @@ from hancode.app.task_models import TaskSummary
 from hancode.app.task_service import TaskService
 from hancode.core.errors import HanCodeError
 from hancode.interfaces.tui.view_state import (
+    MAX_EVENT_BUFFER,
     TuiViewState,
     reduce_run_finished,
     reduce_task_selected,
@@ -68,11 +69,26 @@ class TuiSessionController:
 
     def _restore_trace(self, task_id: str) -> None:
         try:
-            page = self._inspection_service.read_trace(self._project_root, task_id)
+            all_events: list[TraceEvent] = []
+            after_seq = 0
+            while True:
+                page = self._inspection_service.read_trace(
+                    self._project_root,
+                    task_id,
+                    after_seq=after_seq,
+                    limit=500,
+                )
+                all_events.extend(page.events)
+                if not page.has_more or page.next_seq is None:
+                    break
+                after_seq = page.next_seq
+            # Keep only the latest events to stay within the buffer limit.
+            if len(all_events) > MAX_EVENT_BUFFER:
+                all_events = all_events[-MAX_EVENT_BUFFER:]
         except HanCodeError:
             # A corrupt/unreadable trace must not break selection; start empty.
             return
-        self._state = replace(self._state, trace_events=tuple(page.events))
+        self._state = replace(self._state, trace_events=tuple(all_events))
 
     # -- run lifecycle ---------------------------------------------------
 

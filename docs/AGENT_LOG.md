@@ -1639,3 +1639,17 @@
 - 提交：未提交，按用户要求保留当前工作区改动。
 - 人工干预：将新 task 初始化 state 同步加入空 interaction 字段；同步更新 README、PLAN、AGENT_LOG 和既有 workspace 测试期望。
 - 剩余风险：TUI/REPL/WebUI 不在 S3；Windows symlink/junction 测试仍可能因平台权限 skip；真实 Provider smoke 仍默认不联网。
+
+---
+
+### 2026-07-21 — S4-R1.1 — 评审发现的状态刷新与恢复边界补完
+
+- 依据：S4-R1 完成后独立评审判定 6 项中 `#1 /rollback` 和 `#6 Worker 清理` 通过，其余 4 项（`/status` 不刷新、TaskList 创建/运行后不更新、选择 WAITING_INPUT Task 不响应、Trace 只恢复前 200 条）存在残留缺口，建议补 S4-R1.1。
+- 实现摘要：
+  - `/status` 刷新：`_show_status()` 从缓存 `active_task` 改为通过 `TaskService.get()` 获取最新状态，更新 Controller 状态、刷新 PhaseBar 并调用 `_reflect_waiting_input()`。
+  - TaskList 生命周期同步：新建 `_refresh_task_list_data()`（数据 + 组件）在 `_create_and_run()`（新建）和 `confirm_rollback()`（回退后）同步调用；`_refresh_task_list_data_only()`（仅数据，避免 Textual `pilot.pause` 超时）在消息处理器 `on_run_finished()` 和 `on_run_failed()` 中调用。
+  - WAITING_INPUT 选择响应：`_select()` 末尾追加 `_reflect_waiting_input()`，使切换至已有 WAITING_INPUT 状态的任务时正确展示问题、设置 placeholder 和焦点。
+  - Trace 分页恢复：`_restore_trace()` 从单次 `read_trace(limit=200)` 改为分页循环（每页 500），收集全部事件后截取最新 `MAX_EVENT_BUFFER`（500）条。
+- 技术难点：Textual `pilot.pause()` 在 `RunFinished`/`RunFailed` 消息处理期间，任何对 ListView 的 `clear()`/`append()` 操作会导致异步超时（`WaitForScreenTimeout`）。最终方案是消息处理器中仅更新数据，将组件刷新推迟到用户下次主动触发（如 `/tasks` 或 `_select`）。
+- 验证结果：全量 `pytest -x -q` 为 `1053 passed, 15 skipped`；无新增失败。
+- 修改文件：`src/hancode/interfaces/tui/app.py`（`_show_status`、`_select`、`_create_and_run`、`confirm_rollback`、`on_run_finished`、`on_run_failed`、新增 `_refresh_task_list_data`、`_refresh_task_list_data_only`）、`src/hancode/interfaces/tui/controller.py`（`_restore_trace` 分页、导入 `MAX_EVENT_BUFFER`）。
