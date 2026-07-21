@@ -103,3 +103,50 @@ def test_plain_text_is_rejected_during_normal_idle() -> None:
     )
 
     assert intent is PlainTextIntent.REJECT
+
+
+def test_parse_approve_command() -> None:
+    result = parse_command("/approve")
+
+    assert isinstance(result, TuiCommand)
+    assert result.name == "approve"
+    assert result.args == ()
+
+
+def test_parse_reject_command_with_reason() -> None:
+    result = parse_command("/reject not this approach")
+
+    assert isinstance(result, TuiCommand)
+    assert result.name == "reject"
+    assert result.args == ("not", "this", "approach")
+
+
+def test_parse_reject_command_without_reason() -> None:
+    result = parse_command("/reject")
+
+    assert isinstance(result, TuiCommand)
+    assert result.name == "reject"
+    assert result.args == ()
+
+
+def test_plain_text_while_waiting_approval_requires_command() -> None:
+    # A pending approval must never be decided by stray plain text.
+    intent = classify_plain_text(
+        "yes go ahead",
+        has_active_task=True,
+        waiting_input=False,
+        waiting_approval=True,
+    )
+
+    assert intent is PlainTextIntent.APPROVAL_REQUIRES_COMMAND
+
+
+def test_waiting_approval_takes_precedence_over_waiting_input() -> None:
+    intent = classify_plain_text(
+        "text",
+        has_active_task=True,
+        waiting_input=True,
+        waiting_approval=True,
+    )
+
+    assert intent is PlainTextIntent.APPROVAL_REQUIRES_COMMAND

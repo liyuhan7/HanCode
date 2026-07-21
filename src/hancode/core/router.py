@@ -30,6 +30,12 @@ def select_next_phase(state: TaskState) -> RoutingDecision:
             "interaction_answer_required",
             blocked=True,
         )
+    if state.status is TaskStatus.WAITING_APPROVAL:
+        return RoutingDecision(
+            state.current_phase,
+            "approval_decision_required",
+            blocked=True,
+        )
     if state.status is TaskStatus.COMPLETED:
         if not state.artifacts["KNOWLEDGE.md"]:
             return RoutingDecision(Phase.DELIVER, "knowledge_missing", blocked=True)

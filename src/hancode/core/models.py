@@ -24,6 +24,7 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     INCONSISTENT = "inconsistent"
     WAITING_INPUT = "waiting_input"
+    WAITING_APPROVAL = "waiting_approval"
 
 
 class OperationStatus(str, Enum):

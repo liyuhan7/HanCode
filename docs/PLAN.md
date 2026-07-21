@@ -72,13 +72,20 @@ HanCode 的核心交付不是 prompt、规则文件或宿主 Coding Agent 的能
 * 单 task 单活跃 runner 的并发锁。
 * 跨会话 observation 恢复与完整上下文重放；T21 已提供显式 `run(task_id, resume=True)` 的 blocked 恢复入口，但恢复时重新构造上下文。
 * pending checkpoint 的启动崩溃恢复。
-* `confirm_before_write` 写前人工确认。
+* `confirm_before_write` 写前人工确认（→ 已由 S3-R 审批协议覆盖）。
 * Docker demo image。
-* 复杂 TUI。
+* 复杂 TUI（→ S3-R5 审批面板已实现）。
 * WebUI。
 * 多语言测试命令扩展。
 * 完整 Git 分支管理。
 * 真实 LLM provider smoke test 作为 CI 必需项。
+
+### 3.3 S3 阶段：交互暂停、恢复与事件流
+
+S3 阶段在 M1-M7 里程碑完成后追加，包含：
+* **S3-R**: 人工审批协议（Approval Protocol）
+* **S3-A**: ASK_USER 交互（已完成于 TUI 开发中）
+* **S3-T**: TaskList 刷新与面板残留修复（已完成于基线 b76c65c）
 
 ---
 
@@ -5926,3 +5933,91 @@ HanCode MVP 完成必须同时满足：
 * AGENT_LOG 记录主要 agentic development 过程。
 * SPEC_PROCESS 记录冷启动验证和修订。
 * 仓库中不包含真实凭据。
+
+---
+
+## S3-R：人工审批协议
+
+| 元信息           | 值                                      |
+| ------------- | -------------------------------------- |
+| 状态            | [x] 已完成 (S3-R1~S3-R4)              |
+| 依赖            | ASK_USER、Task 持久化、AgentLoop、ToolPolicy、Checkpoint、Trace |
+| 分支           | 当前基线上直接实现                     |
+| 主贡献相关         | 是；审批安全机制                        |
+
+### S3-R1：Approval 模型、状态与配置
+
+状态：`[x]`
+
+涉及文件：
+- `core/approvals.py`（新增）—— ApprovalStatus, ApprovalCategory, ApprovalTarget, ApprovalActionSnapshot, ApprovalPreview, ApprovalRecord
+- `core/models.py` —— 新增 TaskStatus.WAITING_APPROVAL
+- `core/state.py` —— 新增 approval_seq / pending_approval_id
+- `core/config.py` —— 新增 approval_mode / confirm_agent_rollback / max_approvals_per_phase 等
+- `core/router.py` —— WAITING_APPROVAL 阻塞路由
+- `app/task_models.py` —— TaskSummary 新增 requires_approval / pending_approval
+
+测试：`tests/test_approval_model.py` —— 24 passed
+
+### S3-R2：ApprovalPolicy、Preview 与 Store
+
+状态：`[x]`
+
+涉及文件：
+- `policy/approval_policy.py`（新增）—— ApprovalPolicy 与 ApprovalRequirement
+- `runtime/approval_request.py`（新增）—— ApprovalRequestBuilder（Diff Preview + 敏感检测）
+- `storage/approvals.py`（新增）—— ApprovalStore（原子持久化 + 生命周期）
+
+测试：`tests/test_approval_policy.py` —— 20 passed
+
+### S3-R3：AgentLoop 审批门控与恢复
+
+状态：`[x]`
+
+涉及文件：
+- `runtime/agent_loop.py` —— 插入 Approval Gate（Policy 后、Checkpoint 前）；WAITING_APPROVAL resume；批准后直接执行原 Action 不调用 Provider
+
+### S3-R4：ApprovalService 与 Headless CLI
+
+状态：`[x]`
+
+涉及文件：
+- `app/approval_service.py`（新增）—— approve / reject / get_pending（幂等 + 冲突检测 + Task Guard）
+- `interfaces/cli.py` —— `task approval` / `task approve` / `task reject` 命令；`task status` 输出审批信息
+
+### S3-R5：TUI Approval UX
+
+状态：`[x]`
+
+涉及文件：
+- `interfaces/tui/commands.py` —— `/approve`、`/reject` 命令；等待批准时明文输入判定为 `APPROVAL_REQUIRES_COMMAND`
+- `interfaces/tui/view_state.py` —— 新增 `pending_approval_id` / `pending_approval_summary` 与 reducer
+- `interfaces/tui/app.py` —— `submit_approval` / `submit_rejection`（决策后自动 resume）、`_reflect_waiting_approval` 面板
+
+测试：`tests/test_tui_approval.py`（7）+ `tests/test_tui_commands.py` 新增（5）
+
+### S3-R6：E2E / Recovery / Security 验收
+
+状态：`[x]`
+
+涉及文件（缺陷修复）：
+- `runtime/agent_loop.py` —— `_inconsistent()` helper 统一清 pending 双指针；`_mark_inconsistent` 补清 `pending_approval_id`；持久化的 EXECUTING manifest 恢复时失败关闭并落盘
+- `app/approval_service.py` —— 幂等短路（重复同向决策返回成功）
+
+测试：`tests/test_approval_security.py`（4）、`tests/test_approval_recovery.py` 新增（2）、`tests/test_approval_service.py`（7）、`tests/test_cli_approval.py`（5）；E2E 见 `tests/test_approval_e2e.py`
+
+### 核心安全约束（已保证）
+
+- ToolPolicy deny 不能被人工批准绕过
+- 审批发生在任何副作用（checkpoint、文件写入）之前
+- 批准绑定精确 Action（sha256 digest）
+- 批准后不重新调用 Provider，直接执行原 Action
+- 默认 approval_mode=disabled，不破坏现有 MockLLM 测试行为
+- approval 与 ASK_USER 不共享状态模型
+
+### 验证
+
+- 全量 pytest: 1141 passed, 15 skipped（R1–R6 全部接线后）
+- 新增测试: R1 model(24) + R2 policy/store(20) + R3 E2E/resume-guards/recovery + R4 service(7)/CLI(5) + R5 TUI(7)/commands(5) + R6 security(4)/recovery(2)
+- Ruff `All checks passed!`；MyPy `Success: no issues found in 79 source files`
+- 现有 ASK_USER、rollback、TUI 测试无回归

@@ -105,6 +105,13 @@ def test_state_save_preserves_allowed_status_values(
             interactions=(interaction,),
             pending_interaction_id=interaction.interaction_id,
         )
+    if status is TaskStatus.WAITING_APPROVAL:
+        state = replace(
+            state,
+            status=TaskStatus.WAITING_APPROVAL,
+            approval_seq=1,
+            pending_approval_id="apr-000001",
+        )
     save_state(task_root, replace(state, status=status))
 
     persisted = json.loads((task_root / "state.json").read_text(encoding="utf-8"))

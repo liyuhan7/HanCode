@@ -29,14 +29,21 @@ class TaskSummary:
     resumable: bool
     requires_input: bool = False
     pending_interaction: Mapping[str, object] | None = None
+    requires_approval: bool = False
+    pending_approval: Mapping[str, object] | None = None
 
     @classmethod
     def from_state(cls, state: TaskState) -> TaskSummary:
         pending = _pending_interaction(state)
+        approval_pending = _pending_approval_for_summary(state)
         requires_input = (
             state.status is TaskStatus.WAITING_INPUT
             and pending is not None
             and pending.status is InteractionStatus.WAITING
+        )
+        requires_approval = (
+            state.status is TaskStatus.WAITING_APPROVAL
+            and approval_pending is not None
         )
         resumable = (
             state.status is TaskStatus.BLOCKED and not state.inconsistent
@@ -48,6 +55,10 @@ class TaskSummary:
             state.status is TaskStatus.WAITING_INPUT
             and pending is not None
             and pending.status is InteractionStatus.ANSWERED
+        ) or (
+            state.status is TaskStatus.WAITING_APPROVAL
+            and approval_pending is not None
+            and approval_pending.get("status") in ("approved", "rejected")
         )
 
         return cls(
@@ -75,6 +86,8 @@ class TaskSummary:
                     "answer_received": pending.status is InteractionStatus.ANSWERED,
                 }
             ),
+            requires_approval=requires_approval,
+            pending_approval=approval_pending,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -94,6 +107,8 @@ class TaskSummary:
             "resumable": self.resumable,
             "requires_input": self.requires_input,
             "pending_interaction": self.pending_interaction,
+            "requires_approval": self.requires_approval,
+            "pending_approval": self.pending_approval,
         }
 
 
@@ -108,6 +123,15 @@ def _pending_interaction(state: TaskState) -> InteractionRecord | None:
         ),
         None,
     )
+
+
+def _pending_approval_for_summary(state: TaskState) -> Mapping[str, object] | None:
+    if state.pending_approval_id is None:
+        return None
+    return {
+        "approval_id": state.pending_approval_id,
+        "status": "pending",
+    }
 
 
 @dataclass(frozen=True, slots=True)

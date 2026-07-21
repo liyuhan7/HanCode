@@ -6,10 +6,14 @@ from typing import cast
 from hancode.core.config import load_config
 from hancode.providers.base import LLMClient
 from hancode.providers.factory import create_provider_adapter
+from hancode.policy.approval_policy import ApprovalPolicy
 from hancode.policy.tool_policy import ToolPolicy
 from hancode.runtime.agent_loop import (
     AgentLoop,
     AgentRunResult,
+    ApprovalPolicyPort,
+    ApprovalRequestBuilderPort,
+    ApprovalStore as ApprovalStorePort,
     FeedbackBuilder as FeedbackBuilderPort,
     FilesystemAgentLoopPorts,
     MutationGuard,
@@ -17,9 +21,12 @@ from hancode.runtime.agent_loop import (
     TraceAppender,
     ToolRegistry as ToolRegistryPort,
 )
+from hancode.runtime.approval_request import ApprovalRequestBuilder
 from hancode.runtime.context import ContextBuilder
 from hancode.runtime.feedback import FeedbackBuilder
 from hancode.runtime.observation import ObservedTraceAppender, TraceObserver
+from hancode.storage.approvals import ApprovalStore
+from hancode.storage.workspace import load_project_metadata
 from hancode.tooling.factory import build_default_tool_registry
 
 
@@ -52,6 +59,26 @@ def create_agent_loop(
     selected_mutation_guard = mutation_guard or ports.mutation_guard
     selected_max_steps = config.max_steps if max_steps is None else max_steps
 
+    # Approval gate: only active when the project enables it and rollback
+    # confirmation is not needed otherwise. The store/builder are cheap to
+    # construct, so wire them whenever approvals could ever fire.
+    approval_policy: ApprovalPolicyPort | None = None
+    approval_store: ApprovalStorePort | None = None
+    approval_request_builder: ApprovalRequestBuilderPort | None = None
+    if config.approval_mode != "disabled" or config.confirm_agent_rollback:
+        try:
+            metadata = load_project_metadata(
+                project_root / ".hancode" / "project.json"
+            )
+            project_id = str(metadata.get("project_id", "unknown"))
+        except Exception:
+            project_id = "unknown"
+        approval_policy = cast(ApprovalPolicyPort, ApprovalPolicy(config))
+        approval_store = cast(ApprovalStorePort, ApprovalStore(project_root, project_id))
+        approval_request_builder = cast(
+            ApprovalRequestBuilderPort, ApprovalRequestBuilder(config)
+        )
+
     return AgentLoop(
         llm=llm,
         context_builder=ContextBuilder(project_root, config),
@@ -66,6 +93,10 @@ def create_agent_loop(
         rollback_manager=ports.rollback_manager,
         mutation_guard=selected_mutation_guard,
         max_steps=selected_max_steps,
+        approval_policy=approval_policy,
+        approval_store=approval_store,
+        approval_request_builder=approval_request_builder,
+        project_root=project_root,
     )
 
 

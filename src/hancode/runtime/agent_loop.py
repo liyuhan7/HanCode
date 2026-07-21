@@ -8,7 +8,13 @@ from pathlib import Path
 import re
 from typing import Callable, Iterator, Mapping, Protocol
 
+import hashlib
 from hancode.core.actions import Action, ActionType, ParseError, parse_action
+from hancode.core.approvals import (
+    ApprovalRecord,
+    ApprovalStatus,
+    compute_action_digest,
+)
 from hancode.storage.checkpoints import (
     CheckpointFile,
     CheckpointManifest,
@@ -97,6 +103,74 @@ class ToolRegistry(Protocol):
 
 class MutationGuard(Protocol):
     def acquire(self, task_id: str, phase: Phase) -> AbstractContextManager[None]: ...
+
+
+class ApprovalPolicyPort(Protocol):
+    def evaluate(
+        self,
+        *,
+        action: Action,
+        policy_decision: PolicyDecisionLike,
+        state: TaskState,
+    ) -> object: ...
+    # Returns an object with .required, .category, .reason, .risk_level, .targets
+
+
+class ApprovalStore(Protocol):
+    def create(
+        self,
+        task_id: str,
+        state: TaskState,
+        record: ApprovalRecord,
+    ) -> tuple[TaskState, ApprovalRecord]: ...
+
+    def load_pending(
+        self,
+        task_id: str,
+        approval_id: str,
+    ) -> ApprovalRecord: ...
+
+    def decide(
+        self,
+        task_id: str,
+        approved: bool,
+        *,
+        approval_id: str,
+        reason: str | None = None,
+    ) -> object: ...
+
+    def mark_executing(
+        self,
+        task_id: str,
+        approval_id: str,
+        *,
+        expected_checkpoint_id: str,
+    ) -> object: ...
+
+    def mark_consumed(
+        self,
+        task_id: str,
+        approval_id: str,
+        *,
+        execution_checkpoint_id: str | None = None,
+    ) -> object: ...
+
+    def mark_expired(
+        self, task_id: str, approval_id: str
+    ) -> object: ...
+
+
+class ApprovalRequestBuilderPort(Protocol):
+    def build(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        state: TaskState,
+        action: Action,
+        requirement: object,
+        project_root: Path,
+    ) -> ApprovalRecord: ...
 
 
 class FeedbackBuilder(Protocol):
@@ -257,6 +331,10 @@ class AgentLoop:
         rollback_manager: RollbackManager,
         max_steps: int,
         mutation_guard: MutationGuard | None = None,
+        approval_policy: ApprovalPolicyPort | None = None,
+        approval_store: ApprovalStore | None = None,
+        approval_request_builder: ApprovalRequestBuilderPort | None = None,
+        project_root: Path | None = None,
     ) -> None:
         if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps <= 0:
             raise ValueError("max_steps must be positive")
@@ -271,6 +349,10 @@ class AgentLoop:
         self._rollback_manager = rollback_manager
         self._mutation_guard = mutation_guard or _FailClosedMutationGuard()
         self._max_steps = max_steps
+        self._approval_policy = approval_policy
+        self._approval_store = approval_store
+        self._approval_request_builder = approval_request_builder
+        self._project_root = project_root or Path(".")
 
     def run(self, task_id: str, *, resume: bool = False) -> AgentRunResult:
         if not isinstance(resume, bool):
@@ -569,6 +651,56 @@ class AgentLoop:
                                 state_error,
                                 state,
                             )
+            elif state.status is TaskStatus.WAITING_APPROVAL:
+                approval_result = self._handle_approval_resume(
+                    task_id, state, trace_events
+                )
+                if approval_result is not None:
+                    if isinstance(approval_result, Action):
+                        # Approved: execute the action directly
+                        approved_action = approval_result
+                        state = self._state_store.load(task_id)
+                        if not _is_valid_task_state(state, task_id):
+                            raise HanCodeError(_state_adapter_error(Phase.SPEC))
+                        routing = select_next_phase(state)
+                        decision = self._policy.evaluate(
+                            action=approved_action,
+                            phase=routing.phase,
+                            state=state,
+                        )
+                        if not decision.allowed:
+                            state = self._block(task_id, state)
+                            return _result(
+                                TaskStatus.BLOCKED,
+                                0,
+                                tuple(tool_calls),
+                                observation,
+                                StructuredError(
+                                    error_code="policy_denied",
+                                    message="The approved action is no longer allowed by policy.",
+                                    phase=routing.phase.value,
+                                    denied_rule=decision.denied_rule,
+                                    suggested_fix=decision.suggested_fix,
+                                ),
+                                state,
+                            )
+                        # Execute the approved action directly without calling Provider
+                        exec_result = self._execute_approved_action(
+                            task_id,
+                            state,
+                            approved_action,
+                            decision,
+                            routing.phase,
+                            trace_events,
+                        )
+                        return exec_result
+                    else:
+                        # AgentRunResult returned (pending, rejected, error)
+                        return approval_result
+                # Reload state after approval handling
+                state = self._state_store.load(task_id)
+                if not _is_valid_task_state(state, task_id):
+                    raise HanCodeError(_state_adapter_error(Phase.SPEC))
 
         traced_phase: Phase | None = None
         for step in range(1, self._max_steps + 1):
@@ -922,6 +1054,66 @@ class AgentLoop:
                         state_error,
                         state,
                     )
+
+                # ---- Approval Gate (inserted before checkpoint and tool dispatch) ----
+                if (
+                    self._approval_policy is not None
+                    and self._approval_store is not None
+                    and self._approval_request_builder is not None
+                ):
+                    approval_req = self._approval_policy.evaluate(
+                        action=action,
+                        policy_decision=decision,
+                        state=state,
+                    )
+                    if getattr(approval_req, "required", False):
+                        # Build approval record and pause
+                        state, approval_record = self._request_approval(
+                            task_id,
+                            state,
+                            action,
+                            approval_req,
+                            routing.phase,
+                        )
+                        trace_error = self._append_trace(
+                            task_id,
+                            trace_events,
+                            event_type="approval_requested",
+                            phase=routing.phase,
+                            status="waiting",
+                            observation={
+                                "approval_id": approval_record.approval_id,
+                                "category": approval_record.category.value,
+                                "tool_name": action.tool_name,
+                            },
+                        )
+                        if trace_error is not None:
+                            return _result(
+                                TaskStatus.WAITING_APPROVAL,
+                                step,
+                                tuple(tool_calls),
+                                {
+                                    "approval_id": approval_record.approval_id,
+                                    "tool_name": action.tool_name,
+                                    "reason": approval_record.action.reason,
+                                },
+                                trace_error,
+                                state,
+                                risks=(_trace_failure_risk(trace_error),),
+                            )
+                        return _result(
+                            TaskStatus.WAITING_APPROVAL,
+                            step,
+                            tuple(tool_calls),
+                            {
+                                "approval_id": approval_record.approval_id,
+                                "tool_name": action.tool_name,
+                                "reason": approval_record.action.reason,
+                            },
+                            None,
+                            state,
+                        )
+
                 source_write = _is_source_write_action(action, decision, task_id)
                 trace_error = self._append_trace(
                     task_id,
@@ -1968,6 +2160,7 @@ class AgentLoop:
             inconsistent=True,
             rollback_required=state.rollback_required or can_recover_checkpoint,
             pending_interaction_id=None,
+            pending_approval_id=None,
             interactions=(),
         )
         try:
@@ -2626,6 +2819,541 @@ class AgentLoop:
                 ),
             )
 
+    # ---- S3-R3 Approval helpers ----
+
+    def _request_approval(
+        self,
+        task_id: str,
+        state: TaskState,
+        action: Action,
+        requirement: object,
+        phase: Phase,
+    ) -> tuple[TaskState, ApprovalRecord]:
+        """Build and persist an approval request, transitioning task to WAITING_APPROVAL."""
+        builder = self._approval_request_builder
+        store = self._approval_store
+        # The approval gate only reaches here when both are wired (checked at
+        # the call site); assert for the type-checker and fail loudly otherwise.
+        assert builder is not None and store is not None
+
+        record = builder.build(
+            project_id=self._resolve_project_id(task_id),
+            task_id=task_id,
+            state=state,
+            action=action,
+            requirement=requirement,
+            project_root=self._resolve_project_root(task_id),
+        )
+
+        updated_state, persisted_record = store.create(task_id, state, record)
+        return updated_state, persisted_record
+
+    def _handle_approval_resume(
+        self,
+        task_id: str,
+        state: TaskState,
+        trace_events: list[TraceEvent],
+    ) -> AgentRunResult | Action | None:
+        """Handle WAITING_APPROVAL on resume: AgentRunResult, an Action, or None."""
+        if self._approval_store is None:
+            error = StructuredError(
+                error_code="approval_store_missing",
+                message="Task is waiting for approval but no approval store is configured.",
+                phase=state.current_phase.value,
+                denied_rule="approval_store_required",
+                suggested_fix="Configure an approval store to handle approval decisions.",
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                0,
+                (),
+                None,
+                error,
+                _inconsistent(state),
+            )
+
+        approval_id = state.pending_approval_id
+        if approval_id is None:
+            error = StructuredError(
+                error_code="approval_state_invalid",
+                message="WAITING_APPROVAL state has no pending_approval_id.",
+                phase=state.current_phase.value,
+                denied_rule="approval_state_invariant",
+                suggested_fix="Reconcile the task state.",
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                0,
+                (),
+                None,
+                error,
+                _inconsistent(state),
+            )
+
+        try:
+            record = self._approval_store.load_pending(task_id, approval_id)
+        except HanCodeError as exc:
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                0,
+                (),
+                None,
+                exc.structured_error,
+                _inconsistent(state),
+            )
+
+        status = record.status
+
+        if status == ApprovalStatus.PENDING:
+            # Still waiting
+            return _make_result(
+                TaskStatus.WAITING_APPROVAL,
+                0,
+                (),
+                {"approval_id": approval_id, "status": "pending"},
+                None,
+                state,
+            )
+
+        if status == ApprovalStatus.REJECTED:
+            # Clear pending approval and return rejection observation
+            updated_state = replace(
+                state,
+                status=TaskStatus.RUNNING,
+                pending_approval_id=None,
+            )
+            try:
+                self._state_store.save(task_id, updated_state)
+            except HanCodeError as exc:
+                return _make_result(
+                    TaskStatus.INCONSISTENT,
+                    0,
+                    (),
+                    None,
+                    exc.structured_error,
+                    _inconsistent(state),
+                )
+
+            return None  # Return None to continue the loop with rejection observation
+
+        if status == ApprovalStatus.CONSUMED:
+            # Crash after execution completed but before state was cleared.
+            # The manifest is authoritative: the write already happened, so
+            # just clear the pending pointer and continue — never re-dispatch.
+            cleared = replace(
+                state, status=TaskStatus.RUNNING, pending_approval_id=None
+            )
+            try:
+                self._state_store.save(task_id, cleared)
+            except HanCodeError as exc:
+                return _make_result(
+                    TaskStatus.INCONSISTENT, 0, (), None, exc.structured_error,
+                    _inconsistent(state),
+                )
+            return None
+
+        if status == ApprovalStatus.EXECUTING:
+            # A crash landed mid-execution. We cannot know whether the source
+            # write hit disk, so we fail closed to INCONSISTENT rather than
+            # risk a duplicate write (design §12: no repeated source write).
+            error = StructuredError(
+                error_code="approval_execution_interrupted",
+                message="Approval execution was interrupted; task needs manual reconciliation.",
+                phase=state.current_phase.value,
+                denied_rule="approval_execution_atomicity",
+                suggested_fix="Inspect the workspace and checkpoint, then rollback or continue manually.",
+            )
+            interrupted = _inconsistent(state)
+            # Persist the fail-closed transition so a later load sees the task
+            # is INCONSISTENT, not still waiting — otherwise a naive re-resume
+            # would loop back into this same branch forever.
+            try:
+                self._state_store.save(task_id, interrupted)
+            except HanCodeError:
+                pass
+            return _make_result(
+                TaskStatus.INCONSISTENT, 0, (), None, error, interrupted,
+            )
+
+        if status == ApprovalStatus.APPROVED:
+            # Fail closed if the manifest's action digest no longer matches
+            # its signed fields (tamper/corruption).
+            if not self._digest_intact(record):
+                return self._expire_approval(
+                    task_id, state, approval_id,
+                    "approval_digest_mismatch",
+                    "The approved action manifest failed its integrity check.",
+                    "approval_digest_must_match",
+                )
+            # Fail closed if the workspace changed under the approved action.
+            if not self._validate_approval_preconditions(state, record):
+                return self._expire_approval(
+                    task_id, state, approval_id,
+                    "approval_stale",
+                    "The approved action no longer matches the current workspace.",
+                    "approval_preconditions_must_match",
+                )
+
+            # Reconstruct the exact approved action. State stays WAITING_APPROVAL
+            # so that a crash before execution re-enters this handler cleanly;
+            # _execute_approved_action performs all state/manifest transitions.
+            approved_action = Action(
+                type=record.action.type,
+                phase=record.action.phase,
+                tool_name=record.action.tool_name,
+                args=dict(record.action.args),
+                reason=record.action.reason,
+            )
+            return approved_action
+
+        # PENDING is handled above; EXPIRED / REJECTED handled below.
+        error = StructuredError(
+            error_code="approval_state_unexpected",
+            message=f"Unexpected approval status on resume: {status}.",
+            phase=state.current_phase.value,
+            denied_rule="approval_state_invalid",
+            suggested_fix="Reconcile the approval state.",
+        )
+        return _make_result(
+            TaskStatus.INCONSISTENT,
+            0,
+            (),
+            None,
+            error,
+            _inconsistent(state),
+        )
+
+    def _expire_approval(
+        self,
+        task_id: str,
+        state: TaskState,
+        approval_id: str,
+        error_code: str,
+        message: str,
+        denied_rule: str,
+    ) -> AgentRunResult:
+        """Mark an approval EXPIRED, clear the pending pointer, and block."""
+        if self._approval_store is not None:
+            try:
+                self._approval_store.mark_expired(task_id, approval_id)
+            except Exception:
+                pass
+        expired_state = replace(
+            state, status=TaskStatus.BLOCKED, pending_approval_id=None
+        )
+        try:
+            self._state_store.save(task_id, expired_state)
+        except Exception:
+            pass
+        return _make_result(
+            TaskStatus.BLOCKED,
+            0,
+            (),
+            None,
+            StructuredError(
+                error_code=error_code,
+                message=message,
+                phase=state.current_phase.value,
+                denied_rule=denied_rule,
+                suggested_fix="Run the task again and review a newly generated approval request.",
+            ),
+            expired_state,
+        )
+
+    def _validate_approval_preconditions(
+        self, state: TaskState, record: ApprovalRecord
+    ) -> bool:
+        """Check that approval preconditions still hold (design §11).
+
+        Fails closed if the phase, task, checkpoint pointers, OR any target
+        file's on-disk hash changed since the approval was requested.
+        """
+        if record.phase is not state.current_phase:
+            return False
+        if record.task_id != state.task_id:
+            return False
+        if record.checkpoint_seq_at_request != state.checkpoint_seq:
+            return False
+        if record.latest_checkpoint_at_request != state.latest_checkpoint:
+            return False
+        # Target-hash re-check: the workspace must not have changed under the
+        # approved action. Any drift (content, existence) invalidates it.
+        for target in record.targets:
+            full_path = (self._project_root / target.path).resolve()
+            current_hash = _hash_file_if_exists(full_path)
+            if current_hash != target.before_sha256:
+                return False
+        return True
+
+    def _digest_intact(self, record: ApprovalRecord) -> bool:
+        """Recompute the action digest and compare to the persisted one (§10).
+
+        Detects a manifest whose action fields were altered after signing.
+        """
+        recomputed = compute_action_digest(
+            action_type=record.action.type,
+            phase=record.action.phase,
+            tool_name=record.action.tool_name,
+            args=record.action.args,
+            reason=record.action.reason,
+        )
+        return recomputed == record.action.sha256
+
+    def _resolve_project_id(self, task_id: str) -> str:
+        """Resolve project ID from workspace."""
+        try:
+            from hancode.storage.workspace import load_project_metadata
+            metadata = load_project_metadata(self._project_root / ".hancode" / "project.json")
+            return str(metadata.get("project_id", "unknown"))
+        except Exception:
+            return "unknown"
+
+    def _resolve_project_root(self, task_id: str) -> Path:
+        """Resolve project root path."""
+        return self._project_root
+
+    def _execute_approved_action(
+        self,
+        task_id: str,
+        state: TaskState,
+        action: Action,
+        decision: PolicyDecisionLike,
+        phase: Phase,
+        trace_events: list[TraceEvent],
+    ) -> AgentRunResult:
+        """Execute an approved action directly (no Provider call)."""
+        tool_calls: list[str] = []
+        source_write = _is_source_write_action(action, decision, task_id)
+
+        # Trace
+        trace_error = self._append_trace(
+            task_id,
+            trace_events,
+            event_type="approval_execution_started",
+            phase=phase,
+            status="running",
+            action=_trace_action(action, decision, include_path=True),
+            observation={"tool_name": action.tool_name},
+        )
+        if trace_error is not None:
+            state = self._block(task_id, state)
+            return _make_result(
+                TaskStatus.BLOCKED,
+                0,
+                (),
+                None,
+                trace_error,
+                state,
+            )
+
+        approval_id = state.pending_approval_id
+        checkpoint: CheckpointManifest | None = None
+        requires_checkpoint = decision.requires_checkpoint or source_write
+        if requires_checkpoint:
+            # Create the guarding checkpoint. Never swallow failure: a source
+            # write without a committed checkpoint is unrecoverable (§3.3).
+            path_value = action.args.get("path")
+            if not isinstance(path_value, str) or not path_value.strip():
+                state, state_error = self._mark_inconsistent(
+                    task_id, state, _checkpoint_guard_error(
+                        "action_schema_invalid",
+                        "Approved write action is missing a valid path.",
+                        phase, "structured_action_required",
+                        "Reconcile the approval manifest.",
+                    ),
+                )
+                return _make_result(
+                    TaskStatus.INCONSISTENT, 0, tuple(tool_calls), None,
+                    state_error, state, risks=(_checkpoint_failure_risk(),),
+                )
+            try:
+                checkpoint = self._checkpoint_manager.create(
+                    task_id, [Path(path_value)], action.reason or "approved action"
+                )
+            except Exception as exc:
+                state, state_error = self._checkpoint_create_failure(
+                    task_id, state, phase,
+                    _agent_loop_error(phase, exc),
+                )
+                return _make_result(
+                    TaskStatus.INCONSISTENT, 0, tuple(tool_calls), None,
+                    state_error, state, risks=(_checkpoint_failure_risk(),),
+                )
+            # Reload state (checkpoint create advances the pointer) and mark
+            # the manifest EXECUTING so a crash here is detectable (§12).
+            state = self._state_store.load(task_id)
+            if approval_id is not None and self._approval_store is not None:
+                try:
+                    self._approval_store.mark_executing(
+                        task_id, approval_id,
+                        expected_checkpoint_id=checkpoint.checkpoint_id,
+                    )
+                except Exception as exc:
+                    state, state_error = self._mark_inconsistent(
+                        task_id, state, _agent_loop_error(phase, exc)
+                    )
+                    return _make_result(
+                        TaskStatus.INCONSISTENT, 0, tuple(tool_calls), None,
+                        state_error, state, risks=(_checkpoint_failure_risk(),),
+                    )
+
+        # Dispatch the approved tool (no Provider call).
+        try:
+            tool_result = self._tool_registry.dispatch(action)
+        except Exception as exc:
+            if checkpoint is not None:
+                self._abort_checkpoint_quietly(task_id, checkpoint)
+            state, state_error = self._mark_inconsistent(
+                task_id, state, StructuredError(
+                    error_code="approved_action_dispatch_failed",
+                    message=f"Failed to execute approved action: {exc}.",
+                    phase=phase.value,
+                    denied_rule="approved_action_dispatch",
+                    suggested_fix="Check the tool registry and retry.",
+                ),
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT, 1, tuple(tool_calls), None,
+                state_error, state,
+                risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
+            )
+
+        tool_calls.append(action.tool_name or "unknown")
+
+        # Trace completion
+        tool_event_type = "tool_completed" if tool_result.success else "tool_failed"
+        tool_event_status = "succeeded" if tool_result.success else "failed"
+        trace_error = self._append_trace(
+            task_id,
+            trace_events,
+            event_type=tool_event_type,
+            phase=phase,
+            status=tool_event_status,
+            action=_trace_action(action, decision, include_path=True),
+            observation={"tool_name": action.tool_name},
+        )
+        if trace_error is not None:
+            state = self._block(task_id, state)
+            return _make_result(
+                TaskStatus.BLOCKED,
+                1,
+                tuple(tool_calls),
+                None,
+                trace_error,
+                state,
+            )
+
+        if not tool_result.success:
+            # The approved tool ran but reported failure. Abort the pending
+            # checkpoint (no mutation to keep) and consume the approval so it
+            # cannot be replayed, then surface feedback to the loop.
+            if checkpoint is not None:
+                self._abort_checkpoint_quietly(task_id, checkpoint)
+            self._consume_and_clear(task_id, state, approval_id, None)
+            observation, feedback_error = self._build_feedback(
+                lambda: self._feedback_builder.from_tool_result(
+                    tool_result, phase=phase
+                ),
+                phase,
+            )
+            reloaded = self._state_store.load(task_id)
+            if feedback_error is not None:
+                reloaded = self._block(task_id, reloaded)
+                return _make_result(
+                    TaskStatus.BLOCKED, 1, tuple(tool_calls), observation,
+                    feedback_error, reloaded,
+                )
+            return _make_result(
+                reloaded.status, 1, tuple(tool_calls), observation, None, reloaded
+            )
+
+        # Success: commit the guarding checkpoint before recording state.
+        commit_id = checkpoint.checkpoint_id if checkpoint is not None else None
+        if checkpoint is not None:
+            try:
+                self._checkpoint_manager.commit(task_id, checkpoint.checkpoint_id)
+            except Exception as exc:
+                state, state_error = self._mark_inconsistent(
+                    task_id, state, _agent_loop_error(phase, exc),
+                    rollback_required=True,
+                )
+                return _make_result(
+                    TaskStatus.INCONSISTENT, 1, tuple(tool_calls), None,
+                    state_error, state, risks=(_checkpoint_failure_risk(),),
+                )
+
+        # Consume the approval (authoritative marker) BEFORE clearing state, so
+        # a crash in between leaves a CONSUMED manifest the resume path honours.
+        state = self._consume_and_clear(task_id, state, approval_id, commit_id)
+
+        self._append_trace(
+            task_id, trace_events, event_type="approval_consumed",
+            phase=phase, status="succeeded",
+            observation={"tool_name": action.tool_name},
+        )
+        return _make_result(
+            state.status, 1, tuple(tool_calls),
+            {"tool_result": "executed", "tool_name": action.tool_name},
+            None, state,
+        )
+
+    def _consume_and_clear(
+        self,
+        task_id: str,
+        state: TaskState,
+        approval_id: str | None,
+        commit_id: str | None,
+    ) -> TaskState:
+        """Mark the manifest CONSUMED, then clear the pending pointer + reset."""
+        if approval_id is not None and self._approval_store is not None:
+            try:
+                self._approval_store.mark_consumed(
+                    task_id, approval_id, execution_checkpoint_id=commit_id
+                )
+            except Exception:
+                pass
+        try:
+            latest = self._state_store.load(task_id)
+        except Exception:
+            latest = state
+        cleared = replace(
+            latest, status=TaskStatus.RUNNING, pending_approval_id=None
+        )
+        try:
+            self._state_store.save(task_id, cleared)
+            return cleared
+        except Exception:
+            return latest
+
+    def _abort_checkpoint_quietly(
+        self, task_id: str, checkpoint: CheckpointManifest
+    ) -> None:
+        """Best-effort abort of a pending checkpoint without restoring files."""
+        try:
+            self._checkpoint_manager.abort(
+                task_id, checkpoint.checkpoint_id, restore_files=False
+            )
+        except Exception:
+            pass
+
+
+def _inconsistent(state: TaskState) -> TaskState:
+    """Build an INCONSISTENT state that satisfies the state invariant.
+
+    A non-WAITING task must not carry pending interaction/approval pointers
+    (see TaskState.__post_init__). Transitioning to INCONSISTENT from a
+    WAITING_APPROVAL state therefore has to clear both pointers, or the very
+    next load() would raise on the invariant. This mirrors the fix applied to
+    reconcile_state and keeps the recovered task loadable.
+    """
+    return replace(
+        state,
+        status=TaskStatus.INCONSISTENT,
+        inconsistent=True,
+        pending_approval_id=None,
+        pending_interaction_id=None,
+    )
+
 
 def _make_result(
     status: TaskStatus,
@@ -3055,6 +3783,20 @@ def _state_after_tool(
         source_edits_this_phase=source_edits,
         files_changed=files_changed,
     )
+
+
+def _hash_file_if_exists(path: Path) -> str | None:
+    """Return the sha256 of a file, or None if it does not exist/unreadable.
+
+    Mirrors ApprovalRequestBuilder._compute_file_hash so the resume-time
+    re-check compares like-for-like against the recorded before_sha256.
+    """
+    try:
+        if not path.is_file():
+            return None
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except (OSError, UnicodeError):
+        return None
 
 
 def _is_source_write_action(

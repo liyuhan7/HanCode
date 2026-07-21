@@ -12,6 +12,7 @@ from hancode.app.delivery_service import DeliveryService
 from hancode.app.interaction_service import InteractionService
 from hancode.app.project_service import ProjectService
 from hancode.app.task_service import TaskService
+from hancode.app.approval_service import ApprovalService
 from hancode.app.credentials import CredentialProvider
 from hancode.core.models import TaskStatus
 from hancode.demo_support.runner import run_packaged_mock_demo
@@ -322,12 +323,14 @@ def task_status(
     """Show the current status of a task."""
     try:
         summary = task_service.get(project_root, task_id)
+        approval_pending = _get_approval_summary(project_root, task_id)
         _emit(
             {
                 "command": "task status",
                 "status": "completed",
                 "task": summary.to_dict(),
                 "interaction": summary.pending_interaction,
+                "approval": approval_pending,
             }
         )
     except HanCodeError as exc:
@@ -376,6 +379,92 @@ def task_list(
                 exit_code=2,
             )
         ) from None
+
+
+@task_app.command("approval")
+def task_approval(
+    task_id: str = typer.Argument(..., help="Task ID to check approval for."),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Show pending approval details for a task."""
+    try:
+        approval_data = _get_approval_summary(project_root, task_id)
+        _emit(
+            {
+                "command": "task approval",
+                "status": "completed",
+                "task_id": task_id,
+                "approval": approval_data,
+            }
+        )
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+
+
+@task_app.command("approve")
+def task_approve(
+    task_id: str = typer.Argument(..., help="Task ID with pending approval."),
+    approval_id: str | None = typer.Option(
+        None, "--approval-id", help="Approval ID to approve (uses pending if omitted)."
+    ),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Approve a pending approval request."""
+    try:
+        service = ApprovalService(project_root)
+        summary = service.approve(task_id, approval_id=approval_id)
+        _emit(
+            {
+                "command": "task approve",
+                "status": "completed",
+                "task": summary.to_dict(),
+                "decision": "approved",
+            }
+        )
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+
+
+@task_app.command("reject")
+def task_reject(
+    task_id: str = typer.Argument(..., help="Task ID with pending approval."),
+    approval_id: str | None = typer.Option(
+        None, "--approval-id", help="Approval ID to reject (uses pending if omitted)."
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Reason for rejection."
+    ),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Reject a pending approval request."""
+    try:
+        service = ApprovalService(project_root)
+        summary = service.reject(task_id, approval_id=approval_id, reason=reason)
+        _emit(
+            {
+                "command": "task reject",
+                "status": "completed",
+                "task": summary.to_dict(),
+                "decision": "rejected",
+            }
+        )
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+
+
+def _get_approval_summary(project_root: Path, task_id: str) -> object:
+    """Get approval summary for a task."""
+    try:
+        service = ApprovalService(project_root)
+        return service.get_pending(task_id)
+    except HanCodeError:
+        return None
 
 
 @app.command("run")

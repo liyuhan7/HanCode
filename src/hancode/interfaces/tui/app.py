@@ -17,6 +17,7 @@ from textual.app import App
 from textual.widgets import Input, ListView
 from textual.worker import Worker, get_current_worker
 
+from hancode.app.approval_service import ApprovalService
 from hancode.app.inspection_service import InspectionService
 from hancode.app.interaction_service import InteractionService
 from hancode.app.recovery_service import RecoveryService, RollbackPreview
@@ -59,6 +60,7 @@ class HanCodeTuiApp(App[None]):
         interaction_service: InteractionService | None = None,
         inspection_service: InspectionService | None = None,
         recovery_service: RecoveryService | None = None,
+        approval_service: ApprovalService | None = None,
     ) -> None:
         super().__init__()
         self._project_root = project_root
@@ -66,6 +68,7 @@ class HanCodeTuiApp(App[None]):
         self._interaction_service = interaction_service or InteractionService()
         self._inspection_service = inspection_service or InspectionService()
         self._recovery_service = recovery_service or RecoveryService()
+        self._approval_service = approval_service or ApprovalService(project_root)
         self._pending_rollback: RollbackPreview | None = None
         self.controller = TuiSessionController(
             project_root,
@@ -133,6 +136,10 @@ class HanCodeTuiApp(App[None]):
             self._select(command.args[0])
         elif command.name == "rollback":
             self._handle_rollback(command.args)
+        elif command.name == "approve":
+            self.submit_approval()
+        elif command.name == "reject":
+            self.submit_rejection(" ".join(command.args).strip() or None)
         elif command.name == "artifacts":
             self._show_artifacts()
         elif command.name == "open":
@@ -156,11 +163,16 @@ class HanCodeTuiApp(App[None]):
             text,
             has_active_task=state.active_task_id is not None,
             waiting_input=bool(state.pending_interaction_id),
+            waiting_approval=bool(state.pending_approval_id),
         )
         if intent is PlainTextIntent.CREATE_TASK:
             self._create_and_run(text)
         elif intent is PlainTextIntent.ANSWER:
             self.submit_answer(text)
+        elif intent is PlainTextIntent.APPROVAL_REQUIRES_COMMAND:
+            self._notify(
+                "该操作正在等待你的批准。请输入 /approve 批准，或 /reject <理由> 拒绝。"
+            )
         else:
             self._notify(
                 "当前 Task 不在等待输入状态。使用 /task <goal> 或 /run、/resume。"
@@ -242,6 +254,43 @@ class HanCodeTuiApp(App[None]):
         self._notify(f"Answer submitted · {len(answer.strip())} chars")
         self.start_run(resume=True)
 
+    # -- approval decisions (explicit, then auto-resume) -----------------
+
+    def submit_approval(self) -> None:
+        """Approve the pending request, then auto-resume so the action runs."""
+        self._decide_approval(approved=True, reason=None)
+
+    def submit_rejection(self, reason: str | None) -> None:
+        """Reject the pending request; the loop will treat it as feedback."""
+        self._decide_approval(approved=False, reason=reason)
+
+    def _decide_approval(self, *, approved: bool, reason: str | None) -> None:
+        state = self.controller.state
+        task_id = state.active_task_id
+        approval_id = state.pending_approval_id
+        if task_id is None or approval_id is None:
+            self._notify("当前没有待批准的操作。")
+            return
+        if not self.controller.can_mutate():
+            self._notify("任务正在运行，请稍后。")
+            return
+        try:
+            if approved:
+                self._approval_service.approve(task_id, approval_id=approval_id)
+            else:
+                self._approval_service.reject(
+                    task_id, approval_id=approval_id, reason=reason
+                )
+        except HanCodeError as exc:
+            self._notify(exc.structured_error.message)
+            return
+        self._notify(
+            f"Approval {'approved' if approved else 'rejected'} · {approval_id}"
+        )
+        # Auto-resume: on approval the loop executes the action; on rejection it
+        # consumes the decision as feedback and continues.
+        self.start_run(resume=True)
+
     # -- rollback (explicit confirmation) --------------------------------
 
     def _handle_rollback(self, args: tuple[str, ...]) -> None:
@@ -308,8 +357,9 @@ class HanCodeTuiApp(App[None]):
 
     def _show_help(self) -> None:
         self._notify(
-            "命令：/task <goal> /tasks /use <id> /run /resume /status /trace "
-            "/artifacts /open <name> /rollback [confirm|cancel] /clear /quit"
+            "命令：/task <goal> /tasks /use <id> /run /resume /approve "
+            "/reject <理由> /status /trace /artifacts /open <name> "
+            "/rollback [confirm|cancel] /clear /quit"
         )
 
     def _show_tasks(self) -> None:
@@ -466,9 +516,16 @@ class HanCodeTuiApp(App[None]):
         self._refresh_task_list()
 
     def _reflect_waiting_input(self) -> None:
-        """When paused for input, surface the question and focus the composer."""
+        """When paused for input/approval, surface the prompt and focus composer."""
         state = self.controller.state
         summary = state.active_task
+        if (
+            summary is not None
+            and summary.status is TaskStatus.WAITING_APPROVAL
+            and state.pending_approval_id is not None
+        ):
+            self._reflect_waiting_approval()
+            return
         if (
             summary is None
             or summary.status is not TaskStatus.WAITING_INPUT
@@ -487,6 +544,45 @@ class HanCodeTuiApp(App[None]):
         except Exception:
             return
         composer.placeholder = "输入你的回答并回车"
+        composer.focus()
+
+    def _reflect_waiting_approval(self) -> None:
+        """Render the pending-approval panel and prompt for an explicit decision."""
+        state = self.controller.state
+        task_id = state.active_task_id
+        approval_id = state.pending_approval_id or ""
+        detail: dict[str, object] | None = None
+        if task_id is not None:
+            try:
+                detail = self._approval_service.get_pending(task_id)
+            except HanCodeError:
+                detail = None
+        tool_name = "?"
+        targets_text = ""
+        diff_text = ""
+        if isinstance(detail, dict):
+            tool_name = str(detail.get("tool_name", "?"))
+            targets = detail.get("targets")
+            if isinstance(targets, (list, tuple)) and targets:
+                targets_text = "\n".join(f"- {t}" for t in targets)
+            preview = detail.get("preview")
+            if isinstance(preview, dict):
+                diff = preview.get("unified_diff")
+                if isinstance(diff, str) and diff.strip():
+                    diff_text = f"\n\n```diff\n{diff}\n```"
+        self._render_detail(
+            f"# 等待批准\n\n"
+            f"操作: `{tool_name}`\n\n"
+            f"目标文件:\n{targets_text or '(none)'}\n\n"
+            f"(approval: {approval_id})\n\n"
+            f"输入 `/approve` 批准，或 `/reject <理由>` 拒绝。"
+            f"{diff_text}"
+        )
+        try:
+            composer = self.screen.query_one("#tui-composer", Input)
+        except Exception:
+            return
+        composer.placeholder = "/approve 批准，或 /reject <理由> 拒绝"
         composer.focus()
 
     def _reset_composer_placeholder(self) -> None:

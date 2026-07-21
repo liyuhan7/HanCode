@@ -24,6 +24,8 @@ _COMMANDS: dict[str, tuple[int, int | None, str]] = {
     "use": (1, 1, "tui_task_id_required"),
     "run": (0, 0, ""),
     "resume": (0, 0, ""),
+    "approve": (0, 0, ""),
+    "reject": (0, None, ""),
     "status": (0, 0, ""),
     "trace": (0, 0, ""),
     "artifacts": (0, 0, ""),
@@ -51,6 +53,10 @@ class PlainTextIntent(Enum):
     CREATE_TASK = "create_task"
     ANSWER = "answer"
     REJECT = "reject"
+    # When a task is paused for approval, plain text is intentionally inert:
+    # approve/reject are irreversible outward decisions and must be explicit
+    # (/approve, /reject <reason>), never inferred from stray keystrokes.
+    APPROVAL_REQUIRES_COMMAND = "approval_requires_command"
 
 
 def parse_command(raw: str) -> TuiCommand | TuiCommandError:
@@ -132,8 +138,13 @@ def classify_plain_text(
     *,
     has_active_task: bool,
     waiting_input: bool,
+    waiting_approval: bool = False,
 ) -> PlainTextIntent:
     """Decide what plain (non-command) composer text means for the current state."""
+    if waiting_approval:
+        # A pending approval takes precedence: never let plain text implicitly
+        # decide it. The user must type /approve or /reject <reason>.
+        return PlainTextIntent.APPROVAL_REQUIRES_COMMAND
     if waiting_input:
         return PlainTextIntent.ANSWER
     if not has_active_task:

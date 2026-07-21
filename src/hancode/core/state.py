@@ -10,6 +10,7 @@ from typing import Mapping, TypeGuard
 
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.interactions import InteractionRecord, InteractionStatus
+from hancode.core.approvals import is_valid_approval_id
 from hancode.core.models import Phase, TaskStatus
 
 
@@ -38,6 +39,8 @@ _STATE_FIELDS = frozenset(
         "interaction_seq",
         "interactions",
         "pending_interaction_id",
+        "approval_seq",
+        "pending_approval_id",
     }
 )
 _OPTIONAL_STATE_FIELDS = frozenset(
@@ -47,6 +50,8 @@ _OPTIONAL_STATE_FIELDS = frozenset(
         "interaction_seq",
         "interactions",
         "pending_interaction_id",
+        "approval_seq",
+        "pending_approval_id",
     }
 )
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
@@ -88,6 +93,8 @@ class TaskState:
     interaction_seq: int = 0
     interactions: tuple[InteractionRecord, ...] = ()
     pending_interaction_id: str | None = None
+    approval_seq: int = 0
+    pending_approval_id: str | None = None
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -194,6 +201,28 @@ class TaskState:
             )
             if self.interaction_seq < max_suffix:
                 raise _invalid_state_field("interaction_seq")
+        if not _is_nonnegative_int(self.approval_seq):
+            raise _invalid_state_field("approval_seq")
+        if self.pending_approval_id is not None and (
+            not isinstance(self.pending_approval_id, str)
+            or not is_valid_approval_id(self.pending_approval_id)
+        ):
+            raise _invalid_state_field("pending_approval_id")
+        if self.status is TaskStatus.WAITING_APPROVAL:
+            if self.pending_approval_id is None:
+                raise _invalid_state_field("pending_approval_id")
+            if self.pending_interaction_id is not None:
+                raise _invalid_state_field("pending_interaction_id")
+        else:
+            if self.pending_approval_id is not None:
+                raise _invalid_state_field("pending_approval_id")
+        if self.status is TaskStatus.WAITING_INPUT and self.pending_approval_id is not None:
+            raise _invalid_state_field("pending_approval_id")
+        if (
+            self.pending_interaction_id is not None
+            and self.pending_approval_id is not None
+        ):
+            raise _invalid_state_field("pending_approval_id")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )
@@ -261,6 +290,14 @@ def load_state(task_root: Path) -> TaskState:
                 if "pending_interaction_id" not in data
                 else _optional_str(data, "pending_interaction_id")
             ),
+            approval_seq=(
+                0 if "approval_seq" not in data else _required_int(data, "approval_seq")
+            ),
+            pending_approval_id=(
+                None
+                if "pending_approval_id" not in data
+                else _optional_str(data, "pending_approval_id")
+            ),
         )
     except (OSError, UnicodeError, ValueError):
         raise _state_parse_error() from None
@@ -274,7 +311,17 @@ def reconcile_state(task_root: Path, state: TaskState) -> TaskState:
     )
     if not has_artifact_drift:
         return state
-    return replace(state, status=TaskStatus.INCONSISTENT, inconsistent=True)
+    # Forcing INCONSISTENT must also clear pending pointers, otherwise the
+    # state invariant (pending_* only in WAITING_* status) is violated and
+    # every subsequent load/replace raises. Reconciliation supersedes any
+    # pending interaction/approval — the human must re-evaluate from scratch.
+    return replace(
+        state,
+        status=TaskStatus.INCONSISTENT,
+        inconsistent=True,
+        pending_interaction_id=None,
+        pending_approval_id=None,
+    )
 
 
 def save_state(task_root: Path, state: TaskState) -> None:
@@ -314,6 +361,8 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "interaction_seq": state.interaction_seq,
         "interactions": [interaction.to_dict() for interaction in state.interactions],
         "pending_interaction_id": state.pending_interaction_id,
+        "approval_seq": state.approval_seq,
+        "pending_approval_id": state.pending_approval_id,
     }
     state_file = task_root / "state.json"
     if _is_link(state_file):

@@ -1653,3 +1653,22 @@
 - 技术难点：Textual `pilot.pause()` 在 `RunFinished`/`RunFailed` 消息处理期间，任何对 ListView 的 `clear()`/`append()` 操作会导致异步超时（`WaitForScreenTimeout`）。最终方案是消息处理器中仅更新数据，将组件刷新推迟到用户下次主动触发（如 `/tasks` 或 `_select`）。
 - 验证结果：全量 `pytest -x -q` 为 `1053 passed, 15 skipped`；无新增失败。
 - 修改文件：`src/hancode/interfaces/tui/app.py`（`_show_status`、`_select`、`_create_and_run`、`confirm_rollback`、`on_run_finished`、`on_run_failed`、新增 `_refresh_task_list_data`、`_refresh_task_list_data_only`）、`src/hancode/interfaces/tui/controller.py`（`_restore_trace` 分页、导入 `MAX_EVENT_BUFFER`）。
+
+---
+
+### 2026-07-21 — S5 — 审批门（HITL Approval）接线、恢复正确性与终端 UX
+
+- 依据：审批组件（policy/store/builder/manifest）已存在但未接入 engine，且评审发现恢复期 digest/target 复核、manifest 生命周期与状态不变量存在缺口，拆分为 R3（内核接线与恢复）、R4（服务/CLI 行为）、R5（TUI UX）、R6（E2E/恢复/安全/文档）。
+- 实现摘要：
+  - R3 内核接线（根阻断项）：`engine` 在 `approval_mode != disabled` 时装配 `ApprovalPolicy`/`ApprovalStore`/`ApprovalRequestBuilder` 到 `AgentLoop`——此前从未接线，真实运行中审批永不触发。
+  - R3 恢复复核（§10/§11）：`_validate_approval_preconditions` 恢复时对每个目标文件重新哈希，任一漂移（改动/删除）即失败关闭；`_digest_intact` 重算 action digest，篡改的 manifest 被拒。
+  - R3 manifest 生命周期（§12）：执行序列改为 `建 checkpoint → mark_executing → dispatch → commit → mark_consumed（权威）→ 清 state`；CONSUMED 先于清 state 写入，崩溃可恢复；持久化的 EXECUTING manifest 在恢复时失败关闭为 INCONSISTENT 而非冒重复写入风险，并持久化该转换避免再次落入同一分支。
+  - R3 诚实性：停止吞掉 checkpoint/state 失败（原 `except: pass`），改为浮现 INCONSISTENT + 诚实 trace。
+  - R4 幂等修复：`ApprovalService._decide` 原仅拦截"相反"决策，重复批准/拒绝会落到 `store.decide`（仅允许 PENDING 转换）抛 `approval_not_pending`，违背文档承诺的幂等契约；补相同决策短路，返回成功且不二次转换、不覆盖原始 reason。
+  - R5 TUI：新增 `/approve`、`/reject <理由>` 命令与 `waiting_approval` 面板（工具/目标/bounded diff 预览）；等待批准时明文输入被判定为 `APPROVAL_REQUIRES_COMMAND` 而不决策；决策后自动 resume（批准执行、拒绝作为反馈）。
+  - R6 缺陷发现：`reconcile_state` 之外，`_handle_approval_resume` 与 `_mark_inconsistent` 构造 INCONSISTENT 时未清 `pending_approval_id`，违反状态不变量导致下次 `load()` 崩溃；新增 `_inconsistent()` helper 统一清双指针并应用到全部恢复期站点。
+- 安全边界：敏感 args（疑似凭据）在 builder 构建前硬拒绝（`approval_sensitive_payload_denied`）；payload 超限拒绝（`approval_payload_too_large`）；敏感 diff（如旧文件内容含 secret）在预览中整体脱敏（`redacted=True`）而非呈现给审阅者；trace 只记录 `approval_requested` 与 ID，不含文件内容；TUI 批准/拒绝为显式不可逆决策，绝不由零散明文输入推断。
+- 验证结果：全量 `uv run --no-sync pytest -q -p no:cacheprovider` 为 `1141 passed, 15 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found`（79 文件包）。新增测试：`test_approval_service.py`(7)、`test_cli_approval.py`(5)、`test_tui_approval.py`(7) + `test_tui_commands.py`(5)、`test_approval_recovery.py` 新增(2)、`test_approval_security.py`(4)，及 R3 的 E2E/恢复/resume-guards 组。
+- 修改文件：`runtime/engine.py`（装配）、`runtime/agent_loop.py`（恢复复核、manifest 生命周期、`_inconsistent` helper、`_mark_inconsistent` 清 approval 指针、EXECUTING 持久化）、`app/approval_service.py`（幂等短路）、`core/state.py`（`reconcile_state` 清双指针）、`interfaces/cli.py`（approve/reject/approval 命令）、`interfaces/tui/{commands,view_state,controller,app}.py`（审批 UX）、`README.md`。
+- 提交：未提交，按用户要求保留当前工作区改动。
+- 剩余风险：`approval_mode` 默认 `disabled`，需在 `.hancode/project.json` 显式开启；EXECUTING 中断为设计性失败关闭，需人工 rollback 或继续，不自动重放；敏感内容检测为基于模式的启发式，非穷尽。

@@ -39,6 +39,9 @@ class TuiViewState:
     pending_question: str | None = None
     pending_interaction_id: str | None = None
 
+    pending_approval_id: str | None = None
+    pending_approval_summary: str | None = None
+
     last_error: StructuredError | None = None
     notices: tuple[str, ...] = field(default_factory=tuple)
 
@@ -70,6 +73,14 @@ def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewSt
         interaction_id = (
             pending.get("interaction_id") if isinstance(pending, dict) else None
         )
+    approval = summary.pending_approval
+    approval_id = None
+    approval_summary = None
+    if summary.requires_approval and isinstance(approval, dict):
+        raw_id = approval.get("approval_id")
+        approval_id = raw_id if isinstance(raw_id, str) else None
+        raw_summary = approval.get("summary") or approval.get("tool_name")
+        approval_summary = raw_summary if isinstance(raw_summary, str) else None
     return replace(
         state,
         active_task_id=summary.task_id,
@@ -78,6 +89,8 @@ def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewSt
         pending_interaction_id=(
             interaction_id if isinstance(interaction_id, str) else None
         ),
+        pending_approval_id=approval_id,
+        pending_approval_summary=approval_summary,
     )
 
 

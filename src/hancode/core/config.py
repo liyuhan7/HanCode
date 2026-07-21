@@ -63,6 +63,7 @@ _OPTIONAL_STRING_FIELDS = (
     "build_command",
     "provider_base_url",
     "interaction_mode",
+    "approval_mode",
 )
 _INTEGER_FIELDS = (
     "max_steps",
@@ -78,6 +79,10 @@ _INTEGER_FIELDS = (
     "max_interactions_per_phase",
     "max_interaction_question_chars",
     "max_interaction_answer_chars",
+    "max_approvals_per_phase",
+    "max_approval_payload_bytes",
+    "max_approval_preview_chars",
+    "max_rejection_reason_chars",
 )
 _PROVIDER_INTEGER_FIELDS = frozenset(
     {
@@ -98,6 +103,7 @@ _SUPPORTED_LLM_PROVIDERS = frozenset(
 )
 _SUPPORTED_CREDENTIAL_SOURCES = frozenset({"keyring", "env", "dotenv"})
 _SUPPORTED_INTERACTION_MODES = frozenset({"disabled", "ask_user"})
+_SUPPORTED_APPROVAL_MODES = frozenset({"disabled", "first_source_write", "all_source_writes"})
 _REMOTE_LLM_PROVIDERS = frozenset({"openai_compatible", "anthropic"})
 _SENSITIVE_FIELD_MARKERS = (
     "apikey",
@@ -141,6 +147,12 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "max_interactions_per_phase",
         "max_interaction_question_chars",
         "max_interaction_answer_chars",
+        "approval_mode",
+        "confirm_agent_rollback",
+        "max_approvals_per_phase",
+        "max_approval_payload_bytes",
+        "max_approval_preview_chars",
+        "max_rejection_reason_chars",
     }
 )
 _ALLOWED_PROJECT_FIELDS = _PROJECT_METADATA_FIELDS | _ACTIVE_CONFIG_FIELDS
@@ -174,6 +186,12 @@ class HanCodeConfig:
     max_interactions_per_phase: int = 8
     max_interaction_question_chars: int = 2048
     max_interaction_answer_chars: int = 8192
+    approval_mode: Literal["disabled", "first_source_write", "all_source_writes"] = "disabled"
+    confirm_agent_rollback: bool = True
+    max_approvals_per_phase: int = 20
+    max_approval_payload_bytes: int = 262_144
+    max_approval_preview_chars: int = 12_000
+    max_rejection_reason_chars: int = 1_024
 
 
 def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig:
@@ -251,8 +269,28 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         max_interaction_answer_chars=cast(
             int, project_data.get("max_interaction_answer_chars", 8192)
         ),
+        approval_mode=cast(
+            Literal["disabled", "first_source_write", "all_source_writes"],
+            project_data.get("approval_mode", "disabled"),
+        ),
+        confirm_agent_rollback=cast(
+            bool, project_data.get("confirm_agent_rollback", True)
+        ),
+        max_approvals_per_phase=cast(
+            int, project_data.get("max_approvals_per_phase", 20)
+        ),
+        max_approval_payload_bytes=cast(
+            int, project_data.get("max_approval_payload_bytes", 262_144)
+        ),
+        max_approval_preview_chars=cast(
+            int, project_data.get("max_approval_preview_chars", 12_000)
+        ),
+        max_rejection_reason_chars=cast(
+            int, project_data.get("max_rejection_reason_chars", 1_024)
+        ),
     )
     _validate_interaction_config(config)
+    _validate_approval_config(config)
     return config
 
 
@@ -268,6 +306,39 @@ def _validate_interaction_config(config: HanCodeConfig) -> None:
                     suggested_fix="Set max_interaction_question_chars to 2048 or lower.",
                 )
             )
+
+
+def _validate_approval_config(config: HanCodeConfig) -> None:
+    if config.approval_mode not in _SUPPORTED_APPROVAL_MODES:
+        raise HanCodeError(
+            StructuredError(
+                error_code="config_invalid",
+                message=f"Unsupported approval_mode: {config.approval_mode!r}.",
+                phase="spec",
+                denied_rule="config_approval_mode",
+                suggested_fix=f"Use one of: {', '.join(sorted(_SUPPORTED_APPROVAL_MODES))}.",
+            )
+        )
+    if config.max_approval_payload_bytes < 1:
+        raise HanCodeError(
+            StructuredError(
+                error_code="config_invalid",
+                message="max_approval_payload_bytes must be positive.",
+                phase="spec",
+                denied_rule="config_approval_limit",
+                suggested_fix="Set max_approval_payload_bytes to a positive integer.",
+            )
+        )
+    if config.max_approval_preview_chars < 1:
+        raise HanCodeError(
+            StructuredError(
+                error_code="config_invalid",
+                message="max_approval_preview_chars must be positive.",
+                phase="spec",
+                denied_rule="config_approval_limit",
+                suggested_fix="Set max_approval_preview_chars to a positive integer.",
+            )
+        )
 
 
 def _read_project_config(project_file: Path) -> dict[str, object]:
