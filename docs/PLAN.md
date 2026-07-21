@@ -5543,6 +5543,31 @@ runtime.engine → AgentLoop → ObservedTraceAppender
 * 全量门禁：`ruff check src tests` 通过；`mypy src` 74 源文件无问题；全量 `pytest` 为 `1034 passed, 15 skipped`；`uv build` 成功且 wheel 含完整 `interfaces/tui/` 包；`hancode --help` 显示 `tui`；`hancode demo --provider mock` 返回 `completed`。构建产物已清理。
 * 文档：`README.md` 新增「终端交互（TUI）」章节（`hancode tui` 用法、slash 命令、展示层边界、回答不回显），并把 TUI 从「已知限制」移出、仅保留 WebUI/Streaming 未实现；`tests/test_readme.py` 先补 `test_readme_documents_tui` 与 available-commands 断言（先红后绿）。全量回归 `1035 passed, 15 skipped`。Commit 待用户决定。
 
+#### S4-R1：评审发现的产品交互收尾修复
+
+| 元信息 | 值 |
+|---|---|
+| 状态 | [x] 已完成 |
+| 依赖 | S4-T8 |
+| 涉及文件 | `interfaces/tui/app.py`, `interfaces/tui/controller.py`, `interfaces/tui/commands.py`, `interfaces/tui/screens/main.py`, `tests/test_tui_command_exec.py`, `tests/test_tui_task_list.py`, `tests/test_tui_trace_restore.py`, `tests/test_tui_waiting_input.py`, `tests/test_recovery_service.py`, `tests/test_tui_controller.py`, `tests/test_tui_hitl.py` |
+| 目标 | 修复独立评审发现的 6 项产品交互缺陷（原测试直接调 App 方法、绕过真实命令/输入路径导致漏网） |
+
+评审背景：一份独立评审指出 S4 多处"用户可见能力只实现了服务或解析器，未真正接入 TUI"，且测试盲区（直调 App 方法而非走命令/Pilot 输入）掩盖了两个真实功能错误。本卡按评审优先级 1–6 逐项 TDD 修复。
+
+* **R1-1 `/rollback confirm|cancel` 断链**：parser `"rollback"` 由 `(0,0)` 改为 `(0,1)`；`_handle_rollback` 分派 `confirm`/`cancel`/无参预览/未知子命令拒绝。补 4 条走 `submit_input("/rollback ...")` 真实路径的测试。
+* **R1-2 空操作命令**：实现 `/help /tasks /status /trace /clear /quit`（原仅解析不执行）；`/clear` 清屏不动 trace 文件。
+* **R1-3 TaskList 未接入**：`on_mount` 挂载回调 `_on_ready` 启动即 `refresh_tasks` 并填充 ListView；`on_list_view_selected` 绑定选择。**并修复关键缺陷**：app 内部 `self.query_one` 查不到 pushed screen 上的 widget（NoMatches 被吞），全部改为 `self.screen.query_one`，此前 activity/phase/detail/tasklist 更新其实从未真正到达 DOM。
+* **R1-4 Trace 恢复/切换**：`TuiSessionController` 注入 `InspectionService`，`select_task` 先清空旧事件再 `read_trace` 恢复目标任务 trace（不同任务事件不再混流；也是"重启恢复历史"的真实路径）。
+* **R1-5 WAITING_INPUT 展示**：run 结束进入 WAITING_INPUT 时把问题渲染到 DetailPanel、Composer placeholder 改为提示回答并聚焦；非等待态复位 placeholder。
+* **R1-6 Worker 终态兜底**：`_body` 增补 `except Exception` → post 脱敏的 `tui_internal_error` `RunFailed`，保证 `busy` 一定被清除、原始异常不泄漏；此前非 HanCodeError 会让 Worker 崩溃并永久卡 busy。
+
+实际验证（2026-07-21）：
+
+* 每项先补"走真实命令/Pilot 输入"的红测试再实现；新增 18 个测试（command_exec 5、task_list 3、trace_restore 3、waiting_input 2、rollback 命令链 4、worker 兜底 1）。
+* HITL fake 因新增启动加载补 `list_tasks`；task_list 测试查询改用 `app.screen.query_one`。
+* 门禁：`ruff` 通过；`mypy src` 74 源文件无问题；全量 `pytest` 为 `1053 passed, 15 skipped`。
+* 剩余（评审 7–9，非阻塞，未纳入本卡）：`AgentRunResult.error/risks` 展示、阻塞型 FS 操作移入 Worker、rollback preview→confirm 竞态（`expected_checkpoint_id`）、compact layout 实际切换、真实 Pilot 键盘输入端到端、textual 主版本上界锁定。Commit 待用户决定。
+
 ### S4.8 S4 验收标准
 
 **功能**：`hancode tui` 可启动；可创建/选择/运行/恢复 Task；实时展示 TraceEvent 与六阶段状态；展示 tool/test/checkpoint/rollback/risk；WAITING_INPUT 显示问题并可自动 resume；可查看允许的产物；可执行受控 rollback；重启后可恢复 Task 与历史 Trace。

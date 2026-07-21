@@ -28,7 +28,7 @@ _COMMANDS: dict[str, tuple[int, int | None, str]] = {
     "trace": (0, 0, ""),
     "artifacts": (0, 0, ""),
     "open": (1, 1, "tui_artifact_name_required"),
-    "rollback": (0, 0, ""),
+    "rollback": (0, 1, ""),
     "clear": (0, 0, ""),
     "quit": (0, 0, ""),
 }

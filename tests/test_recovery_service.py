@@ -200,3 +200,85 @@ def test_cancelled_rollback_does_not_mutate_state(tmp_path: Path) -> None:
     asyncio.run(_run())
 
     assert recovery.rollback_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Rollback via the real command path (/rollback, /rollback confirm|cancel)
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_command_previews_without_executing(tmp_path: Path) -> None:
+    import asyncio
+
+    _project(tmp_path)
+    recovery = _FakeRecoveryService()
+
+    async def _run() -> None:
+        app = _app_with_active_task(tmp_path, recovery)
+        async with app.run_test():
+            app.submit_input("/rollback")
+            await app.workers.wait_for_complete()
+
+    asyncio.run(_run())
+
+    assert recovery.preview_calls == ["task-001"]
+    assert recovery.rollback_calls == []
+
+
+def test_rollback_confirm_command_executes(tmp_path: Path) -> None:
+    import asyncio
+
+    _project(tmp_path)
+    recovery = _FakeRecoveryService()
+
+    async def _run() -> None:
+        app = _app_with_active_task(tmp_path, recovery)
+        async with app.run_test():
+            app.submit_input("/rollback")
+            app.submit_input("/rollback confirm")
+            await app.workers.wait_for_complete()
+
+    asyncio.run(_run())
+
+    assert recovery.rollback_calls == ["task-001"]
+
+
+def test_rollback_cancel_command_cancels(tmp_path: Path) -> None:
+    import asyncio
+
+    _project(tmp_path)
+    recovery = _FakeRecoveryService()
+
+    async def _run() -> None:
+        app = _app_with_active_task(tmp_path, recovery)
+        async with app.run_test():
+            app.submit_input("/rollback")
+            app.submit_input("/rollback cancel")
+            app.submit_input("/rollback confirm")
+            await app.workers.wait_for_complete()
+
+    asyncio.run(_run())
+
+    # After cancel, a subsequent confirm must not execute a rollback.
+    assert recovery.rollback_calls == []
+
+
+def test_rollback_unknown_subcommand_is_rejected(tmp_path: Path) -> None:
+    import asyncio
+
+    _project(tmp_path)
+    recovery = _FakeRecoveryService()
+    notices: list[str] = []
+
+    async def _run() -> None:
+        app = _app_with_active_task(tmp_path, recovery)
+        app._notify = notices.append  # type: ignore[method-assign]
+        async with app.run_test():
+            app.submit_input("/rollback frobnicate")
+            await app.workers.wait_for_complete()
+
+    asyncio.run(_run())
+
+    assert recovery.preview_calls == []
+    assert recovery.rollback_calls == []
+    assert notices  # a rejection notice was shown

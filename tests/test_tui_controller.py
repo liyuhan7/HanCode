@@ -185,6 +185,40 @@ def test_small_terminal_uses_compact_layout() -> None:
     assert is_compact_width(200) is False
 
 
+def test_worker_unexpected_exception_clears_busy(tmp_path: Path) -> None:
+    """A non-HanCodeError in the worker must not leave the TUI stuck busy."""
+    import asyncio
+
+    from hancode.app.task_service import TaskService
+    from hancode.interfaces.tui.app import HanCodeTuiApp
+    from hancode.storage.workspace import init_project_workspace
+
+    init_project_workspace(tmp_path, "project-001", "Course", "Assignment")
+
+    class _BoomFactory:
+        def __call__(self, config: object, *, credential: object = None) -> object:
+            raise RuntimeError("provider factory exploded")
+
+    service = TaskService(provider_factory=_BoomFactory())
+    notices: list[str] = []
+
+    async def _run() -> None:
+        app = HanCodeTuiApp(project_root=tmp_path, task_service=service)
+        app._notify = notices.append  # type: ignore[method-assign]
+        async with app.run_test() as pilot:
+            app.submit_input("Write the spec.")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.controller.state.busy is False
+            assert app.controller.can_mutate() is True
+
+    asyncio.run(_run())
+
+    # An internal-error notice was surfaced, without leaking the raw exception.
+    assert notices
+    assert all("provider factory exploded" not in n for n in notices)
+
+
 def test_app_run_streams_trace_events_before_completion(tmp_path: Path) -> None:
     """End-to-end: a MockLLM run streams trace events into the activity log."""
     import asyncio

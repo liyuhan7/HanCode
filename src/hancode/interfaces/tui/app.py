@@ -14,14 +14,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.app import App
-from textual.widgets import Input
+from textual.widgets import Input, ListView
 from textual.worker import Worker, get_current_worker
 
 from hancode.app.inspection_service import InspectionService
 from hancode.app.interaction_service import InteractionService
 from hancode.app.recovery_service import RecoveryService, RollbackPreview
 from hancode.app.task_service import TaskService
-from hancode.core.errors import HanCodeError
+from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.models import TaskStatus
 from hancode.interfaces.tui.commands import (
     PlainTextIntent,
     TuiCommand,
@@ -67,17 +68,37 @@ class HanCodeTuiApp(App[None]):
         self._recovery_service = recovery_service or RecoveryService()
         self._pending_rollback: RollbackPreview | None = None
         self.controller = TuiSessionController(
-            project_root, task_service=self._task_service
+            project_root,
+            task_service=self._task_service,
+            inspection_service=self._inspection_service,
         )
 
     def on_mount(self) -> None:
-        self.push_screen(MainScreen(project_root=self._project_root))
+        self.push_screen(MainScreen(project_root=self._project_root), self._on_ready)
+
+    def _on_ready(self, _screen: object = None) -> None:
+        """Load the task list once the main screen is mounted."""
+        try:
+            self.controller.refresh_tasks()
+        except HanCodeError as exc:
+            self._notify(exc.structured_error.message)
+            return
+        self._refresh_task_list()
 
     def on_input_submitted(self, event: "Input.Submitted") -> None:
         if event.input.id == "tui-composer":
             value = event.value
             event.input.value = ""
             self.submit_input(value)
+
+    def on_list_view_selected(self, event: "ListView.Selected") -> None:
+        item_id = event.item.id
+        if item_id is None or not item_id.startswith("task-"):
+            return
+        if not self.controller.can_mutate():
+            self._notify("任务正在运行，无法切换。")
+            return
+        self._select(item_id[len("task-") :])
 
     # -- composer submission --------------------------------------------
 
@@ -104,12 +125,23 @@ class HanCodeTuiApp(App[None]):
         elif command.name == "use":
             self._select(command.args[0])
         elif command.name == "rollback":
-            self.request_rollback()
+            self._handle_rollback(command.args)
         elif command.name == "artifacts":
             self._show_artifacts()
         elif command.name == "open":
             self._open_artifact(command.args[0])
-        # Other commands (help/tasks/status/trace/clear/quit) are UI-local.
+        elif command.name == "help":
+            self._show_help()
+        elif command.name == "tasks":
+            self._show_tasks()
+        elif command.name == "status":
+            self._show_status()
+        elif command.name == "trace":
+            self._focus_trace()
+        elif command.name == "clear":
+            self._clear_activity()
+        elif command.name == "quit":
+            self.exit()
 
     def _handle_plain_text(self, text: str) -> None:
         state = self.controller.state
@@ -147,6 +179,21 @@ class HanCodeTuiApp(App[None]):
             self.controller.select_task(task_id)
         except HanCodeError as exc:
             self._notify(exc.structured_error.message)
+            return
+        self._rerender_activity()
+        self._refresh_phase_bar()
+
+    def _rerender_activity(self) -> None:
+        """Re-paint the whole activity feed from the current view state."""
+        try:
+            from hancode.interfaces.tui.widgets.activity_log import ActivityLog
+
+            log = self.screen.query_one("#tui-activity-log", ActivityLog)
+        except Exception:
+            return
+        log.clear()
+        for event in self.controller.state.trace_events:
+            log.append_event(event)
 
     # -- run lifecycle ---------------------------------------------------
 
@@ -187,6 +234,20 @@ class HanCodeTuiApp(App[None]):
         self.start_run(resume=True)
 
     # -- rollback (explicit confirmation) --------------------------------
+
+    def _handle_rollback(self, args: tuple[str, ...]) -> None:
+        if not args:
+            self.request_rollback()
+            return
+        subcommand = args[0].lower()
+        if subcommand == "confirm":
+            self.confirm_rollback()
+        elif subcommand == "cancel":
+            self.cancel_rollback()
+        else:
+            self._notify(
+                "未知的 /rollback 子命令。用法：/rollback、/rollback confirm、/rollback cancel。"
+            )
 
     def request_rollback(self) -> None:
         """Preview the latest checkpoint's affected files and await confirmation."""
@@ -235,6 +296,56 @@ class HanCodeTuiApp(App[None]):
     def cancel_rollback(self) -> None:
         self._pending_rollback = None
 
+    def _show_help(self) -> None:
+        self._notify(
+            "命令：/task <goal> /tasks /use <id> /run /resume /status /trace "
+            "/artifacts /open <name> /rollback [confirm|cancel] /clear /quit"
+        )
+
+    def _show_tasks(self) -> None:
+        try:
+            self.controller.refresh_tasks()
+        except HanCodeError as exc:
+            self._notify(exc.structured_error.message)
+            return
+        tasks = self.controller.state.tasks
+        if not tasks:
+            self._notify("当前项目没有任务。使用 /task <goal> 创建。")
+            return
+        self._refresh_task_list()
+        self._notify(
+            "任务：" + ", ".join(f"{t.task_id}({t.status.value})" for t in tasks)
+        )
+
+    def _show_status(self) -> None:
+        summary = self.controller.state.active_task
+        if summary is None:
+            self._notify("当前没有选中的任务。使用 /use <id> 或 /task <goal>。")
+            return
+        self._notify(
+            f"{summary.task_id} · {summary.status.value} · phase={summary.current_phase.value} "
+            f"· retry={summary.retry_budget_remaining}"
+        )
+
+    def _focus_trace(self) -> None:
+        self._rerender_activity()
+        try:
+            from hancode.interfaces.tui.widgets.activity_log import ActivityLog
+
+            self.screen.query_one("#tui-activity-log", ActivityLog).focus()
+        except Exception:
+            pass
+
+    def _clear_activity(self) -> None:
+        """Clear the on-screen activity feed only; trace.jsonl is untouched."""
+        self.controller.clear_activity()
+        try:
+            from hancode.interfaces.tui.widgets.activity_log import ActivityLog
+
+            self.screen.query_one("#tui-activity-log", ActivityLog).clear()
+        except Exception:
+            pass
+
     def _show_artifacts(self) -> None:
         summary = self.controller.state.active_task
         if summary is None:
@@ -272,7 +383,7 @@ class HanCodeTuiApp(App[None]):
         try:
             from textual.widgets import Static
 
-            panel = self.query_one("#tui-detail-panel", Static)
+            panel = self.screen.query_one("#tui-detail-panel", Static)
         except Exception:
             return
         panel.update(text)
@@ -291,7 +402,17 @@ class HanCodeTuiApp(App[None]):
                 )
             except HanCodeError as exc:
                 if not worker.is_cancelled:
-                    self.call_from_thread(self.post_message, RunFailed(exc.structured_error))
+                    self.call_from_thread(
+                        self.post_message, RunFailed(exc.structured_error)
+                    )
+                return
+            except Exception:
+                # Any unexpected error must still clear busy and never leak the
+                # raw exception (which could contain sensitive detail) to the UI.
+                if not worker.is_cancelled:
+                    self.call_from_thread(
+                        self.post_message, RunFailed(_tui_internal_error())
+                    )
                 return
             if not worker.is_cancelled:
                 self.call_from_thread(self.post_message, RunFinished(result))
@@ -307,11 +428,42 @@ class HanCodeTuiApp(App[None]):
     def on_run_finished(self, message: RunFinished) -> None:
         self.controller.on_run_finished()
         self._refresh_phase_bar()
+        self._reflect_waiting_input()
 
     def on_run_failed(self, message: RunFailed) -> None:
         self.controller.on_run_finished()
         self._notify(message.error.message)
         self._refresh_phase_bar()
+
+    def _reflect_waiting_input(self) -> None:
+        """When paused for input, surface the question and focus the composer."""
+        state = self.controller.state
+        summary = state.active_task
+        if (
+            summary is None
+            or summary.status is not TaskStatus.WAITING_INPUT
+            or state.pending_question is None
+        ):
+            self._reset_composer_placeholder()
+            return
+        interaction_id = state.pending_interaction_id or ""
+        self._render_detail(
+            f"# 等待输入\n\n{state.pending_question}\n\n"
+            f"(interaction: {interaction_id})\n直接在下方输入回答。"
+        )
+        try:
+            composer = self.screen.query_one("#tui-composer", Input)
+        except Exception:
+            return
+        composer.placeholder = "输入你的回答并回车"
+        composer.focus()
+
+    def _reset_composer_placeholder(self) -> None:
+        try:
+            composer = self.screen.query_one("#tui-composer", Input)
+        except Exception:
+            return
+        composer.placeholder = "描述你的课程项目任务，或输入 /help"
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # Worker completion is surfaced via explicit RunFinished/RunFailed
@@ -324,7 +476,7 @@ class HanCodeTuiApp(App[None]):
         try:
             from hancode.interfaces.tui.widgets.activity_log import ActivityLog
 
-            log = self.query_one("#tui-activity-log", ActivityLog)
+            log = self.screen.query_one("#tui-activity-log", ActivityLog)
         except Exception:
             return
         events = self.controller.state.trace_events
@@ -335,16 +487,45 @@ class HanCodeTuiApp(App[None]):
         try:
             from hancode.interfaces.tui.widgets.phase_bar import PhaseBar
 
-            bar = self.query_one("#tui-phase-bar", PhaseBar)
+            bar = self.screen.query_one("#tui-phase-bar", PhaseBar)
         except Exception:
             return
         bar.update_summary(self.controller.state.active_task)
+
+    def _refresh_task_list(self) -> None:
+        try:
+            from textual.widgets import ListItem, ListView, Label
+
+            view = self.screen.query_one("#tui-task-list", ListView)
+        except Exception:
+            return
+        try:
+            view.clear()
+            for summary in self.controller.state.tasks:
+                view.append(
+                    ListItem(
+                        Label(f"{summary.task_id} · {summary.status.value}"),
+                        id=f"task-{summary.task_id}",
+                    )
+                )
+        except Exception:
+            pass
 
     def _notify(self, text: str) -> None:
         try:
             self.notify(text)
         except Exception:
             pass
+
+
+def _tui_internal_error() -> StructuredError:
+    return StructuredError(
+        error_code="tui_internal_error",
+        message="TUI 内部错误：任务执行意外失败。",
+        phase="spec",
+        denied_rule="tui_internal_error",
+        suggested_fix="检查任务状态与 trace 后重试。",
+    )
 
 
 __all__ = ["HanCodeTuiApp"]

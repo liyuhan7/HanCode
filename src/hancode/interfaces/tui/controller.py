@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dataclasses import replace
+
+from hancode.app.inspection_service import InspectionService
 from hancode.app.task_models import TaskSummary
 from hancode.app.task_service import TaskService
 from hancode.core.errors import HanCodeError
@@ -30,9 +33,11 @@ class TuiSessionController:
         project_root: Path,
         *,
         task_service: TaskService | None = None,
+        inspection_service: InspectionService | None = None,
     ) -> None:
         self._project_root = project_root
         self._task_service = task_service or TaskService()
+        self._inspection_service = inspection_service or InspectionService()
         self._state = TuiViewState.initial(project_root)
 
     @property
@@ -53,7 +58,21 @@ class TuiSessionController:
 
     def select_task(self, task_id: str) -> None:
         summary = self._task_service.get(self._project_root, task_id)
+        # Clear the previous task's feed before restoring the selected one, so
+        # events from different tasks never mix in the activity log.
+        self._state = replace(
+            self._state, trace_events=(), selected_event_id=None
+        )
         self._state = reduce_task_selected(self._state, summary)
+        self._restore_trace(task_id)
+
+    def _restore_trace(self, task_id: str) -> None:
+        try:
+            page = self._inspection_service.read_trace(self._project_root, task_id)
+        except HanCodeError:
+            # A corrupt/unreadable trace must not break selection; start empty.
+            return
+        self._state = replace(self._state, trace_events=tuple(page.events))
 
     # -- run lifecycle ---------------------------------------------------
 
@@ -62,6 +81,10 @@ class TuiSessionController:
 
     def on_trace(self, event: TraceEvent) -> None:
         self._state = reduce_trace_arrived(self._state, event)
+
+    def clear_activity(self) -> None:
+        """Drop the in-memory activity feed; the trace file is not affected."""
+        self._state = replace(self._state, trace_events=(), selected_event_id=None)
 
     def on_run_finished(self) -> None:
         running_task_id = self._state.running_task_id
@@ -79,8 +102,6 @@ class TuiSessionController:
     # -- helpers ---------------------------------------------------------
 
     def _replace(self, **changes: object) -> TuiViewState:
-        from dataclasses import replace
-
         return replace(self._state, **changes)  # type: ignore[arg-type]
 
 

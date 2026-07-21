@@ -73,6 +73,9 @@ class _FakeTaskService:
     def get(self, project_root: Path, task_id: str) -> TaskSummary:
         return _waiting_summary()
 
+    def list_tasks(self, project_root: Path) -> tuple[TaskSummary, ...]:
+        return ()
+
     def run(
         self,
         project_root: Path,
