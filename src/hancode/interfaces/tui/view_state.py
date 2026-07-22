@@ -28,6 +28,7 @@ class TuiViewState:
     active_task: TaskSummary | None = None
 
     busy: bool = False
+    current_request_id: str | None = None
     running_task_id: str | None = None
 
     trace_events: tuple[TraceEvent, ...] = ()
@@ -61,7 +62,7 @@ def reduce_trace_arrived(state: TuiViewState, event: TraceEvent) -> TuiViewState
 
 
 def reduce_run_finished(state: TuiViewState) -> TuiViewState:
-    return replace(state, busy=False, running_task_id=None)
+    return replace(state, busy=False, current_request_id=None, running_task_id=None)
 
 
 def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewState:
@@ -70,9 +71,7 @@ def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewSt
     interaction_id = None
     if summary.requires_input and pending is not None:
         question = pending.get("question") if isinstance(pending, dict) else None
-        interaction_id = (
-            pending.get("interaction_id") if isinstance(pending, dict) else None
-        )
+        interaction_id = pending.get("interaction_id") if isinstance(pending, dict) else None
     approval = summary.pending_approval
     approval_id = None
     approval_summary = None
@@ -86,9 +85,7 @@ def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewSt
         active_task_id=summary.task_id,
         active_task=summary,
         pending_question=question if isinstance(question, str) else None,
-        pending_interaction_id=(
-            interaction_id if isinstance(interaction_id, str) else None
-        ),
+        pending_interaction_id=(interaction_id if isinstance(interaction_id, str) else None),
         pending_approval_id=approval_id,
         pending_approval_summary=approval_summary,
     )

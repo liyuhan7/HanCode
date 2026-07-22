@@ -1814,3 +1814,16 @@
 - 人工干预：未修改失败测试及其他用户已有改动。
 - 最终验证：全量 pytest `1213 passed, 17 skipped`；全量 MyPy `Success: no issues found in 94 source files`；本次修改文件 Ruff 通过；仓库内未发现 `.pytest_cache`、`.pyc` 或 `.superpowers` 临时文件。
 - 剩余风险：全仓 Ruff 仍有其他未提交 S4 测试文件中的 12 个未使用导入/变量告警，未在本修复中扩大范围处理。
+
+### 2026-07-22 — S5-R0 — TUI Intent/Operation 契约与 App 瘦身
+
+- 使用技能：`karpathy-guidelines`、`test-driven-development`、`systematic-debugging`。
+- 范围：只实施附件定义的 S5-R0，不实现 S5-R1~R6；在隔离分支 `codex/s5-r0` 工作，保留主分支用户已有改动。
+- Red：新增 Controller 回归测试先确认无 Active Task 时 `LIST_TASKS` 被错误拒绝；Worker 截断和边界测试截断分别由语法/焦点测试复现。
+- 根因：`_TASK_REQUIRED` 将 `LIST_TASKS` 纳入了必须选 Task 的集合；最后一次补丁 hunk 计数错误导致新增代码尾部未写入。
+- Green：Executor/Controller/App 边界测试 `6 passed`；现有 TUI 回归 `66 passed`；合并 S5-R0/TUI 测试 `72 passed`；目标文件 Ruff 和 MyPy 通过；`git diff --check` 通过。
+- 全仓 Pytest 复验：`1240 passed, 17 skipped, 2 failed`；失败均为 `tests/test_s4_tools.py` 导入 `tests.test_checkpoint_query` 的基线环境问题，未纳入 S5-R0 修复。
+- 变更：新增 Textual 无关的 Intent/Operation/Result/Error/Executor 契约，Controller 统一编排和 request ID 校验，App 移除直接 Service 方法调用。
+- 变更：保留现有 S4 命令和 Message 行为；同步补充 `docs/PLAN.md` 的 S5-R0 任务卡与边界说明。
+- 提交：未提交，等待用户后续集成决定。
+- 剩余边界：S5-R2 的异步 Query Worker、S5-R1 Presenter、S5-R3~R6 功能仍未实现。
