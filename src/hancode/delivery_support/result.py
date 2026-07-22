@@ -28,6 +28,7 @@ _BASIC_AUTHORIZATION_SECRET = re.compile(
 class RequirementStatus(str, Enum):
     COVERED = "covered"
     PARTIAL = "partial"
+    NOT_COVERED = "not_covered"
     MISSING = "missing"
     UNTESTED = "untested"
 
@@ -38,6 +39,10 @@ class KnowledgeCategory(str, Enum):
     TESTING_EXPERIENCE = "testing_experience"
     ERROR_FIX = "error_fix"
     REUSABLE_PATTERN = "reusable_pattern"
+    BUG_FIX = "bug_fix"
+    TEST_INSIGHT = "test_insight"
+    PROCESS_IMPROVEMENT = "process_improvement"
+    OTHER = "other"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +59,8 @@ class KnowledgeItem:
     category: KnowledgeCategory
     summary: str
     detail: str
-    source_phase: Phase
-    source_trace_id: str
+    source_phase: Phase = Phase.DELIVER
+    source_trace_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,7 +245,8 @@ def _write_knowledge_impl(task_root: Path, items: list[KnowledgeItem]) -> Path:
             body += (
                 f"### {_markdown_literal(item.summary)}\n\n"
                 f"{_markdown_literal(item.detail)}\n\n"
-                f"来源：{item.source_phase.value} / {_markdown_literal(item.source_trace_id)}\n"
+                f"来源：{item.source_phase.value} / "
+                f"{_markdown_literal(item.source_trace_id or '未提供')}\n"
             )
     return _write_artifact(task_root, "KNOWLEDGE.md", body)
 
@@ -512,7 +518,11 @@ def _sanitize_knowledge_item(item: KnowledgeItem) -> KnowledgeItem:
         summary=_redacted_text(item.summary),
         detail=_redacted_text(item.detail),
         source_phase=item.source_phase,
-        source_trace_id=_redacted_text(item.source_trace_id),
+        source_trace_id=(
+            None
+            if item.source_trace_id is None
+            else _redacted_text(item.source_trace_id)
+        ),
     )
 
 

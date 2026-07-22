@@ -8,7 +8,6 @@ The TUI never calls the storage RollbackManager directly. RecoveryService:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,30 +43,19 @@ class RecoveryService:
         if checkpoint_id is None:
             return RollbackPreview(checkpoint_id=None, available=False, files=())
 
-        manifest_path = task_root / "checkpoints" / checkpoint_id / "manifest.json"
-        if _is_link(manifest_path) or not manifest_path.is_file():
-            return RollbackPreview(
-                checkpoint_id=checkpoint_id, available=False, files=()
-            )
+        from hancode.storage.checkpoint_queries import CheckpointQueryRepository
+        repo = CheckpointQueryRepository()
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            manifest = repo.get(task_root, checkpoint_id)
+        except Exception:
             return RollbackPreview(
-                checkpoint_id=checkpoint_id, available=False, files=()
-            )
-        if not isinstance(manifest, dict):
-            return RollbackPreview(
-                checkpoint_id=checkpoint_id, available=False, files=()
+                checkpoint_id=checkpoint_id, available=False, files=(),
             )
 
-        available = bool(manifest.get("rollback_available", False))
-        files = tuple(
-            str(entry.get("path"))
-            for entry in manifest.get("files", [])
-            if isinstance(entry, dict) and isinstance(entry.get("path"), str)
-        )
         return RollbackPreview(
-            checkpoint_id=checkpoint_id, available=available, files=files
+            checkpoint_id=checkpoint_id,
+            available=manifest.rollback_available,
+            files=tuple(f.path for f in manifest.files),
         )
 
     def rollback_last(self, project_root: Path, task_id: str) -> RecoverySummary:

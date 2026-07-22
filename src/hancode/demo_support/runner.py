@@ -13,10 +13,8 @@ from typing import Mapping, Sequence
 from hancode.runtime.agent_loop import AgentRunResult, FilesystemAgentLoopPorts
 from hancode.runtime.engine import create_agent_loop
 from hancode.core.config import HanCodeConfig, load_config
+from hancode.runtime.delivery_pipeline import DeliveryPipeline
 from hancode.delivery_support.deliverables import write_deliverables
-from hancode.delivery_support.knowledge import write_knowledge
-from hancode.delivery_support.reports import write_test_report
-from hancode.delivery_support.review import write_review
 from hancode.delivery_support.result import (
     DeliveryResult,
     KnowledgeCategory,
@@ -206,7 +204,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
 
         _enter_expected_delivery_phase(task_root, fourth, timeline)
         knowledge_items = _knowledge_items(task_root)
-        write_knowledge(task_root, list(knowledge_items))
+        DeliveryPipeline().record_knowledge(task_root, TASK_ID, list(knowledge_items))
         timeline.append(
             _append(
                 task_root,
@@ -314,10 +312,11 @@ def _record_test_evidence(
 def _write_failure_evidence(
     task_root: Path, report: FeedbackReport, timeline: list[TraceEvent]
 ) -> None:
-    write_test_report(task_root, report, _DEMO_TEST_COMMAND)
+    DeliveryPipeline().record_test(task_root, report, _DEMO_TEST_COMMAND)
     timeline.append(_append(task_root, "deliverable_created", Phase.TEST, "succeeded"))
-    write_review(
+    DeliveryPipeline().record_review(
         task_root,
+        TASK_ID,
         [
             RequirementCoverage(
                 requirement_id="REQ-ADD-001",
@@ -335,9 +334,9 @@ def _write_failure_evidence(
 def _write_success_evidence(
     task_root: Path, report: FeedbackReport, timeline: list[TraceEvent]
 ) -> None:
-    write_test_report(task_root, report, _DEMO_TEST_COMMAND)
+    DeliveryPipeline().record_test(task_root, report, _DEMO_TEST_COMMAND)
     timeline.append(_append(task_root, "deliverable_created", Phase.TEST, "succeeded"))
-    write_review(task_root, list(_covered_requirement()), [])
+    DeliveryPipeline().record_review(task_root, TASK_ID, list(_covered_requirement()), [])
     timeline.append(_append(task_root, "deliverable_created", Phase.REVIEW, "succeeded"))
 
 

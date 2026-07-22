@@ -6,6 +6,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from hancode.core.models import Phase
+from hancode.core.tool_specs import ALL_TOOL_NAMES as _TOOL_NAMES
 
 
 class ActionType(str, Enum):
@@ -124,19 +125,7 @@ class Action:
         )
 
 
-_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "list_files",
-        "search_text",
-        "write_file",
-        "edit_file",
-        "run_tests",
-        "rollback_last_checkpoint",
-    }
-)
-
-_NO_ARGUMENT_TOOLS = frozenset({"run_tests", "rollback_last_checkpoint"})
+_NO_ARGUMENT_TOOLS = frozenset({"run_tests", "rollback_last_checkpoint", "run_build", "read_test_report", "list_checkpoints"})
 
 _PARSER_FIELDS = frozenset({"type", "phase", "tool_name", "args", "reason"})
 

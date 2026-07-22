@@ -41,6 +41,8 @@ _STATE_FIELDS = frozenset(
         "pending_interaction_id",
         "approval_seq",
         "pending_approval_id",
+        "builds_run",
+        "latest_build_status",
     }
 )
 _OPTIONAL_STATE_FIELDS = frozenset(
@@ -52,6 +54,8 @@ _OPTIONAL_STATE_FIELDS = frozenset(
         "pending_interaction_id",
         "approval_seq",
         "pending_approval_id",
+        "builds_run",
+        "latest_build_status",
     }
 )
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
@@ -95,6 +99,8 @@ class TaskState:
     pending_interaction_id: str | None = None
     approval_seq: int = 0
     pending_approval_id: str | None = None
+    builds_run: tuple[str, ...] = ()
+    latest_build_status: str = "none"
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -223,6 +229,13 @@ class TaskState:
             and self.pending_approval_id is not None
         ):
             raise _invalid_state_field("pending_approval_id")
+        if not _is_str_tuple(self.builds_run):
+            raise _invalid_state_field("builds_run")
+        if (
+            not isinstance(self.latest_build_status, str)
+            or self.latest_build_status not in {"none", "passed", "failed", "timed_out"}
+        ):
+            raise _invalid_state_field("latest_build_status")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )

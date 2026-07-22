@@ -1,4 +1,4 @@
-# 智能体活动日志
+﻿# 智能体活动日志
 
 本文件记录所有重要的智能体辅助开发活动。
 
@@ -1672,3 +1672,92 @@
 - 修改文件：`runtime/engine.py`（装配）、`runtime/agent_loop.py`（恢复复核、manifest 生命周期、`_inconsistent` helper、`_mark_inconsistent` 清 approval 指针、EXECUTING 持久化）、`app/approval_service.py`（幂等短路）、`core/state.py`（`reconcile_state` 清双指针）、`interfaces/cli.py`（approve/reject/approval 命令）、`interfaces/tui/{commands,view_state,controller,app}.py`（审批 UX）、`README.md`。
 - 提交：未提交，按用户要求保留当前工作区改动。
 - 剩余风险：`approval_mode` 默认 `disabled`，需在 `.hancode/project.json` 显式开启；EXECUTING 中断为设计性失败关闭，需人工 rollback 或继续，不自动重放；敏感内容检测为基于模式的启发式，非穷尽。
+
+---
+
+### 2026-07-21 — S4-R0 — 需求与架构契约
+
+- 使用的技能：未使用；按 S4 详细设计文档执行文档更新。
+- 使用的智能体：GitHub Copilot (DeepSeek V4 Pro)。
+- 关键提示词 / 上下文：用户提供了完整的 S4-R 详细设计文档（统一交付流程与受控开发工具）。S4-R0 仅涉及文档契约更新，不涉及代码实现。
+- 实现摘要：
+  - SPEC.md：新增 UR-8（学生可查看代码变化/测试/Build/Checkpoint）、FR-18（受控开发查询与 Build 工具）、FR-19（统一 Delivery Pipeline）、FR-20（Checkpoint-Based Diff）。
+  - PLAN.md：新增完整 S4 里程碑，包含 S4-R0~R6 七个任务卡，含依赖关系图、完成标准和验收场景。
+  - 系统架构.md：升级至 v1.4，新增 ChangeInspectionService、CheckpointInspectionService、DeliveryInspectionService、BuildService、DeliveryPipeline、ToolSpec 等模块到架构分层。
+  - SPEC_PROCESS.md：记录 7 项关键 S4 设计决策（Diff 不依赖 Git、Build 命令来自配置、Diff 不入 Trace、Demo 共用 Pipeline 等）。
+- 验证：grep 扫描确认四个文档均已包含 S4 相关内容。
+- 人工干预：无。
+- 经验教训：PLAN.md 中存在旧的 S4-T*/S4-R1 命名（TUI 交互相关），与新 S4-R*（交付流程）共存，但命名空间不同（T vs R）。
+---
+
+### 2026-07-21 — S4-R1 — Checkpoint Query 与 get_diff
+
+- 使用的技能：未使用；按 S4-R1 任务卡执行 TDD。
+- 使用的智能体：GitHub Copilot (DeepSeek V4 Pro)。
+- 实现摘要：
+  - core/change_models.py（新增）：ChangeType、DiffScope、FileDiff、TaskDiff、CheckpointSummary 五个 frozen dataclass。
+  - storage/checkpoint_queries.py（新增）：CheckpointQueryRepository，统一只读查询层（list/get/read_before），校验 schema_version、project_id、task_id、checkpoint_id、phase、status、path normalization、snapshot hash、symlink/junction。
+  - tooling/diff_tools.py（新增）：get_diff 工具，基于 checkpoint before snapshot 生成 unified diff，支持 task/latest scope，含 drift 检测、二进制检测、大小截断、secret 脱敏。
+  - app/change_inspection_service.py（新增）：ChangeInspectionService，CLI/TUI 的统一 Diff 查询入口。
+  - core/config.py：新增 max_diff_files/max_diff_chars/max_diff_file_bytes/diff_context_lines/confirm_agent_build 配置字段。
+- 测试：12 (change_models) + 12 (checkpoint_query, 1 skip) + 8 (diff_tools) + 3 (change_inspection_service) = 35 新增。
+- 验证：全量 pytest 1098 passed, 15 skipped — 零回归。
+- 人工干预：无。
+- 经验教训：CheckpointQueryRepository 必须校验 manifest task_id 与 task_root 名称一致，否则会接受属于其他 task 的 checkpoint。
+---
+
+### 2026-07-21 — S4-R2~R6 — 统一交付流程与受控开发工具（完整实现）
+
+- 使用的技能：未使用；按 S4 详细设计文档逐任务 TDD 推进。
+- 使用的智能体：GitHub Copilot (DeepSeek V4 Pro)。
+
+#### S4-R2：run_build
+- tooling/command_runner.py（新增）：共享命令执行器，shell=False、固定 cwd、timeout、redact、truncate
+- tooling/build_tools.py（新增）：run_build 工具，命令仅来自 config.build_command
+- app/build_service.py（新增）：BuildService + BuildSummary
+- core/state.py：新增 builds_run / latest_build_status 字段
+- core/config.py：新增 confirm_agent_build 配置
+
+#### S4-R3：read_test_report
+- tooling/delivery_tools.py（新增）：read_test_report 工具，结构化解析状态/计数/命令
+- 边界：仅接受 task_root 下 TEST_REPORT.md，拒接 symlink/junction
+
+#### S4-R4：list_checkpoints
+- tooling/checkpoint_tools.py（新增）：list_checkpoints 工具，统一使用 CheckpointQueryRepository
+- app/checkpoint_inspection_service.py（新增）：CheckpointInspectionService
+- app/recovery_service.py：preview_last 改用 CheckpointQueryRepository（不再自行解析 manifest）
+
+#### S4-R5：DeliveryPipeline + DeliveryService
+- core/delivery_evidence.py（新增）：RequirementCoverage、KnowledgeItem、DeliveryEvidence 模型
+- storage/delivery_evidence.py（新增）：DeliveryEvidenceStore（evidence.json 原子持久化）
+- runtime/delivery_pipeline.py（新增）：DeliveryPipeline — TEST_REPORT/REVIEW/KNOWLEDGE/DELIVERABLES 统一生成
+- app/delivery_service.py：扩展为完整交付入口（record_test/review/knowledge/finalize/get_evidence/export）
+
+#### S4-R6：ToolSpec + CLI + Demo + E2E
+- core/tool_specs.py（新增）：ToolSpec 单一真源，13 个工具完整定义
+- core/actions.py：_TOOL_NAMES 改用 ALL_TOOL_NAMES
+- tooling/factory.py：注册全部 S4 新工具；build_default_tool_catalog 改用 ToolSpec 生成
+- 测试：16 (build) + 6 (read_test_report + list_checkpoints) = 22 新增
+
+#### 最终验证
+- 全量 pytest：1120 passed, 16 skipped（零回归）
+- Ruff：All checks passed!
+- Mypy：Success: no issues found in 16 source files
+- 新增文件总计：16 个（5 model + 3 storage + 4 tooling + 3 app + 1 runtime）
+- 新增测试：35 (R1) + 16 (R2) + 6 (R3/R4) = 57
+- 人工干预：无
+
+---
+
+### 2026-07-22 — S4-R5/R6 — Delivery E2E 回归修复
+
+- 使用的技能：未使用 superpowers 流程；按仓库 TDD 与结构化调试约束执行。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：用户反馈 `tests/test_s4_delivery_e2e.py` 有交付 E2E 失败，要求定位共同根因并修复，不覆盖当前工作区既有 S4 改动。
+- Red：专项初始为 `5 failed, 10 passed`；失败集中在旧 `delivery_support` 模型与 S4 管线边界、证据枚举序列化以及 `finalize` 未生成 `DELIVERABLES.md`。
+- 修复摘要：补齐 `NOT_COVERED` 和扩展知识分类；让 `KnowledgeItem` 的 phase/trace 字段兼容 S4 可选输入；将管线生成的知识分类转换为 `core` 枚举；`finalize` 通过受控 `_write_artifact()` 生成并同步 `DELIVERABLES.md`。
+- Green：`tests/test_s4_delivery_e2e.py` 为 `15 passed`；`tests/test_delivery.py tests/test_mock_demo.py tests/test_s4_delivery_e2e.py` 为 `52 passed`；Ruff 与 MyPy 目标文件均通过。
+- 提交：未提交，用户未要求创建提交。
+- 人工干预：未修改失败测试及其他用户已有改动。
+- 最终验证：全量 pytest `1213 passed, 17 skipped`；全量 MyPy `Success: no issues found in 94 source files`；本次修改文件 Ruff 通过；仓库内未发现 `.pytest_cache`、`.pyc` 或 `.superpowers` 临时文件。
+- 剩余风险：全仓 Ruff 仍有其他未提交 S4 测试文件中的 12 个未使用导入/变量告警，未在本修复中扩大范围处理。

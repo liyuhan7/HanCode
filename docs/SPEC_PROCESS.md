@@ -1,4 +1,4 @@
-# 规范制定过程记录
+﻿# 规范制定过程记录
 
 本文档记录了如何使用 Superpowers 方法制定项目规范和实现计划。
 
@@ -452,3 +452,33 @@ T27 已取得 README 专项 TDD Red（`4 failed、1 passed`）和 Green（`6 pas
 第二阶段冷启动评审在受限 Windows 沙箱执行 MockLLM demo 时触发 `TemporaryDirectory` 的 Temp ACL 拒绝。通过读取完整 traceback、复现默认 Temp 和工作树 Temp、再以受控权限运行对照命令，确认这是环境限制：正常可写 Temp 下 demo 返回 `status=completed`，代码行为无需扩大 T27 修改范围。README 因此明确 `TEMP/TMP` 必须可写，并说明 `cli_internal_error` 的排查方向。
 
 同一阶段还促使 README 契约测试覆盖 Anthropic 风格 secret-like 前缀、非空环境变量赋值、init/export 行为边界；测试最终 Green 为 `10 passed`。T27 最终验证已完成：全量 pytest `653 passed、12 skipped`，Ruff、MyPy、lock check、package build、源码 CLI 和独立 Python 3.11 wheel smoke 均通过；两阶段新鲜复审最终无 Critical/Important/Minor。受限沙箱的 Temp ACL 风险已作为 README 运行前提记录，未被误判为生产代码缺陷。
+
+## 7. S4 阶段：统一交付流程与受控开发工具
+
+### 背景
+
+S3-R（人工审批协议）完成后，HanCode 已具备 AgentLoop、ToolPolicy、Checkpoint、Trace、Feedback 和 Approval 等核心机制。但当前交付路径分散：
+
+- DeliveryService 仅封装导出（export_task_artifacts）
+- Mock Demo 直接调用多个 writer 并手工推进状态
+- 工具注册表缺少 Diff、Build 和 Checkpoint 查询工具
+- RecoveryService 自行解析 manifest，存在重复逻辑
+- InspectionService 只能读取 trace 和 artifact，不能读取 Diff、Checkpoint、测试摘要、Build 结果
+
+### 关键设计决策
+
+1. Diff 不依赖 Git：使用 Checkpoint before snapshot 与 workspace 文件对比，构造 unified diff。每个文件以最早出现的 checkpoint baseline 为准。
+2. Build 命令只能来自配置：run_build 固定执行 config.build_command，模型不得传入任意命令，shell=False。
+3. 完整 Diff 不进入 Trace：Trace 只记录计数摘要，通过 ToolResult.trace_observation 字段分离。
+4. Demo 与正式 Task 共用 DeliveryPipeline：DemoRunner 不再直接调用交付 writer。
+5. 统一 Checkpoint Query Repository：RecoveryService、get_diff、list_checkpoints、TUI 共用同一查询层。
+6. 确定性 Artifact vs 模型 Artifact 边界：TEST_REPORT/REVIEW/KNOWLEDGE/DELIVERABLES 由 DeliveryPipeline 权威生成，模型不得通过 write_file 手写。
+7. ToolSpec 单一真源：工具元数据集中定义在 core/tool_specs.py。
+
+### 任务拆分
+
+S4 分为 7 个子任务：S4-R0（文档契约）、S4-R1（Checkpoint Query + get_diff）、S4-R2（run_build）、S4-R3（read_test_report）、S4-R4（list_checkpoints）、S4-R5（DeliveryPipeline + DeliveryService）、S4-R6（ToolSpec + CLI + Demo + E2E）。
+
+### 完成标准
+
+所有工具通过 MockLLM E2E 验证；Demo 与正式路径一致；原有 Approval、ASK_USER、Rollback 无回归。

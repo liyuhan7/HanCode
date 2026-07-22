@@ -1,4 +1,4 @@
-# HanCode 实现计划
+﻿# HanCode 实现计划
 
 > 状态：冷启动后实现准备完成
 > 项目类型：A · Coding Agent Harness
@@ -6021,3 +6021,318 @@ HanCode MVP 完成必须同时满足：
 - 新增测试: R1 model(24) + R2 policy/store(20) + R3 E2E/resume-guards/recovery + R4 service(7)/CLI(5) + R5 TUI(7)/commands(5) + R6 security(4)/recovery(2)
 - Ruff `All checks passed!`；MyPy `Success: no issues found in 79 source files`
 - 现有 ASK_USER、rollback、TUI 测试无回归
+
+---
+
+# S4：统一交付流程与受控开发工具
+
+| 元信息           | 值                                      |
+| ------------- | -------------------------------------- |
+| 状态            | [x] 已完成                                |
+| 依赖            | AgentLoop、ToolPolicy、Checkpoint、Trace、Feedback、S3-R Approval |
+| 分支           | 当前分支                                   |
+| 主贡献相关         | 是；统一交付流程                               |
+
+S4 阶段目标是把 HanCode 当前分散的测试执行、测试反馈、Checkpoint、Rollback、交付物生成、DeliveryResult 和 Artifact Export 收敛为一条统一、确定性、可观察的正式运行路径。
+
+核心原则：
+- Diff 不依赖 Git；
+- Build 不能执行模型提供的任意命令；
+- 测试和 Build 结果必须来自真实 ToolResult；
+- 交付状态不能由 DemoRunner 或 TUI 手工推进；
+- 所有入口共用相同的 Application Service 和 DeliveryPipeline。
+
+---
+
+## S4-R0：需求与架构契约
+
+| 元信息           | 值          |
+| ------------- | ---------- |
+| 状态            | [x] 已完成    |
+| 依赖            | S3-R 全部完成  |
+| 可并行           | 不并行；文档前置任务 |
+| Worktree / PR | 当前分支       |
+
+### 目标
+
+在 SPEC.md / PLAN.md / 系统架构.md 中建立 S4 阶段的需求基线和实现契约。
+
+### 涉及文件
+
+- `docs/SPEC.md` —— 新增 UR-8、FR-18、FR-19、FR-20
+- `docs/PLAN.md` —— 新增 S4 里程碑与 S4-R0~R6 任务卡
+- `docs/系统架构.md` —— 更新架构分层与组件图
+- `docs/SPEC_PROCESS.md` —— 记录 S4 设计决策
+
+### 完成标准
+
+- Diff 明确不依赖 Git
+- Build 明确只能来自配置
+- Demo 和正式任务共用 DeliveryService
+- 确定性 Artifact 与模型 Artifact 边界明确
+
+---
+
+## S4-R1：Checkpoint Query 与 `get_diff`
+
+| 元信息           | 值          |
+| ------------- | ---------- |
+| 状态            | [x] 已完成    |
+| 依赖            | S4-R0      |
+| 可并行           | 可与 R2、R3 并行 |
+| Worktree / PR | 当前分支       |
+
+### 目标
+
+建立统一的 Checkpoint Query Repository，使 RecoveryService、ChangeInspectionService、list_checkpoints tool 和 TUI 共用同一套校验逻辑。实现基于 checkpoint 快照的 `get_diff`，不依赖 Git。
+
+### 涉及文件
+
+- `core/change_models.py`（新增）—— ChangeType, DiffScope, FileDiff, TaskDiff
+- `storage/checkpoint_queries.py`（新增）—— CheckpointQueryRepository
+- `tooling/diff_tools.py`（新增）—— get_diff 工具实现
+- `app/change_inspection_service.py`（新增）—— ChangeInspectionService
+
+### 预期测试
+
+- `test_checkpoint_query_sorts_manifests`
+- `test_checkpoint_query_rejects_wrong_task`
+- `test_checkpoint_query_rejects_symlink`
+- `test_diff_modified_file`
+- `test_diff_created_file`
+- `test_diff_deleted_file`
+- `test_task_diff_uses_earliest_baseline`
+- `test_latest_diff_uses_latest_checkpoint`
+- `test_diff_marks_workspace_drift`
+- `test_diff_redacts_secrets`
+- `test_diff_skips_binary_content`
+- `test_diff_is_bounded`
+- `test_diff_does_not_require_git`
+
+---
+
+## S4-R2：`run_build`
+
+| 元信息           | 值          |
+| ------------- | ---------- |
+| 状态            | [x] 已完成    |
+| 依赖            | S4-R0      |
+| 可并行           | 可与 R1、R3 并行 |
+| Worktree / PR | 当前分支       |
+
+### 目标
+
+实现 `run_build` 工具，命令只能来自 `config.build_command`，模型不得传入任意命令。抽取 `command_runner.py` 供 `run_tests` 和 `run_build` 共用。
+
+### 涉及文件
+
+- `tooling/command_runner.py`（新增）—— run_configured_command
+- `tooling/build_tools.py`（新增）—— run_build 工具
+- `app/build_service.py`（新增）—— BuildService
+- `core/config.py` —— 新增 max_diff_* 配置（已在 R1 使用）
+- `core/state.py` —— 新增 builds_run / latest_build_status 字段
+
+### 预期测试
+
+- `test_build_uses_configured_command`
+- `test_build_rejects_missing_command`
+- `test_build_uses_shell_false`
+- `test_build_uses_project_root`
+- `test_build_times_out`
+- `test_build_redacts_output`
+- `test_build_truncates_output`
+- `test_agent_build_requires_approval`
+- `test_build_does_not_change_test_status`
+- `test_configured_build_is_delivery_gate`
+
+---
+
+## S4-R3：`read_test_report`
+
+| 元信息           | 值          |
+| ------------- | ---------- |
+| 状态            | [x] 已完成    |
+| 依赖            | S4-R0, 现有 InspectionService |
+| 可并行           | 可与 R1、R2 并行 |
+| Worktree / PR | 当前分支       |
+
+### 目标
+
+实现 `read_test_report` 工具，提供受控、脱敏、有限长度的测试摘要。`run_tests` 完成后自动生成 `TEST_REPORT.md`。
+
+### 涉及文件
+
+- `app/delivery_inspection_service.py`（新增）—— 结构化解析 TEST_REPORT
+- `tooling/delivery_tools.py`（新增）—— read_test_report 工具
+- `runtime/agent_loop.py` —— run_tests 后自动触发 DeliveryPipeline.record_test
+
+### 预期测试
+
+- `test_run_tests_generates_test_report`
+- `test_read_test_report_requires_declared_artifact`
+- `test_read_test_report_rejects_link`
+- `test_read_test_report_is_redacted`
+- `test_read_test_report_is_bounded`
+- `test_read_test_report_returns_structured_counts`
+
+---
+
+## S4-R4：`list_checkpoints`
+
+| 元信息           | 值          |
+| ------------- | ---------- |
+| 状态            | [x] 已完成    |
+| 依赖            | S4-R1 Checkpoint Query |
+| 可并行           | 可与 R2、R3 并行 |
+| Worktree / PR | 当前分支       |
+
+### 目标
+
+实现 `list_checkpoints` 工具和 `CheckpointInspectionService`。让 RecoveryService 复用 Checkpoint Query Repository 而非自行解析 manifest。
+
+### 涉及文件
+
+- `app/checkpoint_inspection_service.py`（新增）
+- `tooling/checkpoint_tools.py`（新增）
+- `app/recovery_service.py` —— 改用 CheckpointQueryRepository
+
+### 预期测试
+
+- `test_list_checkpoints_returns_validated_summaries`
+- `test_list_checkpoints_hides_snapshot_paths`
+- `test_list_checkpoints_rejects_corrupt_manifest`
+- `test_list_checkpoints_is_task_scoped`
+- `test_recovery_preview_uses_checkpoint_query`
+
+---
+
+## S4-R5：DeliveryPipeline 与 DeliveryService
+
+| 元信息           | 值          |
+| ------------- | ---------- |
+| 状态            | [x] 已完成    |
+| 依赖            | S4-R1~R4   |
+| 可并行           | 不并行       |
+| Worktree / PR | 当前分支       |
+
+### 目标
+
+实现统一 `DeliveryPipeline`，使 `TEST_REPORT.md`（自动）、`REVIEW.md`（结构化工具）、`KNOWLEDGE.md`（结构化工具）和 `DELIVERABLES.md`（finalize 自动）均由权威路径生成。扩展 `DeliveryService` 为完整交付入口。
+
+### 涉及文件
+
+- `core/delivery_evidence.py`（新增）—— DeliveryEvidence 模型
+- `storage/delivery_evidence.py`（新增）—— DeliveryEvidenceStore
+- `runtime/delivery_pipeline.py`（新增）—— DeliveryPipeline
+- `tooling/delivery_tools.py` —— record_review / record_knowledge
+- `app/delivery_service.py` —— 扩展为完整服务
+- `core/phases.py` —— Deliver phase 完成条件调整
+- `policy/tool_policy.py` —— 新工具的阶段权限
+
+### 预期测试
+
+- `test_test_report_is_generated_from_real_tool_result`
+- `test_raw_write_cannot_forge_test_report`
+- `test_record_review_requires_core_coverage`
+- `test_record_review_writes_review_and_evidence`
+- `test_record_knowledge_requires_all_categories`
+- `test_record_knowledge_requires_trace_provenance`
+- `test_finalize_generates_deliverables`
+- `test_finalize_requires_passing_tests`
+- `test_finalize_requires_build_when_configured`
+- `test_finalize_requires_non_drifted_diff`
+- `test_finalize_is_idempotent`
+- `test_delivery_failure_marks_inconsistent_when_compensation_fails`
+
+### 回归修复验证（2026-07-22）
+
+- 根因：S4-R5 管线仍接收旧 `delivery_support` 模型，但旧模型缺少 S4 使用的 `NOT_COVERED`、扩展知识分类和可选溯源字段；管线转换知识分类时又将枚举错误降为字符串，且 `finalize` 未经受控写入路径生成 `DELIVERABLES.md`。
+- 修复：补齐兼容模型边界；在 `DeliveryPipeline.finalize()` 中将知识分类转换为 `core` 枚举并通过 `_write_artifact()` 生成/登记 `DELIVERABLES.md`。
+- 验证：`python -m pytest tests/test_s4_delivery_e2e.py -q -p no:cacheprovider` 为 `15 passed`；交付/Demo/App/E2E 回归为 `52 passed`；全量 pytest 为 `1213 passed, 17 skipped`；全量 MyPy 为 `94 source files` 无错误；本次修改文件的 Ruff 检查通过。全仓 Ruff 仍受其他未提交 S4 测试文件中的 12 个未使用导入/变量告警阻塞，未在本修复中扩大范围处理。
+
+---
+
+## S4-R6：ToolSpec、CLI、Demo 与 E2E
+
+| 元信息           | 值          |
+| ------------- | ---------- |
+| 状态            | [x] 已完成    |
+| 依赖            | S4-R1~R5   |
+| 可并行           | 不并行       |
+| Worktree / PR | 当前分支       |
+
+### 目标
+
+建立 ToolSpec 单一真源；接入 Headless CLI 查询入口；收敛 DemoRunner 到统一交付路径；完成 MockLLM E2E 验收。
+
+### 涉及文件
+
+- `core/tool_specs.py`（新增）—— ToolSpec 定义
+- `core/actions.py` —— 使用 ToolSpec
+- `tooling/factory.py` —— 注册新工具
+- `interfaces/cli.py` —— 新增 diff/checkpoints/test-report/build/delivery 命令
+- `demo_support/runner.py` —— 收敛到 DeliveryPipeline
+- `README.md` —— 更新工具列表
+
+### 预期测试
+
+- `test_action_schema_matches_provider_catalog`
+- `test_new_tools_are_registered`
+- `test_new_tools_have_correct_phase_policy`
+- `test_cli_diff_uses_change_service`
+- `test_cli_build_uses_build_service`
+- `test_cli_checkpoints_uses_inspection_service`
+- `test_demo_does_not_call_delivery_writers_directly`
+- `test_demo_uses_task_service`
+- `test_mock_e2e_generates_delivery_result`
+
+---
+
+## S4 依赖关系
+
+```
+S4-R0 文档契约
+      |
+      v
+Checkpoint Query Core
+      |
+      +---------------+
+      v               v
+S4-R1 Diff        S4-R4 Checkpoints
+
+S4-R2 Build       S4-R3 Test Report
+      \               /
+       \             /
+        v           v
+        S4-R5 DeliveryPipeline
+                 |
+                 v
+        S4-R6 CLI / Demo / E2E
+```
+
+可并行：R1、R2、R3；R4 依赖 R1；R5 依赖 R1~R4；R6 最后进行。
+
+---
+
+## S4 完成标准
+
+- [ ] `get_diff` 不依赖 Git
+- [ ] Task Diff 使用最早 checkpoint baseline
+- [ ] Diff 检测 workspace drift
+- [ ] Diff 内容不进入 Trace
+- [ ] `run_build` 只能执行配置命令
+- [ ] `run_build` 使用 shell=False
+- [ ] Agent Build 默认需要审批
+- [ ] 测试完成后自动生成 TEST_REPORT
+- [ ] `list_checkpoints` 使用统一校验层
+- [ ] RecoveryService 不再自行解析 manifest
+- [ ] REVIEW 通过结构化 evidence 生成
+- [ ] KNOWLEDGE 通过结构化 evidence 生成
+- [ ] DELIVERABLES 自动生成
+- [ ] DeliveryResult 来自权威 state/trace/evidence
+- [ ] DemoRunner 不直接调用交付 writer
+- [ ] CLI、TUI、Demo 共用 Application Service
+- [ ] MockLLM E2E 完全离线通过
+- [ ] 原有 Approval、ASK_USER、Rollback 无回归
+- [ ] Pytest、Ruff、MyPy、Build 全部通过
+- [ ] SPEC、PLAN、架构和 SPEC_PROCESS 已同步

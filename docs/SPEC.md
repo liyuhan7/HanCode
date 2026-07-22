@@ -70,6 +70,7 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 | UR-4 | BR-3 | 学生能够在 test phase 运行测试，并把测试命令、测试结果、失败原因和未测试风险记录到 `TEST_REPORT.md`。 |
 | UR-5 | BR-5 | 学生能够在 review phase 检查实现是否覆盖作业要求、代码质量是否可接受、测试是否充分，以及是否需要 rollback。 |
 | UR-6 | BR-6 | 学生能够在 deliver phase 生成 `DELIVERABLES.md` 和 `KNOWLEDGE.md`，完成最终交付清单与学习复盘。 |
+| UR-8 | BR-3, BR-4, BR-5 | 学生能够查看本轮代码变化（Diff）、测试报告、Build 结果和 Checkpoint 列表，以便理解 AI 辅助编码过程中发生了什么。 |
 
 ### 4.3 系统级需求
 
@@ -206,6 +207,30 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 - 输出：最终课程项目交付摘要、交付物清单和知识沉淀文件。
 - 边界条件：deliver phase 不应修改业务代码；缺少 `KNOWLEDGE.md` 或 `DELIVERABLES.md` 时不得返回 completed 状态。
 - 错误处理：缺少测试或审查记录时必须在 `risks[]` 中说明；若核心需求已覆盖且测试通过，最终状态可为 `completed`；若核心需求未覆盖或测试未通过，最终状态应为 `blocked` 或 `failed`，不引入额外状态值。
+
+##### FR-18：受控开发查询与 Build 工具
+
+- 输入：当前 task 状态、checkpoint 数据、配置的 build 命令。
+- 行为：提供 `get_diff`（基于 checkpoint 快照的非 Git Diff）、`run_build`（仅执行配置中的固定命令）、`read_test_report`（读取已生成的 `TEST_REPORT.md`）、`list_checkpoints`（列出当前 task 的所有 checkpoint 摘要）、`record_review`（结构化写入审查证据）和 `record_knowledge`（结构化写入知识条目）六项受控开发工具。
+- 输出：结构化 ToolResult，包含文件变更摘要、Build 状态、测试报告摘要、checkpoint 列表或审查/知识写入确认。
+- 边界条件：Diff 不依赖 Git，仅使用 checkpoint before snapshot 与当前 workspace 对比；Build 命令只能来自 `config.build_command`，模型不得传入任意命令；`read_test_report` 不接受任意路径；`list_checkpoints` 只返回当前 task；完整 Diff 和 Build 输出不进入 Trace。
+- 错误处理：checkpoint 损坏、snapshot 缺失、Build 超时或命令缺失时返回结构化错误，不静默失败。
+
+##### FR-19：统一 Delivery Pipeline
+
+- 输入：真实测试结果（ToolResult）、结构化需求覆盖（`RequirementCoverage`）、知识条目（`KnowledgeItem`）、AgentRunResult。
+- 行为：`DeliveryPipeline` 统一负责 `TEST_REPORT.md`（根据真实测试结果自动生成）、`REVIEW.md`（通过 `record_review` 工具结构化生成）、`KNOWLEDGE.md`（通过 `record_knowledge` 工具结构化生成）和 `DELIVERABLES.md`（`finalize` 时自动生成）的权威写入；构造 `DeliveryResult` 作为最终交付状态。
+- 输出：交付物文件、`DeliveryResult`、`evidence.json`。
+- 边界条件：模型不得通过 `write_file` 手写 `TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 或 `DELIVERABLES.md`；交付状态不得由 DemoRunner 或 TUI 手工推进；所有入口（CLI/TUI/Demo）共用同一 `DeliveryService`。
+- 错误处理：交付证据写入失败时尝试补偿回滚；补偿失败则将 Task 标记为 `inconsistent`。
+
+##### FR-20：Checkpoint-Based Diff
+
+- 输入：当前 task 的 checkpoint 列表、workspace 文件系统。
+- 行为：对每个修改文件，找到该文件在当前 task 中第一次出现的 committed checkpoint，以其 before snapshot 作为 baseline，与当前 workspace 文件生成 unified diff；检测 workspace drift（checkpoint after_sha256 与当前文件 sha256 不一致）。
+- 输出：`TaskDiff`，包含 task_id、scope、checkpoint_ids、文件变更列表（每文件含 path、change_type、before/current sha256、drifted 标记、unified_diff）、truncated 标记和风险列表。
+- 边界条件：不依赖 Git；二进制文件标记 `binary=true` 且不生成 text diff；Diff 内容受大小上限约束（文件数、字符数、单文件字节数）；Diff 内容不进入 Trace（Trace 只记录摘要计数）。
+- 错误处理：checkpoint manifest 损坏、snapshot 缺失、hash 不匹配时失败关闭，不返回部分可信结果。
 
 ## 5. 非功能性需求
 

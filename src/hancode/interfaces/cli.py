@@ -458,6 +458,171 @@ def task_reject(
         raise typer.Exit(_handle_error(exc)) from None
 
 
+# --- S4 new task commands ---
+
+@task_app.command("diff")
+def task_diff(
+    task_id: str = typer.Argument(..., help="Task ID to diff."),
+    scope: str = typer.Option("task", "--scope", help="Diff scope: task or latest."),
+    path: str | None = typer.Option(None, "--path", help="Filter to a single file path."),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Show the checkpoint-based diff for a task."""
+    try:
+        from hancode.app.change_inspection_service import ChangeInspectionService
+        from hancode.core.change_models import DiffScope
+
+        svc = ChangeInspectionService()
+        diff = svc.get_diff(project_root, task_id, scope=DiffScope(scope), path=path)
+        _emit({
+            "command": "task diff",
+            "status": "completed",
+            "task_id": diff.task_id,
+            "scope": diff.scope.value,
+            "checkpoint_ids": list(diff.checkpoint_ids),
+            "files": [
+                {
+                    "path": f.path,
+                    "change_type": f.change_type.value,
+                    "drifted": f.drifted,
+                    "binary": f.binary,
+                }
+                for f in diff.files
+            ],
+            "truncated": diff.truncated,
+            "risks": list(diff.risks),
+        })
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+
+
+@task_app.command("checkpoints")
+def task_checkpoints(
+    task_id: str = typer.Argument(..., help="Task ID to list checkpoints for."),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """List all checkpoints for a task."""
+    try:
+        from hancode.app.checkpoint_inspection_service import CheckpointInspectionService
+
+        svc = CheckpointInspectionService()
+        summaries = svc.list_checkpoints(project_root, task_id)
+        _emit({
+            "command": "task checkpoints",
+            "status": "completed",
+            "task_id": task_id,
+            "checkpoints": [
+                {
+                    "checkpoint_id": s.checkpoint_id,
+                    "phase": s.phase.value,
+                    "reason": s.reason,
+                    "status": s.status,
+                    "files": list(s.files),
+                    "rollback_available": s.rollback_available,
+                }
+                for s in summaries
+            ],
+        })
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+
+
+@task_app.command("test-report")
+def task_test_report(
+    task_id: str = typer.Argument(..., help="Task ID to read test report for."),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Read the test report for a task."""
+    try:
+        from hancode.app.delivery_inspection_service import DeliveryInspectionService
+
+        svc = DeliveryInspectionService()
+        summary = svc.read_test_report(project_root, task_id)
+        _emit({
+            "command": "task test-report",
+            "status": "completed",
+            "output": {
+                "status": summary.status,
+                "command": summary.command,
+                "passed_count": summary.passed_count,
+                "failed_count": summary.failed_count,
+                "content": summary.content,
+                "truncated": summary.truncated,
+            },
+        })
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+
+
+@task_app.command("build")
+def task_build(
+    task_id: str = typer.Argument(..., help="Task ID to build."),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Run the configured build command for a task."""
+    try:
+        from hancode.app.build_service import BuildService
+
+        svc = BuildService()
+        summary = svc.run(project_root, task_id)
+        _emit({
+            "command": "task build",
+            "status": "completed",
+            "build": {
+                "command": summary.command,
+                "status": summary.status,
+                "exit_code": summary.exit_code,
+                "timed_out": summary.timed_out,
+            },
+        })
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+
+
+@task_app.command("delivery")
+def task_delivery(
+    task_id: str = typer.Argument(..., help="Task ID to show delivery status for."),
+    project_root: Path = typer.Option(
+        Path("."), "--project-root", help="Project root containing .hancode."
+    ),
+) -> None:
+    """Show delivery evidence and status for a task."""
+    try:
+        evidence = delivery_service.get_evidence(project_root, task_id)
+        if evidence is None:
+            _emit({
+                "command": "task delivery",
+                "status": "completed",
+                "task_id": task_id,
+                "delivery": None,
+                "message": "No delivery evidence found. The task has not entered the deliver phase.",
+            })
+        else:
+            _emit({
+                "command": "task delivery",
+                "status": "completed",
+                "task_id": evidence.task_id,
+                "delivery": {
+                    "requirements_count": len(evidence.requirements),
+                    "knowledge_items_count": len(evidence.knowledge_items),
+                    "review_risks": list(evidence.review_risks),
+                    "latest_build_status": evidence.latest_build_status,
+                    "latest_test_report_sha256": evidence.latest_test_report_sha256,
+                    "latest_diff_sha256": evidence.latest_diff_sha256,
+                },
+            })
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+
+
 def _get_approval_summary(project_root: Path, task_id: str) -> object:
     """Get approval summary for a task."""
     try:

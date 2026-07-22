@@ -83,6 +83,11 @@ _INTEGER_FIELDS = (
     "max_approval_payload_bytes",
     "max_approval_preview_chars",
     "max_rejection_reason_chars",
+    "max_diff_files",
+    "max_diff_chars",
+    "max_diff_file_bytes",
+    "diff_context_lines",
+    "confirm_agent_build",
 )
 _PROVIDER_INTEGER_FIELDS = frozenset(
     {
@@ -149,10 +154,15 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "max_interaction_answer_chars",
         "approval_mode",
         "confirm_agent_rollback",
+        "confirm_agent_build",
         "max_approvals_per_phase",
         "max_approval_payload_bytes",
         "max_approval_preview_chars",
         "max_rejection_reason_chars",
+        "max_diff_files",
+        "max_diff_chars",
+        "max_diff_file_bytes",
+        "diff_context_lines",
     }
 )
 _ALLOWED_PROJECT_FIELDS = _PROJECT_METADATA_FIELDS | _ACTIVE_CONFIG_FIELDS
@@ -188,10 +198,15 @@ class HanCodeConfig:
     max_interaction_answer_chars: int = 8192
     approval_mode: Literal["disabled", "first_source_write", "all_source_writes"] = "disabled"
     confirm_agent_rollback: bool = True
+    confirm_agent_build: bool = True
     max_approvals_per_phase: int = 20
     max_approval_payload_bytes: int = 262_144
     max_approval_preview_chars: int = 12_000
     max_rejection_reason_chars: int = 1_024
+    max_diff_files: int = 100
+    max_diff_chars: int = 30_000
+    max_diff_file_bytes: int = 524_288
+    diff_context_lines: int = 3
 
 
 def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig:
@@ -276,6 +291,9 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         confirm_agent_rollback=cast(
             bool, project_data.get("confirm_agent_rollback", True)
         ),
+        confirm_agent_build=cast(
+            bool, project_data.get("confirm_agent_build", True)
+        ),
         max_approvals_per_phase=cast(
             int, project_data.get("max_approvals_per_phase", 20)
         ),
@@ -287,6 +305,18 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         ),
         max_rejection_reason_chars=cast(
             int, project_data.get("max_rejection_reason_chars", 1_024)
+        ),
+        max_diff_files=cast(
+            int, project_data.get("max_diff_files", 100)
+        ),
+        max_diff_chars=cast(
+            int, project_data.get("max_diff_chars", 30_000)
+        ),
+        max_diff_file_bytes=cast(
+            int, project_data.get("max_diff_file_bytes", 524_288)
+        ),
+        diff_context_lines=cast(
+            int, project_data.get("diff_context_lines", 3)
         ),
     )
     _validate_interaction_config(config)
