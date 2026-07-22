@@ -5,11 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from hancode.core.change_models import ChangeType, DiffScope, TaskDiff
-from hancode.core.models import Phase
-from hancode.storage.checkpoint_queries import CheckpointQueryRepository
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.tooling.diff_tools import get_diff
 
@@ -146,7 +141,8 @@ class TestGetDiffCreatedFile:
         assert f["path"] == "src/new.py"
         assert f["change_type"] == "created"
         assert f["before_sha256"] is None
-        assert f["unified_diff"] is None  # created files have no unified diff
+        assert f["unified_diff"] is not None
+        assert "+new content" in f["unified_diff"]
 
 
 class TestGetDiffTaskBaseline:
@@ -276,6 +272,51 @@ class TestGetDiffDrift:
         f = diff_result.output["files"][0]
         assert f["drifted"] is True
 
+    def test_diff_uses_latest_after_hash_for_drift(self, tmp_path: Path) -> None:
+        import hashlib
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        init_project_workspace(project_root, "proj-001", "HanCode", "Test")
+        task_root = init_task_workspace(project_root, "task-001")
+
+        _write_source(project_root, "src/a.py", "v1\n")
+        ckpt1 = _make_checkpoint(task_root, "ckpt-001")
+        _write_manifest(
+            ckpt1,
+            files=[
+                {
+                    "path": "src/a.py",
+                    "action": "modify",
+                    "before_snapshot": "files/001-a.before",
+                    "before_sha256": None,
+                    "after_sha256": hashlib.sha256(b"v2\n").hexdigest(),
+                    "_content": b"v1\n",
+                }
+            ],
+        )
+        _write_source(project_root, "src/a.py", "v2\n")
+        ckpt2 = _make_checkpoint(task_root, "ckpt-002")
+        _write_manifest(
+            ckpt2,
+            files=[
+                {
+                    "path": "src/a.py",
+                    "action": "modify",
+                    "before_snapshot": "files/002-a.before",
+                    "before_sha256": None,
+                    "after_sha256": hashlib.sha256(b"v3\n").hexdigest(),
+                    "_content": b"v2\n",
+                }
+            ],
+        )
+        _write_source(project_root, "src/a.py", "v3\n")
+
+        result = get_diff(project_root, task_root, scope="task")
+
+        assert result.success is True
+        assert result.output["files"][0]["drifted"] is False
+
 
 class TestGetDiffBounds:
     def test_diff_does_not_require_git(self, tmp_path: Path) -> None:
@@ -371,3 +412,54 @@ class TestGetDiffConfig:
         assert diff_result.success is True
         assert diff_result.output["truncated"] is True
         assert len(diff_result.output["files"]) <= 2
+
+    def test_diff_rejects_corrupt_snapshot_instead_of_skipping(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        init_project_workspace(project_root, "proj-001", "HanCode", "Test")
+        task_root = init_task_workspace(project_root, "task-001")
+        _write_source(project_root, "src/a.py", "current\n")
+        ckpt = _make_checkpoint(task_root, "ckpt-001")
+        _write_manifest(
+            ckpt,
+            files=[
+                {
+                    "path": "src/a.py",
+                    "action": "modify",
+                    "before_snapshot": "files/001-a.before",
+                    "before_sha256": None,
+                    "after_sha256": None,
+                    "_content": b"before\n",
+                }
+            ],
+        )
+        (ckpt / "files" / "001-a.before").unlink()
+
+        result = get_diff(project_root, task_root, scope="task")
+
+        assert result.success is False
+
+    def test_diff_enforces_max_diff_file_bytes(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        init_project_workspace(project_root, "proj-001", "HanCode", "Test")
+        task_root = init_task_workspace(project_root, "task-001")
+        _write_source(project_root, "src/a.py", "x" * 100)
+        ckpt = _make_checkpoint(task_root, "ckpt-001")
+        _write_manifest(
+            ckpt,
+            files=[
+                {
+                    "path": "src/a.py",
+                    "action": "modify",
+                    "before_snapshot": "files/001-a.before",
+                    "before_sha256": None,
+                    "after_sha256": None,
+                    "_content": b"before\n",
+                }
+            ],
+        )
+
+        result = get_diff(project_root, task_root, scope="task", max_diff_file_bytes=10)
+
+        assert result.success is False

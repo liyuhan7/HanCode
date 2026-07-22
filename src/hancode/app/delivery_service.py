@@ -5,8 +5,13 @@ from typing import Sequence
 
 from hancode.core.delivery_evidence import (
     DeliveryEvidence,
-    KnowledgeItem,
-    RequirementCoverage,
+    DeliveryResult,
+    KnowledgeItem as CoreKnowledgeItem,
+    RequirementCoverage as CoreRequirementCoverage,
+)
+from hancode.delivery_support.result import (
+    KnowledgeItem as LegacyKnowledgeItem,
+    RequirementCoverage as LegacyRequirementCoverage,
 )
 from hancode.runtime.delivery_pipeline import DeliveryPipeline
 from hancode.storage.export import ExportResult, export_task_artifacts
@@ -33,7 +38,7 @@ class DeliveryService:
         self,
         project_root: Path,
         task_id: str,
-        requirements: Sequence[RequirementCoverage],
+        requirements: Sequence[CoreRequirementCoverage | LegacyRequirementCoverage],
         risks: Sequence[str],
     ) -> Path:
         task_root = task_path(project_root, task_id)
@@ -43,16 +48,27 @@ class DeliveryService:
         self,
         project_root: Path,
         task_id: str,
-        items: Sequence[KnowledgeItem],
+        items: Sequence[CoreKnowledgeItem | LegacyKnowledgeItem],
     ) -> Path:
         task_root = task_path(project_root, task_id)
         return self._pipeline.record_knowledge(task_root, task_id, items)
+
+    def record_diff(
+        self,
+        project_root: Path,
+        task_id: str,
+        digest: str | None,
+        *,
+        drifted: bool = False,
+    ) -> None:
+        task_root = task_path(project_root, task_id)
+        self._pipeline.record_diff(task_root, task_id, digest, drifted=drifted)
 
     def finalize(
         self,
         project_root: Path,
         task_id: str,
-    ) -> DeliveryEvidence:
+    ) -> DeliveryResult:
         task_root = task_path(project_root, task_id)
         return self._pipeline.finalize(task_root, task_id)
 

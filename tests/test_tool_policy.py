@@ -25,6 +25,8 @@ from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools
             Phase.CODE,
             (
                 "edit_file",
+                "get_diff",
+                "list_checkpoints",
                 "list_files",
                 "read_file",
                 "run_tests",
@@ -35,9 +37,14 @@ from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools
         (
             Phase.REVIEW,
             (
+                "get_diff",
+                "list_checkpoints",
                 "list_files",
                 "read_file",
+                "read_test_report",
+                "record_review",
                 "rollback_last_checkpoint",
+                "run_build",
                 "run_tests",
                 "search_text",
                 "write_file",

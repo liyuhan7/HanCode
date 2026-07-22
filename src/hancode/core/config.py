@@ -87,8 +87,8 @@ _INTEGER_FIELDS = (
     "max_diff_chars",
     "max_diff_file_bytes",
     "diff_context_lines",
-    "confirm_agent_build",
 )
+_BOOLEAN_FIELDS = ("confirm_agent_rollback", "confirm_agent_build")
 _PROVIDER_INTEGER_FIELDS = frozenset(
     {
         "provider_timeout_seconds",
@@ -395,6 +395,10 @@ def _read_project_config(project_file: Path) -> dict[str, object]:
 
     for field in _INTEGER_FIELDS:
         if field in project_data and type(project_data[field]) is not int:
+            raise _invalid_project_config_error(field)
+
+    for field in _BOOLEAN_FIELDS:
+        if field in project_data and type(project_data[field]) is not bool:
             raise _invalid_project_config_error(field)
 
     for field in _POSITIVE_INTEGER_FIELDS:

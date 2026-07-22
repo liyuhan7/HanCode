@@ -9,7 +9,7 @@ from hancode.core.config import HanCodeConfig
 from hancode.core.tool_specs import ALL_TOOL_SPECS
 from hancode.tooling.build_tools import run_build
 from hancode.tooling.checkpoint_tools import list_checkpoints
-from hancode.tooling.delivery_tools import read_test_report
+from hancode.tooling.delivery_tools import record_knowledge, record_review, read_test_report
 from hancode.tooling.diff_tools import get_diff
 from hancode.tooling.file_tools import edit_file, list_files, read_file, search_text, write_file
 from hancode.tooling.test_tools import run_tests
@@ -53,6 +53,14 @@ def build_default_tool_registry(
         registry.register(
             "list_checkpoints",
             partial(list_checkpoints, project_root, task_root),
+        )
+        registry.register(
+            "record_review",
+            partial(record_review, project_root, task_root.name),
+        )
+        registry.register(
+            "record_knowledge",
+            partial(record_knowledge, project_root, task_root.name),
         )
     registry.register(
         "run_build",

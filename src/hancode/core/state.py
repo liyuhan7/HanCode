@@ -311,6 +311,18 @@ def load_state(task_root: Path) -> TaskState:
                 if "pending_approval_id" not in data
                 else _optional_str(data, "pending_approval_id")
             ),
+            builds_run=(
+                () if "builds_run" not in data else _required_str_tuple(data, "builds_run")
+            ),
+            latest_build_status=(
+                "none"
+                if "latest_build_status" not in data
+                else _required_choice(
+                    data,
+                    "latest_build_status",
+                    frozenset({"none", "passed", "failed", "timed_out"}),
+                )
+            ),
         )
     except (OSError, UnicodeError, ValueError):
         raise _state_parse_error() from None
@@ -376,6 +388,8 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "pending_interaction_id": state.pending_interaction_id,
         "approval_seq": state.approval_seq,
         "pending_approval_id": state.pending_approval_id,
+        "builds_run": list(state.builds_run),
+        "latest_build_status": state.latest_build_status,
     }
     state_file = task_root / "state.json"
     if _is_link(state_file):

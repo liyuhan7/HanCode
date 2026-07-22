@@ -16,6 +16,7 @@ from typing import Mapping
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import Phase
 from hancode.storage.checkpoints import CheckpointManifest
+from hancode.storage.workspace import load_project_metadata
 
 
 _MANIFEST_SCHEMA_VERSION = 1
@@ -78,6 +79,7 @@ class CheckpointQueryRepository:
         task_root: Path,
         checkpoint_id: str,
         file_path: str,
+        max_bytes: int | None = None,
     ) -> bytes | None:
         manifest = self.get(task_root, checkpoint_id)
         for f in manifest.files:
@@ -102,6 +104,12 @@ class CheckpointQueryRepository:
                         "Replace with a regular file.",
                     )
                 try:
+                    if max_bytes is not None and snapshot_path.stat().st_size > max_bytes:
+                        raise _query_error(
+                            "checkpoint_query_snapshot_too_large",
+                            "Snapshot exceeds the configured diff size limit.",
+                            "Reduce the file size before requesting a diff.",
+                        )
                     content = snapshot_path.read_bytes()
                 except OSError:
                     raise _query_error(
@@ -203,6 +211,23 @@ class CheckpointQueryRepository:
                 "Repair manifest.json or move checkpoint to the correct task.",
             )
 
+        try:
+            project_metadata = load_project_metadata(
+                task_root.parents[2] / ".hancode" / "project.json"
+            )
+        except Exception:
+            raise _query_error(
+                "checkpoint_query_identity_mismatch",
+                "Project metadata cannot be read for checkpoint validation.",
+                "Repair project.json before querying checkpoints.",
+            )
+        if payload.get("project_id") != project_metadata.get("project_id"):
+            raise _query_error(
+                "checkpoint_query_identity_mismatch",
+                "Manifest project_id does not match project metadata.",
+                "Repair manifest.json or move the checkpoint to the correct project.",
+            )
+
         # Validate status
         status = payload.get("status")
         if status not in _VALID_STATUSES:
@@ -220,19 +245,37 @@ class CheckpointQueryRepository:
             if not isinstance(files_raw, list):
                 raise ValueError
             parsed_files: list[CheckpointFile] = []
+            seen_paths: set[str] = set()
             for f in files_raw:
                 if not isinstance(f, Mapping):
                     raise ValueError
+                file_path = f.get("path")
+                if not _is_safe_relative_path(file_path) or file_path in seen_paths:
+                    raise ValueError
+                assert isinstance(file_path, str)
+                seen_paths.add(file_path)
                 action = f.get("action")
                 if action not in ("create", "modify"):
                     raise ValueError
+                before_snapshot = f.get("before_snapshot")
+                before_sha256 = f.get("before_sha256")
+                after_sha256 = f.get("after_sha256")
+                if action == "modify":
+                    if not isinstance(before_snapshot, str) or not _is_sha256(before_sha256):
+                        raise ValueError
+                elif before_snapshot is not None or before_sha256 is not None:
+                    raise ValueError
+                if after_sha256 is not None and not _is_sha256(after_sha256):
+                    raise ValueError
+                if isinstance(before_snapshot, str):
+                    _validate_snapshot_path(checkpoint_dir, before_snapshot)
                 parsed_files.append(
                     CheckpointFile(
-                        path=str(f["path"]),
+                        path=file_path,
                         action=action,
-                        before_snapshot=f.get("before_snapshot") if isinstance(f.get("before_snapshot"), str) else None,
-                        before_sha256=f.get("before_sha256") if isinstance(f.get("before_sha256"), str) else None,
-                        after_sha256=f.get("after_sha256") if isinstance(f.get("after_sha256"), str) else None,
+                        before_snapshot=before_snapshot,
+                        before_sha256=before_sha256,
+                        after_sha256=after_sha256,
                     )
                 )
 
@@ -240,6 +283,8 @@ class CheckpointQueryRepository:
 
             created_at = datetime.fromisoformat(str(payload["created_at"]))
             phase = Phase(str(payload["phase"]))
+            if phase is not Phase.CODE:
+                raise ValueError
 
             manifest = CheckpointManifest(
                 schema_version=int(schema_version),
@@ -303,6 +348,34 @@ def _is_checkpoint_id(checkpoint_id: str) -> bool:
     return isinstance(checkpoint_id, str) and bool(
         re.fullmatch(r"ckpt-[0-9]{3,}", checkpoint_id)
     )
+
+
+def _is_safe_relative_path(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    path = Path(value.replace("\\", "/"))
+    return (
+        not path.is_absolute()
+        and path.as_posix() == value.replace("\\", "/")
+        and all(part not in {"", ".", ".."} for part in path.parts)
+    )
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{64}", value))
+
+
+def _validate_snapshot_path(checkpoint_dir: Path, snapshot: str) -> None:
+    if not _is_safe_relative_path(snapshot):
+        raise ValueError
+    files_root = (checkpoint_dir / "files").resolve()
+    resolved = (checkpoint_dir / snapshot).resolve()
+    try:
+        resolved.relative_to(files_root)
+    except ValueError:
+        raise ValueError from None
+    if resolved == files_root or _is_link(resolved) or not resolved.is_file():
+        raise ValueError
 
 
 def _checkpoint_sort_key(checkpoint_id: str) -> int:

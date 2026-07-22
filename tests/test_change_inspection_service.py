@@ -16,7 +16,7 @@ class TestChangeInspectionService:
         project_root = tmp_path / "proj"
         project_root.mkdir()
         init_project_workspace(project_root, "proj-001", "HanCode", "Test")
-        task_root = init_task_workspace(project_root, "task-001")
+        init_task_workspace(project_root, "task-001")
 
         svc = ChangeInspectionService()
         result = svc.get_diff(project_root, "task-001")
@@ -29,7 +29,7 @@ class TestChangeInspectionService:
         project_root = tmp_path / "proj"
         project_root.mkdir()
         init_project_workspace(project_root, "proj-001", "HanCode", "Test")
-        task_root = init_task_workspace(project_root, "task-001")
+        init_task_workspace(project_root, "task-001")
 
         svc = ChangeInspectionService()
         result = svc.get_diff(project_root, "task-001", scope=DiffScope.LATEST)

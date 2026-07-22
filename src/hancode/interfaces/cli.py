@@ -486,8 +486,12 @@ def task_diff(
                 {
                     "path": f.path,
                     "change_type": f.change_type.value,
+                    "before_sha256": f.before_sha256,
+                    "current_sha256": f.current_sha256,
                     "drifted": f.drifted,
                     "binary": f.binary,
+                    "unified_diff": f.unified_diff,
+                    "truncated": f.truncated,
                 }
                 for f in diff.files
             ],
@@ -583,6 +587,8 @@ def task_build(
                 "timed_out": summary.timed_out,
             },
         })
+        if summary.status != "passed":
+            raise typer.Exit(code=1)
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
 

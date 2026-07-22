@@ -23,6 +23,7 @@ from hancode.runtime.agent_loop import (
 )
 from hancode.runtime.approval_request import ApprovalRequestBuilder
 from hancode.runtime.context import ContextBuilder
+from hancode.runtime.delivery_pipeline import DeliveryPipeline
 from hancode.runtime.feedback import FeedbackBuilder
 from hancode.runtime.observation import ObservedTraceAppender, TraceObserver
 from hancode.storage.approvals import ApprovalStore
@@ -65,7 +66,11 @@ def create_agent_loop(
     approval_policy: ApprovalPolicyPort | None = None
     approval_store: ApprovalStorePort | None = None
     approval_request_builder: ApprovalRequestBuilderPort | None = None
-    if config.approval_mode != "disabled" or config.confirm_agent_rollback:
+    if (
+        config.approval_mode != "disabled"
+        or config.confirm_agent_rollback
+        or config.confirm_agent_build
+    ):
         try:
             metadata = load_project_metadata(
                 project_root / ".hancode" / "project.json"
@@ -97,6 +102,8 @@ def create_agent_loop(
         approval_store=approval_store,
         approval_request_builder=approval_request_builder,
         project_root=project_root,
+        delivery_pipeline=DeliveryPipeline(),
+        build_required=config.build_command is not None,
     )
 
 

@@ -18,6 +18,25 @@
 
 ---
 
+### 2026-07-22 — S4-R7 — 评审阻断修复与正式交付闭环
+
+- 使用的技能：未使用 `using-superpowers`；按 S4-R7 任务卡执行 TDD、回归验证和文档同步。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：用户要求继续处理 S4-R 代码评审中的 P0/P1 阻断；不使用真实网络、凭据或第三方 Agent 框架；保持现有用户改动和未提交状态。
+- TDD Red：新增正式 `get_diff` evidence 回归后先观察到 evidence 未持久化；移除 Demo 手工交付编排后先观察到 Demo 缺少 Diff gate 和 trace 事件；随后以最小实现接入正式 AgentLoop 路径。
+- 实现摘要：
+  - AgentLoop 对真实 `run_tests` 自动生成测试报告、写入 `test_completed` / `feedback_generated`；对真实 `get_diff` 持久化 Diff digest 并对 drift fail-closed；结构化 review/knowledge/finalize 写入交付 trace。
+  - Demo action 序列通过 MockLLM 驱动 `record_review`、`get_diff`、`record_knowledge` 和 `finish_phase`，移除 Runner 手工写证据、手工切换 Deliver phase 和手工 finalize。
+  - 补齐 BuildService 审计字段、DeliveryPipelinePort 协议、checkpoint snapshot 读取大小上限和 Diff drift 清除语义。
+  - 新增/扩展 `tests/test_s4_review_remediation.py`，并同步 Demo convergence 断言到正式 AgentLoop 装配路径。
+- 验证：专项 `tests/test_s4_delivery_e2e.py tests/test_mock_demo.py tests/test_s4_review_remediation.py` 为 `40 passed`；全量 pytest 为 `1231 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
+- 提交：未提交，用户未要求创建提交。
+- 人工干预：将 S4 与 S4-R7 在 `docs/PLAN.md` 标记为已完成，并回填完成标准与验证证据；遵守用户“不使用 superpowers 流程”的约束。
+- 经验教训：交付证据必须在 AgentLoop 的真实 ToolResult 分支中持久化；Demo 只能提供确定性 Provider action，不能绕过 Parser、Policy、Registry、Pipeline 或 Delivery gate。
+- 剩余风险：全量测试仍有 17 个既有平台相关 skip；当前工作区仍是未提交改动，尚未执行提交/合并。
+
+---
+
 ### 2026-07-18 — T28 — P0 分层结构重组与装配层抽取
 
 - 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。

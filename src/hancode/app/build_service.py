@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 from hancode.core.config import load_config
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.state import load_state, save_state
+from hancode.storage.trace import append_trace
+from hancode.storage.workspace import task_path
 from hancode.tooling.build_tools import run_build
 
 
@@ -44,6 +47,46 @@ class BuildService:
             status = "passed"
         else:
             status = "failed"
+
+        task_root = task_path(project_root, task_id)
+        state = load_state(task_root)
+        save_state(
+            task_root,
+            replace(
+                state,
+                builds_run=(*state.builds_run, result.command or config.build_command),
+                latest_build_status=status,
+            ),
+        )
+        append_trace(
+            task_root,
+            event_type="tool_completed" if result.success else "tool_failed",
+            task_id=task_id,
+            phase=state.current_phase,
+            status="succeeded" if result.success else "failed",
+            action={
+                "tool_name": "run_build",
+                "args": {},
+                "reason": "Run configured build.",
+                "policy_decision": {
+                    "allowed": True,
+                    "message": "Configured build command.",
+                    "phase": state.current_phase.value,
+                    "requires_checkpoint": False,
+                    "target_zone": None,
+                    "denied_rule": None,
+                    "suggested_fix": "",
+                },
+            },
+            observation={
+                "exit_code": result.exit_code,
+                "timed_out": result.timed_out,
+            },
+            error_summary=None if result.success else result.error_summary or "Build failed.",
+            state_transition={
+                "latest_build_status": [state.latest_build_status, status]
+            },
+        )
 
         return BuildSummary(
             command=result.command or config.build_command,

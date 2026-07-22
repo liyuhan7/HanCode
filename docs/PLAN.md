@@ -6028,7 +6028,7 @@ HanCode MVP 完成必须同时满足：
 
 | 元信息           | 值                                      |
 | ------------- | -------------------------------------- |
-| 状态            | [x] 已完成                                |
+| 状态            | [x] 已完成（正式运行链路、安全边界、离线 E2E 与质量门禁通过） |
 | 依赖            | AgentLoop、ToolPolicy、Checkpoint、Trace、Feedback、S3-R Approval |
 | 分支           | 当前分支                                   |
 | 主贡献相关         | 是；统一交付流程                               |
@@ -6316,23 +6316,94 @@ S4-R2 Build       S4-R3 Test Report
 
 ## S4 完成标准
 
-- [ ] `get_diff` 不依赖 Git
-- [ ] Task Diff 使用最早 checkpoint baseline
-- [ ] Diff 检测 workspace drift
-- [ ] Diff 内容不进入 Trace
-- [ ] `run_build` 只能执行配置命令
-- [ ] `run_build` 使用 shell=False
-- [ ] Agent Build 默认需要审批
-- [ ] 测试完成后自动生成 TEST_REPORT
-- [ ] `list_checkpoints` 使用统一校验层
-- [ ] RecoveryService 不再自行解析 manifest
-- [ ] REVIEW 通过结构化 evidence 生成
-- [ ] KNOWLEDGE 通过结构化 evidence 生成
-- [ ] DELIVERABLES 自动生成
-- [ ] DeliveryResult 来自权威 state/trace/evidence
-- [ ] DemoRunner 不直接调用交付 writer
-- [ ] CLI、TUI、Demo 共用 Application Service
-- [ ] MockLLM E2E 完全离线通过
-- [ ] 原有 Approval、ASK_USER、Rollback 无回归
-- [ ] Pytest、Ruff、MyPy、Build 全部通过
-- [ ] SPEC、PLAN、架构和 SPEC_PROCESS 已同步
+- [x] `get_diff` 不依赖 Git
+- [x] Task Diff 使用最早 checkpoint baseline
+- [x] Diff 检测 workspace drift
+- [x] Diff 内容不进入 Trace
+- [x] `run_build` 只能执行配置命令
+- [x] `run_build` 使用 shell=False
+- [x] Agent Build 默认需要审批
+- [x] 测试完成后自动生成 TEST_REPORT
+- [x] `list_checkpoints` 使用统一校验层
+- [x] RecoveryService 不再自行解析 manifest
+- [x] REVIEW 通过结构化 evidence 生成
+- [x] KNOWLEDGE 通过结构化 evidence 生成
+- [x] DELIVERABLES 自动生成
+- [x] DeliveryResult 来自权威 state/trace/evidence
+- [x] DemoRunner 不直接调用交付 writer
+- [x] CLI、TUI、Demo 共用 Application Service
+- [x] MockLLM E2E 完全离线通过
+- [x] 原有 Approval、ASK_USER、Rollback 无回归
+- [x] Pytest、Ruff、MyPy、Build 全部通过
+- [x] SPEC、PLAN、架构和 SPEC_PROCESS 已同步
+
+---
+
+## S4-R7：评审阻断修复与正式运行闭环
+
+| 元信息           | 值 |
+| ------------- | --- |
+| 状态            | [x] 已完成（评审阻断修复、正式 AgentLoop 闭环与最终门禁通过） |
+| 依赖            | S4-R1~R6 |
+| 可并行           | 分批串行；每批先补回归测试 |
+| Worktree / PR | 当前分支 |
+| 边界            | 只修复 S4-R 评审列出的工具接线、AgentLoop 交付闭环、交付物真实性、证据持久化和 checkpoint/diff/report/CLI 安全边界 |
+
+### 目标
+
+将 S4 新工具从 Provider Catalog 真实接入 `ActionParser -> ToolPolicy -> ApprovalPolicy -> ToolRegistry -> AgentLoop`；使 `run_tests`、`run_build`、review/knowledge evidence 和 finalize 由正式任务路径驱动；同时阻止通用写工具伪造确定性交付物，并对 checkpoint、diff、test report、evidence 的读取与持久化执行 fail-closed 校验。
+
+### 涉及文件
+
+- `src/hancode/core/actions.py`
+- `src/hancode/core/tool_specs.py`
+- `src/hancode/policy/tool_policy.py`
+- `src/hancode/policy/approval_policy.py`
+- `src/hancode/tooling/factory.py`
+- `src/hancode/runtime/agent_loop.py`
+- `src/hancode/runtime/delivery_pipeline.py`
+- `src/hancode/app/build_service.py`
+- `src/hancode/core/router.py`
+- `src/hancode/storage/delivery_evidence.py`
+- `src/hancode/storage/checkpoint_queries.py`
+- `src/hancode/tooling/diff_tools.py`
+- `src/hancode/tooling/delivery_tools.py`
+- `src/hancode/demo_support/runner.py`
+- `src/hancode/interfaces/cli.py`
+- `tests/test_s4_review_remediation.py`
+
+### 预期失败测试
+
+- S4 工具在 Parser、ToolSpec、Policy、Registry、Provider Catalog 间保持一致。
+- AgentLoop 执行 `run_tests` 自动写入 `TEST_REPORT.md`。
+- AgentLoop 执行 `run_build` 持久化 Build 状态并遵守审批。
+- `record_review` / `record_knowledge` 跨 Pipeline 实例和跨 Task 隔离。
+- finalize 对 test/build/diff/review/knowledge 执行交付门并返回正式交付结果。
+- 通用 `write_file` / `edit_file` 拒绝四类确定性交付物。
+- checkpoint snapshot 越界、损坏 evidence、report 脱敏/超限均 fail-closed。
+- Demo 通过正式 AgentLoop/DeliveryService 路径完成离线交付。
+
+### 完成标准
+
+- 新工具不存在 Catalog、Parser、Policy、Registry 任一断线。
+- `run_tests -> TEST_REPORT` 和 `run_build -> state/trace/evidence` 在正式 AgentLoop 中可重复验证。
+- DeliveryPipeline 不依赖进程内 accumulator；finalize 不绕过交付门，不以失败测试伪造 completed。
+- 四类确定性交付物不能由通用文件工具写入。
+- checkpoint、diff、report、evidence 对路径、身份、大小、敏感内容和损坏输入 fail-closed。
+- Provider -> AgentLoop -> Delivery 的离线 E2E、Pytest、Ruff、MyPy、Build 均通过。
+
+### 实现与验证记录（2026-07-22）
+
+- 正式 AgentLoop 在真实 `run_tests` 后生成 `TEST_REPORT.md`，在真实 `get_diff` 后持久化 Diff digest，并在 `record_review`、`record_knowledge`、finalize 后写入交付 trace 事件。
+- Demo action 序列改为通过 MockLLM 驱动 `record_review`、`get_diff`、`record_knowledge` 和 `finish_phase`，移除 Runner 手工推进 Deliver phase、手工写交付证据和手工 finalize。
+- 补齐 `DeliveryPipelinePort.record_diff`、BuildService policy decision、Diff drift fail-closed、snapshot 大小上限前置检查，以及对应回归测试。
+- 专项 `tests/test_s4_delivery_e2e.py tests/test_mock_demo.py tests/test_s4_review_remediation.py`：`40 passed`。
+- 全量 `pytest -q -p no:cacheprovider`：`1231 passed, 17 skipped`。
+- `ruff check src tests --no-cache`：`All checks passed!`；`mypy src`：`94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
+- 未使用真实网络、凭据或第三方 Agent 框架；未创建提交，等待用户决定集成方式。
+
+### 非目标 / 边界
+
+- 不引入真实网络 LLM、真实凭据或新的第三方 Agent 框架。
+- 不重写既有 Checkpoint/Rollback 生命周期，只补 S4 查询和交付边界。
+- 不修改与本评审无关的历史兼容入口或 UI 视觉行为。

@@ -7,6 +7,7 @@ from typing import Mapping
 
 from hancode.core.models import Phase
 from hancode.core.tool_specs import ALL_TOOL_NAMES as _TOOL_NAMES
+from hancode.core.tool_specs import TOOL_SPEC_BY_NAME
 
 
 class ActionType(str, Enum):
@@ -125,7 +126,11 @@ class Action:
         )
 
 
-_NO_ARGUMENT_TOOLS = frozenset({"run_tests", "rollback_last_checkpoint", "run_build", "read_test_report", "list_checkpoints"})
+_NO_ARGUMENT_TOOLS = frozenset(
+    name
+    for name, spec in TOOL_SPEC_BY_NAME.items()
+    if spec.args_schema.get("maxProperties") == 0
+)
 
 _PARSER_FIELDS = frozenset({"type", "phase", "tool_name", "args", "reason"})
 
@@ -249,7 +254,54 @@ def _has_valid_tool_args(tool_name: str, args: Mapping[str, object]) -> bool:
             _has_path_and_text_args(args, {"path", "old_string", "new_string"})
             and _is_nonempty_text(args["old_string"])
         )
-    return tool_name in _NO_ARGUMENT_TOOLS and not args
+    if tool_name in _NO_ARGUMENT_TOOLS:
+        return not args
+    spec = TOOL_SPEC_BY_NAME.get(tool_name)
+    return spec is not None and _matches_tool_schema(args, spec.args_schema)
+
+
+def _matches_tool_schema(
+    args: Mapping[str, object], schema: Mapping[str, object]
+) -> bool:
+    if schema.get("type") != "object":
+        return False
+    max_properties = schema.get("maxProperties")
+    if isinstance(max_properties, int) and len(args) > max_properties:
+        return False
+
+    properties = schema.get("properties")
+    property_schemas = properties if isinstance(properties, Mapping) else {}
+    required = schema.get("required")
+    required_names = required if isinstance(required, list) else []
+    if any(not isinstance(name, str) or name not in args for name in required_names):
+        return False
+    if any(name not in property_schemas for name in args):
+        return False
+
+    for name, value in args.items():
+        property_schema = property_schemas.get(name)
+        if not isinstance(property_schema, Mapping):
+            return False
+        if not _matches_value_schema(value, property_schema):
+            return False
+    return True
+
+
+def _matches_value_schema(value: object, schema: Mapping[str, object]) -> bool:
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and value not in enum_values:
+        return False
+    expected_type = schema.get("type")
+    if expected_type == "string":
+        if not isinstance(value, str) or not value.strip():
+            return False
+        max_length = schema.get("maxLength")
+        return not isinstance(max_length, int) or len(value) <= max_length
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "object":
+        return isinstance(value, Mapping)
+    return False
 
 
 def _has_exact_nonempty_text_args(args: Mapping[str, object], keys: set[str]) -> bool:

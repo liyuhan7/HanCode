@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from hancode.core.models import TaskStatus
 
 class RequirementStatus(str, Enum):
     COVERED = "covered"
@@ -52,3 +53,11 @@ class DeliveryEvidence:
     latest_test_report_sha256: str | None
     latest_diff_sha256: str | None
     latest_build_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryResult(DeliveryEvidence):
+    """Final delivery decision built from persisted evidence and task state."""
+
+    status: TaskStatus
+    blockers: tuple[str, ...]

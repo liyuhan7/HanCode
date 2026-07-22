@@ -168,6 +168,8 @@ def test_code_phase_includes_policy_and_changed_source_snippets(tmp_path: Path) 
     assert context["sections"]["plan"] == "# Plan\n"
     assert json.loads(context["sections"]["allowed_tools"]) == [
         "edit_file",
+        "get_diff",
+        "list_checkpoints",
         "list_files",
         "read_file",
         "run_tests",

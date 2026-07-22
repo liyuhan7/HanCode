@@ -15,7 +15,7 @@ class RoutingDecision:
     completed: bool = False
 
 
-def select_next_phase(state: TaskState) -> RoutingDecision:
+def select_next_phase(state: TaskState, *, build_required: bool = False) -> RoutingDecision:
     if state.inconsistent or state.status is TaskStatus.INCONSISTENT:
         if state.rollback_required and state.latest_checkpoint is not None:
             return RoutingDecision(
@@ -37,6 +37,8 @@ def select_next_phase(state: TaskState) -> RoutingDecision:
             blocked=True,
         )
     if state.status is TaskStatus.COMPLETED:
+        if build_required and state.latest_build_status != "passed":
+            return RoutingDecision(Phase.REVIEW, "build_required", blocked=True)
         if not state.artifacts["KNOWLEDGE.md"]:
             return RoutingDecision(Phase.DELIVER, "knowledge_missing", blocked=True)
         if not state.artifacts["DELIVERABLES.md"]:
@@ -72,6 +74,8 @@ def select_next_phase(state: TaskState) -> RoutingDecision:
         return RoutingDecision(Phase.TEST, "test_required")
     if not state.phase_completed["review"]:
         return RoutingDecision(Phase.REVIEW, "review_required")
+    if build_required and state.latest_build_status != "passed":
+        return RoutingDecision(Phase.REVIEW, "build_required")
     if not state.artifacts["KNOWLEDGE.md"]:
         return RoutingDecision(Phase.DELIVER, "knowledge_missing")
     if not state.artifacts["DELIVERABLES.md"]:

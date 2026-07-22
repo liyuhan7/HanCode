@@ -327,8 +327,8 @@ class TestDemoConvergence:
         assert "write_review" not in imports, "Demo still imports write_review directly"
         assert "write_knowledge" not in imports, "Demo still imports write_knowledge directly"
 
-    def test_demo_uses_delivery_pipeline(self) -> None:
-        """Verify demo imports DeliveryPipeline."""
+    def test_demo_uses_formal_agent_loop_delivery_path(self) -> None:
+        """Verify demo reaches delivery through the standard AgentLoop wiring."""
         import ast
         import inspect
         from hancode.demo_support import runner
@@ -341,7 +341,8 @@ class TestDemoConvergence:
             if isinstance(node, ast.ImportFrom)
             for name in node.names
         ]
-        assert "DeliveryPipeline" in imports, "Demo must use DeliveryPipeline"
+        assert "create_agent_loop" in imports, "Demo must use the standard AgentLoop"
+        assert "build_default_tool_registry" in imports, "Demo must use the default tool registry"
 
 
 class TestMockE2E:

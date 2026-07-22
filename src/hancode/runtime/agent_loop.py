@@ -4,6 +4,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 import inspect
+import json
 from pathlib import Path
 import re
 from typing import Callable, Iterator, Mapping, Protocol
@@ -35,6 +36,7 @@ from hancode.core.models import OperationStatus, Phase, Risk, TaskStatus
 from hancode.policy.path_policy import PathZone
 from hancode.core.router import select_next_phase
 from hancode.core.state import TaskState, load_state, reconcile_state, save_state
+from hancode.runtime.feedback import FeedbackReport, classify_test_output
 from hancode.tooling.registry import ToolResult
 from hancode.storage.trace import TraceEvent, append_trace
 from hancode.storage.task_lock import FilesystemTaskMutationGuard
@@ -99,6 +101,25 @@ class Policy(Protocol):
 
 class ToolRegistry(Protocol):
     def dispatch(self, action: Action) -> ToolResult: ...
+
+
+class DeliveryPipelinePort(Protocol):
+    def record_test(
+        self, task_root: Path, report: FeedbackReport, command: str
+    ) -> object: ...
+
+    def record_build(self, task_root: Path, task_id: str, status: str) -> None: ...
+
+    def record_diff(
+        self,
+        task_root: Path,
+        task_id: str,
+        digest: str | None,
+        *,
+        drifted: bool = False,
+    ) -> None: ...
+
+    def finalize(self, task_root: Path, task_id: str) -> object: ...
 
 
 class MutationGuard(Protocol):
@@ -335,6 +356,8 @@ class AgentLoop:
         approval_store: ApprovalStore | None = None,
         approval_request_builder: ApprovalRequestBuilderPort | None = None,
         project_root: Path | None = None,
+        delivery_pipeline: DeliveryPipelinePort | None = None,
+        build_required: bool = False,
     ) -> None:
         if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps <= 0:
             raise ValueError("max_steps must be positive")
@@ -353,6 +376,8 @@ class AgentLoop:
         self._approval_store = approval_store
         self._approval_request_builder = approval_request_builder
         self._project_root = project_root or Path(".")
+        self._delivery_pipeline = delivery_pipeline
+        self._build_required = build_required
 
     def run(self, task_id: str, *, resume: bool = False) -> AgentRunResult:
         if not isinstance(resume, bool):
@@ -662,7 +687,9 @@ class AgentLoop:
                         state = self._state_store.load(task_id)
                         if not _is_valid_task_state(state, task_id):
                             raise HanCodeError(_state_adapter_error(Phase.SPEC))
-                        routing = select_next_phase(state)
+                        routing = select_next_phase(
+                            state, build_required=self._build_required
+                        )
                         decision = self._policy.evaluate(
                             action=approved_action,
                             phase=routing.phase,
@@ -704,7 +731,7 @@ class AgentLoop:
 
         traced_phase: Phase | None = None
         for step in range(1, self._max_steps + 1):
-            routing = select_next_phase(state)
+            routing = select_next_phase(state, build_required=self._build_required)
             if routing.rollback_required:
                 state = self._enter_phase(task_id, state, routing.phase)
                 state, observation, error, status = self._perform_rollback(
@@ -1830,6 +1857,180 @@ class AgentLoop:
                         state,
                         risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
                     )
+                if action.tool_name == "run_tests" and self._delivery_pipeline is not None:
+                    try:
+                        report = _feedback_report_for_test_result(tool_result)
+                        self._delivery_pipeline.record_test(
+                            task_path(self._project_root, task_id),
+                            report,
+                            tool_result.command or "run_tests",
+                        )
+                        state = self._state_store.load(task_id)
+                    except HanCodeError as exc:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, exc.structured_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    except Exception:
+                        fallback_error = _state_persistence_error(routing.phase)
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, fallback_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="test_completed",
+                        phase=routing.phase,
+                        status="succeeded" if tool_result.success else "failed",
+                        action=_trace_action(action, decision, include_path=False),
+                        observation={
+                            "exit_code": tool_result.exit_code,
+                            "timed_out": tool_result.timed_out,
+                        },
+                    )
+                    if trace_error is not None:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, trace_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="feedback_generated",
+                        phase=routing.phase,
+                        status="succeeded",
+                        observation={"failure_category": report.failure_category.value},
+                    )
+                    if trace_error is not None:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, trace_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                if action.tool_name == "run_build" and self._delivery_pipeline is not None:
+                    try:
+                        build_status = (
+                            "timed_out"
+                            if tool_result.timed_out
+                            else "passed"
+                            if tool_result.success
+                            else "failed"
+                        )
+                        self._delivery_pipeline.record_build(
+                            task_path(self._project_root, task_id),
+                            task_id,
+                            build_status,
+                        )
+                    except HanCodeError as exc:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, exc.structured_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    except Exception:
+                        fallback_error = _state_persistence_error(routing.phase)
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, fallback_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                if (
+                    action.tool_name == "get_diff"
+                    and tool_result.success
+                    and self._delivery_pipeline is not None
+                ):
+                    diff_evidence = _diff_evidence_from_output(tool_result.output)
+                    if diff_evidence is not None:
+                        digest, drifted = diff_evidence
+                        self._delivery_pipeline.record_diff(
+                            task_path(self._project_root, task_id),
+                            task_id,
+                            digest,
+                            drifted=drifted,
+                        )
+                        state = self._state_store.load(task_id)
+                if action.tool_name in {"record_review", "record_knowledge"}:
+                    try:
+                        state = self._state_store.load(task_id)
+                    except Exception:
+                        fallback_error = _state_persistence_error(routing.phase)
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, fallback_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    if tool_result.success:
+                        artifact = (
+                            "REVIEW.md"
+                            if action.tool_name == "record_review"
+                            else "KNOWLEDGE.md"
+                        )
+                        trace_error = self._append_trace(
+                            task_id,
+                            trace_events,
+                            event_type="deliverable_created",
+                            phase=routing.phase,
+                            status="succeeded",
+                            observation={"artifact": artifact},
+                        )
+                        if trace_error is not None:
+                            state, state_error = self._mark_inconsistent(
+                                task_id, state, trace_error
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                            )
                 if action.tool_name == "run_tests" and not tool_result.success:
                     trace_error = self._append_trace(
                         task_id,
@@ -1927,6 +2128,54 @@ class AgentLoop:
                 continue
 
             if action.type is ActionType.FINISH_PHASE:
+                if routing.phase is Phase.DELIVER and self._delivery_pipeline is not None:
+                    try:
+                        delivery_result = self._delivery_pipeline.finalize(
+                            task_path(self._project_root, task_id), task_id
+                        )
+                    except HanCodeError as exc:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            exc.structured_error,
+                            state,
+                        )
+                    delivery_status = getattr(delivery_result, "status", None)
+                    if delivery_status is not TaskStatus.COMPLETED:
+                        blockers = getattr(delivery_result, "blockers", ())
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            _delivery_gate_error(routing.phase, blockers),
+                            state,
+                        )
+                    state = self._state_store.load(task_id)
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="deliverable_created",
+                        phase=routing.phase,
+                        status="succeeded",
+                        observation={"artifact": "DELIVERABLES.md"},
+                    )
+                    if trace_error is not None:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, trace_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
                 had_interactions = bool(state.interactions)
                 state = self._save_if_changed(
                     task_id, state, _state_after_phase_finish(state, routing.phase)
@@ -1985,7 +2234,9 @@ class AgentLoop:
                 state,
             )
 
-        final_routing = select_next_phase(state)
+        final_routing = select_next_phase(
+            state, build_required=self._build_required
+        )
         if final_routing.rollback_required:
             state = self._enter_phase(task_id, state, final_routing.phase)
             state, observation, error, status = self._perform_rollback(
@@ -3742,6 +3993,23 @@ def _state_after_tool(
             phase_completed=phase_completed,
         )
 
+    if action.tool_name == "run_build":
+        build_status = (
+            "timed_out"
+            if result.timed_out
+            else "passed"
+            if result.success
+            else "failed"
+        )
+        return replace(
+            state,
+            builds_run=(
+                *state.builds_run,
+                redact_text(result.command) if result.command else "run_build",
+            ),
+            latest_build_status=build_status,
+        )
+
     if not source_write and result.success and action.tool_name in {"write_file", "edit_file"}:
         path = action.args.get("path")
         artifact_name = _artifact_name(path) if isinstance(path, str) else None
@@ -3783,6 +4051,47 @@ def _state_after_tool(
         source_edits_this_phase=source_edits,
         files_changed=files_changed,
     )
+
+
+def _delivery_gate_error(phase: Phase, blockers: object) -> StructuredError:
+    safe_blockers = tuple(
+        redact_text(item) for item in blockers if isinstance(item, str)
+    ) if isinstance(blockers, (list, tuple)) else ()
+    detail = " ".join(safe_blockers) if safe_blockers else "Inspect delivery evidence."
+    return StructuredError(
+        error_code="delivery_gate_blocked",
+        message=f"Delivery gates are not satisfied. {detail}",
+        phase=phase.value,
+        denied_rule="delivery_gates_required",
+        suggested_fix="Resolve the reported delivery blockers before finishing.",
+    )
+
+
+def _feedback_report_for_test_result(result: ToolResult) -> FeedbackReport:
+    output = "\n".join(
+        value
+        for value in (result.error_summary, result.stdout, result.stderr)
+        if isinstance(value, str) and value
+    )
+    return classify_test_output(
+        output,
+        result.exit_code if result.exit_code is not None else (0 if result.success else 1),
+        result.timed_out,
+    )
+
+
+def _diff_evidence_from_output(output: object) -> tuple[str, bool] | None:
+    if not isinstance(output, Mapping):
+        return None
+    try:
+        serialized = json.dumps(output, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return None
+    risks = output.get("risks")
+    drifted = isinstance(risks, (list, tuple)) and (
+        "workspace_changed_after_checkpoint" in risks
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest(), drifted
 
 
 def _hash_file_if_exists(path: Path) -> str | None:

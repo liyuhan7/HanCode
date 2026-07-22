@@ -37,7 +37,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="list_files",
         description="List files in the project workspace.",
         args_schema={"type": "object"},
-        allowed_phases=frozenset(Phase),
+        allowed_phases=frozenset({Phase.SPEC, Phase.PLAN, Phase.CODE, Phase.REVIEW}),
         read_only=True,
     ),
     ToolSpec(
@@ -48,7 +48,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
         },
-        allowed_phases=frozenset(Phase),
+        allowed_phases=frozenset({Phase.SPEC, Phase.PLAN, Phase.CODE, Phase.REVIEW}),
         read_only=True,
     ),
     ToolSpec(
@@ -62,7 +62,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["path", "content"],
         },
-        allowed_phases=frozenset({Phase.SPEC, Phase.PLAN, Phase.CODE, Phase.TEST}),
+        allowed_phases=frozenset(Phase),
         read_only=False,
     ),
     ToolSpec(
@@ -84,7 +84,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="run_tests",
         description="Run the configured test command.",
         args_schema={"type": "object", "maxProperties": 0},
-        allowed_phases=frozenset({Phase.TEST, Phase.REVIEW}),
+        allowed_phases=frozenset({Phase.CODE, Phase.TEST, Phase.REVIEW}),
         read_only=False,
     ),
     ToolSpec(

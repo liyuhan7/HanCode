@@ -125,7 +125,7 @@ class TestCheckpointInspectionService:
         project_root = tmp_path / "proj"
         project_root.mkdir()
         init_project_workspace(project_root, "proj-001", "HanCode", "Test")
-        task_root = init_task_workspace(project_root, "task-001")
+        init_task_workspace(project_root, "task-001")
 
         svc = CheckpointInspectionService()
         result = svc.list_checkpoints(project_root, "task-001")

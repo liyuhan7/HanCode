@@ -5,10 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
-import pytest
-
 from hancode.tooling.command_runner import CommandRunner, run_configured_command
-from hancode.tooling.registry import ToolResult
 
 
 # ---------------------------------------------------------------------------

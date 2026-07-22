@@ -11,27 +11,31 @@ Delegates to delivery_support._write_artifact for atomic writes and state sync.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Sequence
 
 from hancode.core.delivery_evidence import (
     DeliveryEvidence,
+    DeliveryResult,
     KnowledgeCategory as NewKnowledgeCategory,
     KnowledgeItem as NewKnowledgeItem,
     RequirementCoverage as NewRequirementCoverage,
     RequirementStatus as NewRequirementStatus,
 )
+from hancode.core.config import load_config
+from hancode.core.models import Phase, TaskStatus
 from hancode.delivery_support.result import (
     KnowledgeCategory,
     KnowledgeItem,
     RequirementCoverage,
     RequirementStatus,
+    _coverage_digest,
     _write_artifact,
 )
-from hancode.core.models import Phase
 from hancode.runtime.feedback import FeedbackReport
-from hancode.core.state import load_state
+from hancode.core.state import TaskState, load_state
 from hancode.storage.delivery_evidence import DeliveryEvidenceStore
 
 
@@ -40,9 +44,6 @@ class DeliveryPipeline:
 
     def __init__(self) -> None:
         self._store = DeliveryEvidenceStore()
-        self._accumulated_requirements: tuple[RequirementCoverage, ...] = ()
-        self._accumulated_knowledge: tuple[KnowledgeItem, ...] = ()
-        self._accumulated_risks: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------
     # record_test — TEST_REPORT.md from real ToolResult
@@ -69,7 +70,13 @@ class DeliveryPipeline:
             "## 下一步\n\n"
             f"{report.next_action_hint}\n"
         )
-        return _write_artifact(task_root, "TEST_REPORT.md", content)
+        path = _write_artifact(task_root, "TEST_REPORT.md", content)
+        self._merge_evidence(
+            task_root,
+            task_root.name,
+            latest_test_report_sha256=sha256(path.read_bytes()).hexdigest(),
+        )
+        return path
 
     # ------------------------------------------------------------------
     # record_review — REVIEW.md from structured evidence
@@ -85,9 +92,6 @@ class DeliveryPipeline:
         normalized_requirements = tuple(
             _normalize_requirement(item) for item in requirements
         )
-        self._accumulated_requirements = normalized_requirements
-        self._accumulated_risks = tuple(risks)
-
         rows = "".join(
             f"| {item.requirement_id} | {item.status.value} | "
             f"{item.evidence} | {item.risk or 'None.'} |\n"
@@ -103,7 +107,23 @@ class DeliveryPipeline:
             "## 审查风险\n\n"
             f"{risk_lines}\n"
         )
-        return _write_artifact(task_root, "REVIEW.md", content)
+        path = _write_artifact(task_root, "REVIEW.md", content)
+        self._merge_evidence(
+            task_root,
+            task_id,
+            requirements=tuple(
+                NewRequirementCoverage(
+                    requirement_id=item.requirement_id,
+                    status=NewRequirementStatus(item.status.value),
+                    evidence=item.evidence,
+                    risk=item.risk,
+                    is_core=item.is_core,
+                )
+                for item in normalized_requirements
+            ),
+            review_risks=tuple(risks),
+        )
+        return path
 
     # ------------------------------------------------------------------
     # record_knowledge — KNOWLEDGE.md from structured items
@@ -116,8 +136,6 @@ class DeliveryPipeline:
         items: Sequence[KnowledgeItem | NewKnowledgeItem],
     ) -> Path:
         normalized_items = tuple(_normalize_knowledge_item(item) for item in items)
-        self._accumulated_knowledge = normalized_items
-
         sections = (
             (KnowledgeCategory.REQUIREMENT_UNDERSTANDING, "需求理解"),
             (KnowledgeCategory.DESIGN_DECISION, "设计决策"),
@@ -145,7 +163,39 @@ class DeliveryPipeline:
                 if item.source_trace_id:
                     lines.append(f"  _Trace: `{item.source_trace_id}`_")
                 lines.append("")
-        return _write_artifact(task_root, "KNOWLEDGE.md", "\n".join(lines) + "\n")
+        path = _write_artifact(task_root, "KNOWLEDGE.md", "\n".join(lines) + "\n")
+        self._merge_evidence(
+            task_root,
+            task_id,
+            knowledge_items=tuple(
+                NewKnowledgeItem(
+                    category=NewKnowledgeCategory(item.category.value),
+                    summary=item.summary,
+                    detail=item.detail,
+                    source_trace_id=item.source_trace_id,
+                )
+                for item in normalized_items
+            ),
+        )
+        return path
+
+    def record_build(self, task_root: Path, task_id: str, status: str) -> None:
+        if status not in {"none", "passed", "failed", "timed_out"}:
+            raise ValueError("invalid build status")
+        self._merge_evidence(task_root, task_id, latest_build_status=status)
+
+    def record_diff(
+        self, task_root: Path, task_id: str, digest: str | None, *, drifted: bool = False
+    ) -> None:
+        if drifted:
+            current = self._store.load(task_root) or _empty_evidence(task_id)
+            self._store.save(task_root, replace(current, latest_diff_sha256=None))
+            return
+        self._merge_evidence(
+            task_root,
+            task_id,
+            latest_diff_sha256=digest,
+        )
 
     # ------------------------------------------------------------------
     # finalize — DELIVERABLES.md + DeliveryResult
@@ -155,39 +205,28 @@ class DeliveryPipeline:
         self,
         task_root: Path,
         task_id: str,
-    ) -> DeliveryEvidence:
-        test_report_path = task_root / "TEST_REPORT.md"
-        test_report_sha = None
-        if test_report_path.is_file():
-            test_report_sha = sha256(test_report_path.read_bytes()).hexdigest()
-
-        evidence = DeliveryEvidence(
-            task_id=task_id,
-            requirements=tuple(
-                NewRequirementCoverage(
-                    requirement_id=r.requirement_id,
-                    status=NewRequirementStatus(str(r.status.value)),
-                    evidence=r.evidence,
-                    risk=r.risk,
-                    is_core=r.is_core,
-                )
-                for r in self._accumulated_requirements
-            ),
-            knowledge_items=tuple(
-                NewKnowledgeItem(
-                    category=NewKnowledgeCategory(str(k.category.value)),
-                    summary=k.summary,
-                    detail=k.detail,
-                    source_trace_id=k.source_trace_id,
-                )
-                for k in self._accumulated_knowledge
-            ),
-            review_risks=self._accumulated_risks,
-            latest_test_report_sha256=test_report_sha,
-            latest_diff_sha256=None,
-            latest_build_status="none",
-        )
+    ) -> DeliveryResult:
+        evidence = self._store.load(task_root) or _empty_evidence(task_id)
         state = load_state(task_root)
+        project_root = task_root.resolve().parents[2]
+        config = load_config(project_root, task_id)
+        blockers = _delivery_blockers(
+            state,
+            evidence,
+            build_required=config.build_command is not None,
+        )
+        status = _delivery_status(state, blockers)
+        digest_coverage = tuple(
+            RequirementCoverage(
+                requirement_id=item.requirement_id,
+                status=RequirementStatus(item.status.value),
+                evidence=item.evidence,
+                risk=item.risk,
+                is_core=item.is_core,
+            )
+            for item in evidence.requirements
+        )
+        coverage_digest = _coverage_digest(digest_coverage)
         artifacts = dict(state.artifacts)
         artifacts["DELIVERABLES.md"] = True
         artifact_rows = "".join(
@@ -201,11 +240,121 @@ class DeliveryPipeline:
             "| --- | --- |\n"
             f"{artifact_rows}\n"
             "## 测试状态\n\n"
-            f"- {state.latest_test_status}\n"
+            f"- {state.latest_test_status}\n\n"
+            "## 阻断原因\n\n"
+            + "\n".join(f"- {item}" for item in blockers)
+            + ("\n" if blockers else "- None.\n")
+            + "\n## 最终状态\n\n"
+            f"- {status.value}\n"
         )
-        _write_artifact(task_root, "DELIVERABLES.md", deliverables)
-        self._store.save(task_root, evidence)
-        return evidence
+        _write_artifact(
+            task_root,
+            "DELIVERABLES.md",
+            deliverables,
+            state_transform=lambda current: replace(
+                current,
+                status=status,
+                delivery_coverage_digest=coverage_digest,
+            ),
+        )
+        result = DeliveryResult(
+            task_id=evidence.task_id,
+            requirements=evidence.requirements,
+            knowledge_items=evidence.knowledge_items,
+            review_risks=evidence.review_risks,
+            latest_test_report_sha256=evidence.latest_test_report_sha256,
+            latest_diff_sha256=evidence.latest_diff_sha256,
+            latest_build_status=evidence.latest_build_status,
+            status=status,
+            blockers=blockers,
+        )
+        self._store.save(task_root, result)
+        return result
+
+    def _merge_evidence(
+        self,
+        task_root: Path,
+        task_id: str,
+        *,
+        requirements: tuple[NewRequirementCoverage, ...] | None = None,
+        knowledge_items: tuple[NewKnowledgeItem, ...] | None = None,
+        review_risks: tuple[str, ...] | None = None,
+        latest_test_report_sha256: str | None = None,
+        latest_diff_sha256: str | None = None,
+        latest_build_status: str | None = None,
+    ) -> None:
+        current = self._store.load(task_root) or _empty_evidence(task_id)
+        updated = replace(
+            current,
+            requirements=current.requirements if requirements is None else requirements,
+            knowledge_items=(
+                current.knowledge_items
+                if knowledge_items is None
+                else knowledge_items
+            ),
+            review_risks=current.review_risks if review_risks is None else review_risks,
+            latest_test_report_sha256=(
+                current.latest_test_report_sha256
+                if latest_test_report_sha256 is None
+                else latest_test_report_sha256
+            ),
+            latest_diff_sha256=(
+                current.latest_diff_sha256
+                if latest_diff_sha256 is None
+                else latest_diff_sha256
+            ),
+            latest_build_status=(
+                current.latest_build_status
+                if latest_build_status is None
+                else latest_build_status
+            ),
+        )
+        self._store.save(task_root, updated)
+
+
+def _empty_evidence(task_id: str) -> DeliveryEvidence:
+    return DeliveryEvidence(
+        task_id=task_id,
+        requirements=(),
+        knowledge_items=(),
+        review_risks=(),
+        latest_test_report_sha256=None,
+        latest_diff_sha256=None,
+        latest_build_status="none",
+    )
+
+
+def _delivery_blockers(
+    state: TaskState,
+    evidence: DeliveryEvidence,
+    *,
+    build_required: bool,
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if state.latest_test_status != "passed":
+        blockers.append("测试未通过，任务不能标记为 completed。")
+    if build_required and evidence.latest_build_status != "passed":
+        blockers.append("配置了 Build 命令，但 Build 尚未通过。")
+    for artifact in ("TEST_REPORT.md", "REVIEW.md", "KNOWLEDGE.md"):
+        if not state.artifacts[artifact]:
+            blockers.append(f"缺少必需交付物：{artifact}。")
+    core_requirements = [item for item in evidence.requirements if item.is_core]
+    if not core_requirements:
+        blockers.append("缺少核心需求覆盖证据。")
+    for item in core_requirements:
+        if item.status is not NewRequirementStatus.COVERED or not item.evidence.strip():
+            blockers.append(f"核心需求未覆盖：{item.requirement_id}。")
+    if state.latest_checkpoint is not None and evidence.latest_diff_sha256 is None:
+        blockers.append("存在 Checkpoint，但缺少最新 Diff 证据。")
+    return tuple(blockers)
+
+
+def _delivery_status(state: TaskState, blockers: Sequence[str]) -> TaskStatus:
+    if state.inconsistent or state.status is TaskStatus.INCONSISTENT:
+        return TaskStatus.INCONSISTENT
+    if state.status is TaskStatus.FAILED:
+        return TaskStatus.FAILED
+    return TaskStatus.BLOCKED if blockers else TaskStatus.COMPLETED
 
 
 def _normalize_requirement(

@@ -233,10 +233,7 @@ def test_mock_demo_failure_result_uses_the_persisted_trace(
             )
         )
 
-    monkeypatch.setattr(
-        "hancode.runtime.delivery_pipeline.DeliveryPipeline.record_knowledge",
-        fail_knowledge,
-    )
+    monkeypatch.setattr("hancode.app.delivery_service.DeliveryService.record_knowledge", fail_knowledge)
 
     result = demo.run_mock_demo(project_root)
 

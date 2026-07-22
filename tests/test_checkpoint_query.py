@@ -9,7 +9,6 @@ import pytest
 
 from hancode.core.change_models import CheckpointSummary
 from hancode.core.config import HanCodeConfig
-from hancode.core.models import Phase
 from hancode.storage.checkpoint_queries import CheckpointQueryRepository
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 

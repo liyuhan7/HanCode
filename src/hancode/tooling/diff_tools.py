@@ -11,6 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from hancode.core.change_models import ChangeType, DiffScope, FileDiff, TaskDiff
+from hancode.core.errors import HanCodeError
 from hancode.core.state import load_state
 from hancode.storage.checkpoint_queries import CheckpointQueryRepository
 from hancode.tooling.file_tools import redact_text
@@ -63,7 +64,10 @@ def get_diff(
     task_id = task_root.name
 
     repo = CheckpointQueryRepository()
-    all_manifests = repo.list(task_root)
+    try:
+        all_manifests = repo.list(task_root)
+    except (HanCodeError, OSError):
+        return _diff_failure("Checkpoint manifest or snapshot validation failed.")
 
     # Filter to trusted statuses
     trusted = [
@@ -98,13 +102,20 @@ def get_diff(
                     file_actions[f.path] = "create"
                 else:
                     try:
-                        content = repo.read_before(task_root, manifest.checkpoint_id, f.path)
-                    except Exception:
-                        continue
+                        content = repo.read_before(
+                            task_root,
+                            manifest.checkpoint_id,
+                            f.path,
+                            max_bytes=max_diff_file_bytes,
+                        )
+                    except (HanCodeError, OSError):
+                        return _diff_failure(
+                            "Checkpoint snapshot could not be read safely."
+                        )
                     if content is not None:
                         file_baselines[f.path] = (manifest.checkpoint_id, content)
                         file_actions[f.path] = "modify"
-                file_after_hashes[f.path] = f.after_sha256
+            file_after_hashes[f.path] = f.after_sha256
 
     # --- Filter by path if requested ---
     if path is not None:
@@ -129,6 +140,9 @@ def get_diff(
         workspace_file = project_root / file_path
         action = file_actions.get(file_path, "modify")
 
+        if len(before_bytes) > max_diff_file_bytes:
+            return _diff_failure("Checkpoint file exceeds the configured diff size limit.")
+
         # Determine change type
         if action == "create":
             change_type = ChangeType.CREATED
@@ -144,8 +158,18 @@ def get_diff(
         current_bytes: bytes | None = None
         binary = False
 
+        try:
+            resolved_workspace_file = workspace_file.resolve()
+            resolved_workspace_file.relative_to(project_root)
+        except (OSError, RuntimeError, ValueError):
+            return _diff_failure("Workspace file is outside the project root.")
+
         if workspace_file.exists():
             try:
+                if workspace_file.stat().st_size > max_diff_file_bytes:
+                    return _diff_failure(
+                        "Workspace file exceeds the configured diff size limit."
+                    )
                 # Check if binary
                 with open(workspace_file, "rb") as fh:
                     probe = fh.read(_BINARY_CHECK_BYTES)
@@ -158,9 +182,12 @@ def get_diff(
                     except (UnicodeDecodeError, OSError):
                         binary = True
             except OSError:
-                pass
+                return _diff_failure("Workspace file could not be read safely.")
             if current_bytes is not None:
                 current_sha = sha256(current_bytes).hexdigest()
+        elif change_type is ChangeType.DELETED:
+            current_bytes = b""
+            current_sha = sha256(current_bytes).hexdigest()
 
         # Drift detection: compare after_sha256 (from last checkpoint) to current workspace
         drifted = False
@@ -170,7 +197,12 @@ def get_diff(
 
         # Generate unified diff
         unified_diff: str | None = None
-        if not binary and change_type == ChangeType.MODIFIED and before_bytes is not None and current_bytes is not None:
+        if (
+            not binary
+            and change_type in {ChangeType.CREATED, ChangeType.MODIFIED, ChangeType.DELETED}
+            and before_bytes is not None
+            and current_bytes is not None
+        ):
             before_text = _safe_decode(before_bytes)
             current_text = _safe_decode(current_bytes)
             before_lines = before_text.splitlines(keepends=True)
@@ -273,6 +305,10 @@ def _empty_diff(task_id: str, scope: DiffScope, risk: str) -> ToolResult:
             "risks": [risk],
         },
     )
+
+
+def _diff_failure(message: str) -> ToolResult:
+    return ToolResult(success=False, action_name="get_diff", error_summary=message)
 
 
 def _safe_decode(data: bytes) -> str:

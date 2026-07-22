@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
-import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,8 +12,6 @@ from typing import Mapping, Sequence
 from hancode.runtime.agent_loop import AgentRunResult, FilesystemAgentLoopPorts
 from hancode.runtime.engine import create_agent_loop
 from hancode.core.config import HanCodeConfig, load_config
-from hancode.runtime.delivery_pipeline import DeliveryPipeline
-from hancode.delivery_support.deliverables import write_deliverables
 from hancode.delivery_support.result import (
     DeliveryResult,
     KnowledgeCategory,
@@ -24,7 +21,6 @@ from hancode.delivery_support.result import (
     ResultBuilder,
 )
 from hancode.core.errors import HanCodeError, StructuredError
-from hancode.runtime.feedback import FeedbackReport, classify_test_output
 from hancode.providers.mock import MockLLM
 from hancode.core.models import Phase, TaskStatus
 from hancode.tooling.test_tools import run_tests
@@ -37,6 +33,7 @@ from hancode.demo_support import actions as _demo_actions
 from hancode.demo_support.actions import (
     build_finish_actions,
     build_first_actions,
+    build_delivery_actions,
     build_recovery_actions,
     build_retry_actions,
 )
@@ -68,6 +65,7 @@ _first_actions = build_first_actions
 _retry_actions = build_retry_actions
 _recovery_actions = build_recovery_actions
 _finish_actions = build_finish_actions
+_delivery_actions = build_delivery_actions
 _validate_fixture = validate_fixture
 _fixture_digest = fixture_digest
 _configure_demo = configure_demo
@@ -161,8 +159,6 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
         )
         runs.append(first)
         timeline.extend(first.trace_events)
-        first_report = _record_test_evidence(task_root, test_runner.results[-1], timeline)
-        _write_failure_evidence(task_root, first_report, timeline)
 
         second = _run_stage(
             root,
@@ -174,7 +170,6 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
         )
         runs.append(second)
         timeline.extend(second.trace_events)
-        _record_test_evidence(task_root, test_runner.results[-1], timeline)
 
         third = _run_stage(
             root,
@@ -186,10 +181,6 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
         )
         runs.append(third)
         timeline.extend(third.trace_events)
-        recovery_report = _record_test_evidence(
-            task_root, test_runner.results[-1], timeline
-        )
-        _write_success_evidence(task_root, recovery_report, timeline)
 
         fourth = _run_stage(
             root,
@@ -202,40 +193,17 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
         runs.append(fourth)
         timeline.extend(fourth.trace_events)
 
-        _enter_expected_delivery_phase(task_root, fourth, timeline)
-        knowledge_items = _knowledge_items(task_root)
-        DeliveryPipeline().record_knowledge(task_root, TASK_ID, list(knowledge_items))
-        timeline.append(
-            _append(
-                task_root,
-                "deliverable_created",
-                Phase.DELIVER,
-                "succeeded",
-                observation={"artifact": "KNOWLEDGE.md"},
-            )
-        )
-        write_deliverables(task_root, fourth, _covered_requirement())
-        timeline.append(
-            _append(
-                task_root,
-                "deliverable_created",
-                Phase.DELIVER,
-                "succeeded",
-                observation={"artifact": "DELIVERABLES.md"},
-            )
-        )
-
-        terminal = _run_stage(
+        fifth = _run_stage(
             root,
             config,
             ports,
             registry,
-            (),
-            resume=False,
+            build_delivery_actions(),
+            resume=True,
         )
-        runs.append(terminal)
-        timeline.extend(terminal.trace_events)
-        return _aggregate_result(task_root, terminal, runs)
+        runs.append(fifth)
+        timeline.extend(fifth.trace_events)
+        return _aggregate_result(task_root, fifth, runs)
     except HanCodeError as exc:
         return _failed_demo_result(task_root, runs, timeline, exc.structured_error)
     except Exception:
@@ -274,70 +242,6 @@ def _tool_registry(config: HanCodeConfig, test_runner: _DemoTestRunner) -> ToolR
         config,
         run_tests_tool=test_runner.run_tests,
     )
-
-
-def _record_test_evidence(
-    task_root: Path, result: ToolResult, timeline: list[TraceEvent]
-) -> FeedbackReport:
-    report = classify_test_output(
-        _test_output(result),
-        result.exit_code if result.exit_code is not None else (0 if result.success else 1),
-        result.timed_out,
-    )
-    timeline.append(
-        _append(
-            task_root,
-            "test_completed",
-            Phase.TEST,
-            "succeeded" if result.success else "failed",
-            observation={
-                "exit_code": result.exit_code,
-                "timed_out": result.timed_out,
-                "output_sha256": hashlib.sha256(_test_output(result).encode("utf-8")).hexdigest(),
-            },
-        )
-    )
-    timeline.append(
-        _append(
-            task_root,
-            "feedback_generated",
-            Phase.TEST,
-            "succeeded",
-            observation={"failure_category": report.failure_category.value},
-        )
-    )
-    return report
-
-
-def _write_failure_evidence(
-    task_root: Path, report: FeedbackReport, timeline: list[TraceEvent]
-) -> None:
-    DeliveryPipeline().record_test(task_root, report, _DEMO_TEST_COMMAND)
-    timeline.append(_append(task_root, "deliverable_created", Phase.TEST, "succeeded"))
-    DeliveryPipeline().record_review(
-        task_root,
-        TASK_ID,
-        [
-            RequirementCoverage(
-                requirement_id="REQ-ADD-001",
-                status=RequirementStatus.PARTIAL,
-                evidence="测试失败记录已生成。",
-                risk="当前实现未通过加法测试。",
-                is_core=True,
-            )
-        ],
-        ["测试失败后进入重试与回退流程。"],
-    )
-    timeline.append(_append(task_root, "deliverable_created", Phase.REVIEW, "succeeded"))
-
-
-def _write_success_evidence(
-    task_root: Path, report: FeedbackReport, timeline: list[TraceEvent]
-) -> None:
-    DeliveryPipeline().record_test(task_root, report, _DEMO_TEST_COMMAND)
-    timeline.append(_append(task_root, "deliverable_created", Phase.TEST, "succeeded"))
-    DeliveryPipeline().record_review(task_root, TASK_ID, list(_covered_requirement()), [])
-    timeline.append(_append(task_root, "deliverable_created", Phase.REVIEW, "succeeded"))
 
 
 def _covered_requirement() -> tuple[RequirementCoverage, ...]:
@@ -400,14 +304,6 @@ def _event_id(task_root: Path, event_type: str) -> str:
     raise _demo_error("mock_demo_trace_evidence_missing", "Required demo trace event is missing.")
 
 
-def _test_output(result: ToolResult) -> str:
-    return "\n".join(
-        value
-        for value in (result.error_summary, result.stdout, result.stderr)
-        if isinstance(value, str) and value
-    )
-
-
 def _append(
     task_root: Path,
     event_type: str,
@@ -437,30 +333,6 @@ def _aggregate_result(
         tool_calls=tuple(tool for run in runs for tool in run.tool_calls),
         risks=tuple(risk for run in runs for risk in run.risks),
         trace_events=_read_trace_events(task_root),
-    )
-
-
-def _enter_expected_delivery_phase(
-    task_root: Path, stage: AgentRunResult, timeline: list[TraceEvent]
-) -> None:
-    state = load_state(task_root)
-    if not _is_expected_delivery_gate(state, stage):
-        raise _runtime_error(
-            "mock_demo_delivery_gate_invalid",
-            "Demo delivery orchestration may only continue from its expected missing-artifact gate.",
-            state.current_phase,
-            "expected_delivery_gate_required",
-            "Inspect the retained state and trace before attempting delivery.",
-        )
-    save_state(task_root, replace(state, status=TaskStatus.RUNNING, current_phase=Phase.DELIVER))
-    timeline.append(
-        _append(
-            task_root,
-            "delivery_orchestration_started",
-            Phase.DELIVER,
-            "running",
-            observation={"blocked_error_code": "max_steps_exceeded"},
-        )
     )
 
 

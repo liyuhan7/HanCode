@@ -97,6 +97,9 @@ class ApprovalPolicy:
         if tool_name == "rollback_last_checkpoint":
             return self._evaluate_rollback(action, state)
 
+        if tool_name == "run_build":
+            return self._evaluate_build()
+
         if self._mode == "disabled":
             return _no_approval("Approval mode is disabled.")
 
@@ -157,6 +160,16 @@ class ApprovalPolicy:
             )
 
         return _no_approval("Approval mode is disabled.")
+
+    def _evaluate_build(self) -> ApprovalRequirement:
+        if not self._config.confirm_agent_build:
+            return _no_approval("Agent build confirmation is disabled.")
+        return _require(
+            ApprovalCategory.RUN_BUILD,
+            "Running the configured build command requires confirmation.",
+            targets=(),
+            risk_level="high",
+        )
 
     def _evaluate_rollback(
         self, action: Action, state: TaskState
