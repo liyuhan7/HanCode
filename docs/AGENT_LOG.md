@@ -60,6 +60,17 @@
 
 ---
 
+### 2026-07-22 — CI 修复 — 测试跨模块导入 `No module named 'tests'`
+
+- 背景：GitHub Actions CI 用 `uv run pytest` 运行 `tests/test_s4_tools.py` 时，`from tests.test_checkpoint_query import ...` 报 `ModuleNotFoundError: No module named 'tests'`，本地 `python -m pytest` 因 cwd 进 sys.path 而通过。
+- 根因：`tests/` 无 `__init__.py` 也无 `conftest.py`；`pytest` 直接调用时 cwd 不进 sys.path，`tests` 无法作为命名空间包导入。
+- 修复：将 `_write_minimal_manifest` 和 `_make_checkpoint_dir` 提取到 `tests/_checkpoint_helpers.py`（非 `test_` 前缀，pytest 不收集）；`test_checkpoint_query.py` 与 `test_s4_tools.py` 改用 `from _checkpoint_helpers import`，消除跨测试模块导入。
+- 验证：用 `pytest`（非 `python -m`）直接调用模拟 CI，`tests/test_s4_tools.py tests/test_checkpoint_query.py` 为 `18 passed, 2 skipped`；全量 `pytest` 为 `1236 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误。
+- 提交：未提交；改动基于 `e6fc673`，等待用户决定是否创建后续提交。
+- 剩余风险：GitHub Actions 尚需本次改动推送后复验独立 run 证据。
+
+---
+
 ### 2026-07-18 — T28 — P0 分层结构重组与装配层抽取
 
 - 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。

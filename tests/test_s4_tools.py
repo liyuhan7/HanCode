@@ -90,7 +90,7 @@ class TestListCheckpoints:
         task_root = init_task_workspace(project_root, "task-001")
 
         # Create a checkpoint
-        from tests.test_checkpoint_query import _write_minimal_manifest, _make_checkpoint_dir
+        from _checkpoint_helpers import _make_checkpoint_dir, _write_minimal_manifest
         ckpt_dir = _make_checkpoint_dir(task_root, "ckpt-001")
         _write_minimal_manifest(ckpt_dir, checkpoint_id="ckpt-001", task_id="task-001")
 
@@ -110,7 +110,7 @@ class TestListCheckpoints:
         init_project_workspace(project_root, "proj-001", "HanCode", "Test")
         task_root = init_task_workspace(project_root, "task-001")
 
-        from tests.test_checkpoint_query import _write_minimal_manifest, _make_checkpoint_dir
+        from _checkpoint_helpers import _make_checkpoint_dir, _write_minimal_manifest
         ckpt_dir = _make_checkpoint_dir(task_root, "ckpt-001")
         _write_minimal_manifest(ckpt_dir, checkpoint_id="ckpt-001", task_id="task-001")
 
