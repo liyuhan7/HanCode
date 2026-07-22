@@ -6411,3 +6411,32 @@ S4-R2 Build       S4-R3 Test Report
 - 不引入真实网络 LLM、真实凭据或新的第三方 Agent 框架。
 - 不重写既有 Checkpoint/Rollback 生命周期，只补 S4 查询和交付边界。
 - 不修改与本评审无关的历史兼容入口或 UI 视觉行为。
+---
+## S5-R0：TUI Intent/Operation 契约与 App 瘦身
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S4-R7 |
+| Worktree / 分支 | `codex/s5-r0` |
+| 边界 | 仅迁移现有 TUI 编排；不实现 S5-R1~R6 |
+
+### 交付内容
+
+- 新增 `src/hancode/interfaces/tui/operations.py`，冻结 `TuiIntent`、`TuiOperation`、`TuiOperationResult`、`TuiOperationError` 和 `TuiOperationExecutor`。
+- `TuiSessionController` 负责 Intent 校验、request ID、busy guard、结果应用和过期结果丢弃；Application Service 由 Executor 注入和调用。
+- `HanCodeTuiApp` 的创建、运行、交互、审批、回退、状态和 Artifact 操作均通过 Controller/Executor 边界；Worker 只执行 Operation 并发布既有 Textual Message。
+- 保留 S4 的命令、Message、Widget 行为和兼容构造参数；新增 App 边界、Executor 路由和 Controller 生命周期测试。
+
+### Red → Green
+
+- Red：`LIST_TASKS` 在无 Active Task 时被错误拒绝；Worker 迁移补丁和边界测试文件曾出现截断，语法测试准确复现了问题。
+- Green：修正 `LIST_TASKS` 的 task guard，并补齐 Worker、边界测试和临时乱码；`tests/test_tui_app_s5.py tests/test_tui_operations.py tests/test_tui_controller_s5.py`：`6 passed`。
+- 现有 TUI 回归：指定的 11 个 TUI 测试文件：`66 passed`。
+- 变更文件 Ruff：`All checks passed!`；TUI 变更文件 MyPy：`Success: no issues found in 4 source files`；`git diff --check`：通过。
+- 全仓 Pytest 复验：`1240 passed, 17 skipped, 2 failed`；失败均为 `tests/test_s4_tools.py` 导入 `tests.test_checkpoint_query` 的基线环境问题，未纳入 S5-R0 修复。
+
+### 未纳入边界
+
+- 查询进入独立 Query Worker、`OperationFinished/OperationFailed` Message 和跨 Task 查询取消留给 S5-R2。
+- Typed ViewModel、Presenter、Inspection Views、Export、响应式布局和完整端到端质量门留给 S5-R1~R6。

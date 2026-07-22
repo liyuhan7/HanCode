@@ -10,6 +10,7 @@ Task Worker runs at a time (the controller's ``busy`` flag guards this).
 """
 
 from __future__ import annotations
+from typing import cast
 
 from pathlib import Path
 
@@ -18,10 +19,11 @@ from textual.widgets import Input, ListView
 from textual.worker import Worker, get_current_worker
 
 from hancode.app.approval_service import ApprovalService
-from hancode.app.inspection_service import InspectionService
+from hancode.app.inspection_service import ArtifactPreview, InspectionService
 from hancode.app.interaction_service import InteractionService
-from hancode.app.recovery_service import RecoveryService, RollbackPreview
+from hancode.app.recovery_service import RecoveryService, RecoverySummary, RollbackPreview
 from hancode.app.task_service import TaskService
+from hancode.app.task_models import TaskSummary
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import TaskStatus
 from hancode.interfaces.tui.commands import (
@@ -33,6 +35,14 @@ from hancode.interfaces.tui.commands import (
 )
 from hancode.interfaces.tui.controller import TuiSessionController
 from hancode.interfaces.tui.messages import RunFailed, RunFinished, TraceArrived
+from hancode.interfaces.tui.operations import (
+    TuiIntent,
+    TuiOperationError,
+    TuiOperationKind,
+    TuiOperation,
+    TuiServices,
+)
+from hancode.runtime.agent_loop import AgentRunResult
 from hancode.interfaces.tui.screens.main import MainScreen
 from hancode.storage.trace import TraceEvent
 
@@ -61,19 +71,19 @@ class HanCodeTuiApp(App[None]):
         inspection_service: InspectionService | None = None,
         recovery_service: RecoveryService | None = None,
         approval_service: ApprovalService | None = None,
+        services: TuiServices | None = None,
     ) -> None:
         super().__init__()
         self._project_root = project_root
-        self._task_service = task_service or TaskService()
-        self._interaction_service = interaction_service or InteractionService()
-        self._inspection_service = inspection_service or InspectionService()
-        self._recovery_service = recovery_service or RecoveryService()
-        self._approval_service = approval_service or ApprovalService(project_root)
         self._pending_rollback: RollbackPreview | None = None
         self.controller = TuiSessionController(
             project_root,
-            task_service=self._task_service,
-            inspection_service=self._inspection_service,
+            services=services,
+            task_service=task_service,
+            interaction_service=interaction_service,
+            approval_service=approval_service,
+            inspection_service=inspection_service,
+            recovery_service=recovery_service,
         )
 
     def on_mount(self) -> None:
@@ -170,23 +180,37 @@ class HanCodeTuiApp(App[None]):
         elif intent is PlainTextIntent.ANSWER:
             self.submit_answer(text)
         elif intent is PlainTextIntent.APPROVAL_REQUIRES_COMMAND:
-            self._notify(
-                "该操作正在等待你的批准。请输入 /approve 批准，或 /reject <理由> 拒绝。"
-            )
+            self._notify("该操作正在等待你的批准。请输入 /approve 批准，或 /reject <理由> 拒绝。")
         else:
-            self._notify(
-                "当前 Task 不在等待输入状态。使用 /task <goal> 或 /run、/resume。"
-            )
+            self._notify("当前 Task 不在等待输入状态。使用 /task <goal> 或 /run、/resume。")
+
+    def _execute_sync(self, intent: TuiIntent) -> object | None:
+        operation = self.controller.dispatch(intent)
+        if operation is None:
+            error = self.controller.state.last_error
+            self._notify(error.message if error is not None else "操作被拒绝。")
+            return None
+        try:
+            self.controller.begin_operation(operation)
+            result = self.controller.execute(operation)
+        except TuiOperationError as exc:
+            self.controller.apply_error(exc)
+            self._notify(exc.structured_error.message)
+            return None
+        except HanCodeError as exc:
+            self._notify(exc.structured_error.message)
+            return None
+        self.controller.apply_result(result)
+        return result.value
 
     def _create_and_run(self, goal: str) -> None:
         if not self.controller.can_mutate():
             self._notify("任务正在运行，请稍后。")
             return
-        try:
-            summary = self._task_service.create(self._project_root, goal)
-        except HanCodeError as exc:
-            self._notify(exc.structured_error.message)
+        summary = self._execute_sync(TuiIntent(kind=TuiOperationKind.CREATE_TASK, goal=goal))
+        if summary is None:
             return
+        summary = cast(TaskSummary, summary)
         self.controller.set_active_summary(summary)
         self._refresh_task_list_data()
         self.start_run(resume=False)
@@ -227,8 +251,19 @@ class HanCodeTuiApp(App[None]):
         if not self.controller.can_mutate():
             self._notify("已有任务在运行。")
             return
-        self.controller.mark_running(task_id)
-        self._run_worker(task_id, resume=resume)
+        operation = self.controller.dispatch(
+            TuiIntent(
+                kind=TuiOperationKind.RUN_TASK,
+                task_id=task_id,
+                resume=resume,
+            )
+        )
+        if operation is None:
+            error = self.controller.state.last_error
+            self._notify(error.message if error is not None else "操作被拒绝。")
+            return
+        self.controller.begin_operation(operation)
+        self._run_worker(operation)
 
     def submit_answer(self, answer: str) -> None:
         """Answer a pending interaction, then auto-resume (S4-T6)."""
@@ -241,15 +276,17 @@ class HanCodeTuiApp(App[None]):
         if not self.controller.can_mutate():
             self._notify("任务正在运行，请稍后。")
             return
-        try:
-            self._interaction_service.answer(
-                self._project_root,
-                task_id,
-                answer,
-                interaction_id=interaction_id,
+        if (
+            self._execute_sync(
+                TuiIntent(
+                    kind=TuiOperationKind.ANSWER_INTERACTION,
+                    task_id=task_id,
+                    answer=answer,
+                    interaction_id=interaction_id,
+                )
             )
-        except HanCodeError as exc:
-            self._notify(exc.structured_error.message)
+            is None
+        ):
             return
         self._notify(f"Answer submitted · {len(answer.strip())} chars")
         self.start_run(resume=True)
@@ -274,19 +311,20 @@ class HanCodeTuiApp(App[None]):
         if not self.controller.can_mutate():
             self._notify("任务正在运行，请稍后。")
             return
-        try:
-            if approved:
-                self._approval_service.approve(task_id, approval_id=approval_id)
-            else:
-                self._approval_service.reject(
-                    task_id, approval_id=approval_id, reason=reason
+        operation_kind = TuiOperationKind.APPROVE if approved else TuiOperationKind.REJECT
+        if (
+            self._execute_sync(
+                TuiIntent(
+                    kind=operation_kind,
+                    task_id=task_id,
+                    approval_id=approval_id,
+                    reason=reason,
                 )
-        except HanCodeError as exc:
-            self._notify(exc.structured_error.message)
+            )
+            is None
+        ):
             return
-        self._notify(
-            f"Approval {'approved' if approved else 'rejected'} · {approval_id}"
-        )
+        self._notify(f"Approval {'approved' if approved else 'rejected'} · {approval_id}")
         # Auto-resume: on approval the loop executes the action; on rejection it
         # consumes the decision as feedback and continues.
         self.start_run(resume=True)
@@ -316,11 +354,12 @@ class HanCodeTuiApp(App[None]):
         if not self.controller.can_mutate():
             self._notify("任务正在运行，无法回退。")
             return
-        try:
-            preview = self._recovery_service.preview_last(self._project_root, task_id)
-        except HanCodeError as exc:
-            self._notify(exc.structured_error.message)
+        preview = self._execute_sync(
+            TuiIntent(kind=TuiOperationKind.PREVIEW_ROLLBACK, task_id=task_id)
+        )
+        if preview is None:
             return
+        preview = cast(RollbackPreview, preview)
         if not preview.available or preview.checkpoint_id is None:
             self._notify("没有可回退的 checkpoint。")
             return
@@ -340,14 +379,12 @@ class HanCodeTuiApp(App[None]):
         if not self.controller.can_mutate():
             self._notify("任务正在运行，无法回退。")
             return
-        try:
-            summary = self._recovery_service.rollback_last(self._project_root, task_id)
-        except HanCodeError as exc:
-            self._notify(exc.structured_error.message)
+        summary = self._execute_sync(TuiIntent(kind=TuiOperationKind.ROLLBACK, task_id=task_id))
+        if summary is None:
             return
+        summary = cast(RecoverySummary, summary)
         self._notify(
-            f"Rolled back to {summary.checkpoint_id} · "
-            f"{len(summary.restored_files)} files restored"
+            f"Rolled back to {summary.checkpoint_id} · {len(summary.restored_files)} files restored"
         )
         self._refresh_task_list_data()
         self._refresh_active_summary(task_id)
@@ -373,20 +410,17 @@ class HanCodeTuiApp(App[None]):
             self._notify("当前项目没有任务。使用 /task <goal> 创建。")
             return
         self._refresh_task_list()
-        self._notify(
-            "任务：" + ", ".join(f"{t.task_id}({t.status.value})" for t in tasks)
-        )
+        self._notify("任务：" + ", ".join(f"{t.task_id}({t.status.value})" for t in tasks))
 
     def _show_status(self) -> None:
         task_id = self.controller.state.active_task_id
         if task_id is None:
             self._notify("当前没有选中的任务。使用 /use <id> 或 /task <goal>。")
             return
-        try:
-            summary = self._task_service.get(self._project_root, task_id)
-        except HanCodeError as exc:
-            self._notify(exc.structured_error.message)
+        summary = self._execute_sync(TuiIntent(kind=TuiOperationKind.GET_STATUS, task_id=task_id))
+        if summary is None:
             return
+        summary = cast(TaskSummary, summary)
         self.controller.set_active_summary(summary)
         self._refresh_phase_bar()
         self._reflect_waiting_input()
@@ -430,20 +464,23 @@ class HanCodeTuiApp(App[None]):
         if task_id is None:
             self._notify("请先选择一个任务。")
             return
-        try:
-            preview = self._inspection_service.read_artifact(
-                self._project_root, task_id, name
+        preview = self._execute_sync(
+            TuiIntent(
+                kind=TuiOperationKind.READ_ARTIFACT,
+                task_id=task_id,
+                artifact_name=name,
             )
-        except HanCodeError as exc:
-            self._notify(exc.structured_error.message)
+        )
+        if preview is None:
             return
+        preview = cast(ArtifactPreview, preview)
         self._render_detail(f"# {preview.name}\n\n{preview.content}")
 
     def _refresh_active_summary(self, task_id: str) -> None:
-        try:
-            summary = self._task_service.get(self._project_root, task_id)
-        except HanCodeError:
+        summary = self._execute_sync(TuiIntent(kind=TuiOperationKind.GET_STATUS, task_id=task_id))
+        if summary is None:
             return
+        summary = cast(TaskSummary, summary)
         self.controller.set_active_summary(summary)
         self._refresh_phase_bar()
 
@@ -456,34 +493,34 @@ class HanCodeTuiApp(App[None]):
             return
         panel.update(text)
 
-    def _run_worker(self, task_id: str, *, resume: bool) -> None:
+    def _run_worker(self, operation: TuiOperation) -> None:
         observer = _WorkerTraceObserver(self)
 
         def _body() -> None:
             worker = get_current_worker()
             try:
-                result = self._task_service.run(
-                    self._project_root,
-                    task_id,
-                    resume=resume,
+                result = self.controller.execute(
+                    operation,
                     trace_observer=observer,
                 )
+            except TuiOperationError as exc:
+                if not worker.is_cancelled:
+                    self.call_from_thread(self.post_message, RunFailed(exc.structured_error))
+                return
             except HanCodeError as exc:
                 if not worker.is_cancelled:
-                    self.call_from_thread(
-                        self.post_message, RunFailed(exc.structured_error)
-                    )
+                    self.call_from_thread(self.post_message, RunFailed(exc.structured_error))
                 return
             except Exception:
                 # Any unexpected error must still clear busy and never leak the
                 # raw exception (which could contain sensitive detail) to the UI.
                 if not worker.is_cancelled:
-                    self.call_from_thread(
-                        self.post_message, RunFailed(_tui_internal_error())
-                    )
+                    self.call_from_thread(self.post_message, RunFailed(_tui_internal_error()))
                 return
             if not worker.is_cancelled:
-                self.call_from_thread(self.post_message, RunFinished(result))
+                self.call_from_thread(
+                    self.post_message, RunFinished(cast(AgentRunResult, result.value))
+                )
 
         self.run_worker(_body, thread=True, exclusive=True, group="task-run")
 
@@ -554,7 +591,13 @@ class HanCodeTuiApp(App[None]):
         detail: dict[str, object] | None = None
         if task_id is not None:
             try:
-                detail = self._approval_service.get_pending(task_id)
+                value = self._execute_sync(
+                    TuiIntent(
+                        kind=TuiOperationKind.GET_APPROVAL,
+                        task_id=task_id,
+                    )
+                )
+                detail = value if isinstance(value, dict) else None
             except HanCodeError:
                 detail = None
         tool_name = "?"
@@ -648,7 +691,6 @@ class HanCodeTuiApp(App[None]):
             return
         self._refresh_task_list()
 
-    
     def _refresh_task_list(self) -> None:
         """Update task labels in-place to avoid Textual layout cascade."""
         try:
@@ -664,9 +706,7 @@ class HanCodeTuiApp(App[None]):
                 item = view.children[index]
                 for child in item.walk_children():
                     if isinstance(child, Label):
-                        child.update(
-                            f"{summary.task_id} \u00b7 {summary.status.value}"
-                        )
+                        child.update(f"{summary.task_id} \u00b7 {summary.status.value}")
                         break
             else:
                 view.append(
