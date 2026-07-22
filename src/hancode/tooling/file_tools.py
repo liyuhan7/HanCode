@@ -84,7 +84,7 @@ def write_file(project_root: Path, path: str, content: str) -> ToolResult:
     if isinstance(resolved, str):
         return _write_failed(resolved)
     if not resolved.target.parent.exists():
-        return _write_failed("Parent directory does not exist.")
+        resolved.target.parent.mkdir(parents=True, exist_ok=True)
     if not resolved.target.parent.is_dir():
         return _write_failed("Parent path is not a directory.")
     if resolved.target.exists() and not resolved.target.is_file():

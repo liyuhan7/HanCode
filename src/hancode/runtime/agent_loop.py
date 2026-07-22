@@ -1815,37 +1815,20 @@ class AgentLoop:
                                 risks=(_checkpoint_failure_risk(),),
                             )
                 previous_state = state
-                updated_state = _state_after_tool(
+                state, post_error = self._post_tool_execution(
+                    task_id,
                     state,
                     action,
                     tool_result,
+                    routing.phase,
                     requires_checkpoint,
                     source_write=source_write,
                 )
-                try:
-                    state = self._save_if_changed(task_id, state, updated_state)
-                except HanCodeError as exc:
+                if post_error is not None:
                     state, state_error = self._mark_inconsistent(
                         task_id,
-                        updated_state,
-                        exc.structured_error,
-                        rollback_required=requires_checkpoint,
-                    )
-                    return _result(
-                        TaskStatus.INCONSISTENT,
-                        step,
-                        tuple(tool_calls),
-                        observation,
-                        state_error,
                         state,
-                        risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
-                    )
-                except Exception:
-                    fallback_error = _state_persistence_error(routing.phase)
-                    state, state_error = self._mark_inconsistent(
-                        task_id,
-                        updated_state,
-                        fallback_error,
+                        post_error,
                         rollback_required=requires_checkpoint,
                     )
                     return _result(
@@ -1858,39 +1841,7 @@ class AgentLoop:
                         risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
                     )
                 if action.tool_name == "run_tests" and self._delivery_pipeline is not None:
-                    try:
-                        report = _feedback_report_for_test_result(tool_result)
-                        self._delivery_pipeline.record_test(
-                            task_path(self._project_root, task_id),
-                            report,
-                            tool_result.command or "run_tests",
-                        )
-                        state = self._state_store.load(task_id)
-                    except HanCodeError as exc:
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, exc.structured_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                        )
-                    except Exception:
-                        fallback_error = _state_persistence_error(routing.phase)
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, fallback_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                        )
+                    report = _feedback_report_for_test_result(tool_result)
                     trace_error = self._append_trace(
                         task_id,
                         trace_events,
@@ -1935,60 +1886,6 @@ class AgentLoop:
                             state_error,
                             state,
                         )
-                if action.tool_name == "run_build" and self._delivery_pipeline is not None:
-                    try:
-                        build_status = (
-                            "timed_out"
-                            if tool_result.timed_out
-                            else "passed"
-                            if tool_result.success
-                            else "failed"
-                        )
-                        self._delivery_pipeline.record_build(
-                            task_path(self._project_root, task_id),
-                            task_id,
-                            build_status,
-                        )
-                    except HanCodeError as exc:
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, exc.structured_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                        )
-                    except Exception:
-                        fallback_error = _state_persistence_error(routing.phase)
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, fallback_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                        )
-                if (
-                    action.tool_name == "get_diff"
-                    and tool_result.success
-                    and self._delivery_pipeline is not None
-                ):
-                    diff_evidence = _diff_evidence_from_output(tool_result.output)
-                    if diff_evidence is not None:
-                        digest, drifted = diff_evidence
-                        self._delivery_pipeline.record_diff(
-                            task_path(self._project_root, task_id),
-                            task_id,
-                            digest,
-                            drifted=drifted,
-                        )
-                        state = self._state_store.load(task_id)
                 if action.tool_name in {"record_review", "record_knowledge"}:
                     try:
                         state = self._state_store.load(task_id)
@@ -3029,9 +2926,13 @@ class AgentLoop:
             if isinstance(event_seq, int) and not isinstance(event_seq, bool)
             else None
         )
+        # Allow event_seq >= expected_seq: other components (e.g. the
+        # checkpoint manager) write trace events directly to disk, so the
+        # in-memory list can lag by one or more events.  Only reject a
+        # strictly *regressing* seq which indicates a genuine appender bug.
         if not _is_valid_trace_event(event, task_id, phase, event_type, status) or (
-            (trace_events and event_seq != expected_seq)
-            or event_id != expected_event_id
+            event_id != expected_event_id
+            or (trace_events and event_seq < expected_seq)
         ):
             return StructuredError(
                 error_code="trace_event_invalid",
@@ -3363,6 +3264,59 @@ class AgentLoop:
         """Resolve project root path."""
         return self._project_root
 
+    def _post_tool_execution(
+        self,
+        task_id: str,
+        state: TaskState,
+        action: Action,
+        tool_result: ToolResult,
+        phase: Phase,
+        requires_checkpoint: bool,
+        *,
+        source_write: bool,
+    ) -> tuple[TaskState, StructuredError | None]:
+        """Persist state and delivery evidence after any tool execution."""
+        updated_state = _state_after_tool(
+            state,
+            action,
+            tool_result,
+            requires_checkpoint,
+            source_write=source_write,
+        )
+        try:
+            state = self._save_if_changed(task_id, state, updated_state)
+            pipeline = self._delivery_pipeline
+            if pipeline is not None:
+                task_root = task_path(self._project_root, task_id)
+                if action.tool_name == "run_tests":
+                    pipeline.record_test(
+                        task_root,
+                        _feedback_report_for_test_result(tool_result),
+                        tool_result.command or "run_tests",
+                    )
+                elif action.tool_name == "run_build":
+                    pipeline.record_build(
+                        task_root,
+                        task_id,
+                        _build_status_for_tool_result(tool_result),
+                    )
+                elif action.tool_name == "get_diff" and tool_result.success:
+                    diff_evidence = _diff_evidence_from_output(tool_result.output)
+                    if diff_evidence is not None:
+                        digest, drifted = diff_evidence
+                        pipeline.record_diff(
+                            task_root,
+                            task_id,
+                            digest,
+                            drifted=drifted,
+                        )
+                state = self._state_store.load(task_id)
+        except HanCodeError as exc:
+            return state, exc.structured_error
+        except Exception:
+            return state, _state_persistence_error(phase)
+        return state, None
+
     def _execute_approved_action(
         self,
         task_id: str,
@@ -3433,6 +3387,9 @@ class AgentLoop:
             # Reload state (checkpoint create advances the pointer) and mark
             # the manifest EXECUTING so a crash here is detectable (§12).
             state = self._state_store.load(task_id)
+            _sync_trace_events_from_storage(
+                task_path(self._project_root, task_id), trace_events
+            )
             if approval_id is not None and self._approval_store is not None:
                 try:
                     self._approval_store.mark_executing(
@@ -3482,15 +3439,20 @@ class AgentLoop:
             status=tool_event_status,
             action=_trace_action(action, decision, include_path=True),
             observation={"tool_name": action.tool_name},
+            error_summary=(
+                None
+                if tool_result.success
+                else redact_text(_tool_error_summary(tool_result))
+            ),
         )
         if trace_error is not None:
-            state = self._block(task_id, state)
+            state, state_error = self._mark_inconsistent(task_id, state, trace_error)
             return _make_result(
-                TaskStatus.BLOCKED,
+                TaskStatus.INCONSISTENT,
                 1,
                 tuple(tool_calls),
                 None,
-                trace_error,
+                state_error,
                 state,
             )
 
@@ -3500,6 +3462,30 @@ class AgentLoop:
             # cannot be replayed, then surface feedback to the loop.
             if checkpoint is not None:
                 self._abort_checkpoint_quietly(task_id, checkpoint)
+            state, post_error = self._post_tool_execution(
+                task_id,
+                state,
+                action,
+                tool_result,
+                phase,
+                requires_checkpoint,
+                source_write=source_write,
+            )
+            if post_error is not None:
+                state, state_error = self._mark_inconsistent(
+                    task_id,
+                    state,
+                    post_error,
+                    rollback_required=requires_checkpoint,
+                )
+                return _make_result(
+                    TaskStatus.INCONSISTENT,
+                    1,
+                    tuple(tool_calls),
+                    None,
+                    state_error,
+                    state,
+                )
             self._consume_and_clear(task_id, state, approval_id, None)
             observation, feedback_error = self._build_feedback(
                 lambda: self._feedback_builder.from_tool_result(
@@ -3532,6 +3518,35 @@ class AgentLoop:
                     TaskStatus.INCONSISTENT, 1, tuple(tool_calls), None,
                     state_error, state, risks=(_checkpoint_failure_risk(),),
                 )
+
+            _sync_trace_events_from_storage(
+                task_path(self._project_root, task_id), trace_events
+            )
+
+        state, post_error = self._post_tool_execution(
+            task_id,
+            state,
+            action,
+            tool_result,
+            phase,
+            requires_checkpoint,
+            source_write=source_write,
+        )
+        if post_error is not None:
+            state, state_error = self._mark_inconsistent(
+                task_id,
+                state,
+                post_error,
+                rollback_required=requires_checkpoint,
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                1,
+                tuple(tool_calls),
+                None,
+                state_error,
+                state,
+            )
 
         # Consume the approval (authoritative marker) BEFORE clearing state, so
         # a crash in between leaves a CONSUMED manifest the resume path honours.
@@ -3586,6 +3601,38 @@ class AgentLoop:
             )
         except Exception:
             pass
+
+
+def _sync_trace_events_from_storage(
+    task_root: Path, trace_events: list[TraceEvent]
+) -> None:
+    """Include checkpoint-manager events emitted outside AgentLoop's list."""
+    try:
+        lines = (task_root / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+        last_seq = trace_events[-1].seq if trace_events else 0
+        for line in lines:
+            payload = json.loads(line)
+            sequence = int(payload["seq"])
+            if sequence <= last_seq:
+                continue
+            trace_events.append(
+                TraceEvent(
+                    event_id=str(payload["event_id"]),
+                    seq=sequence,
+                    event_type=str(payload["event_type"]),
+                    task_id=str(payload["task_id"]),
+                    phase=Phase(str(payload["phase"])),
+                    timestamp=datetime.fromisoformat(str(payload["timestamp"])),
+                    status=str(payload["status"]),
+                    action=payload.get("action"),
+                    observation=payload.get("observation"),
+                    error_summary=payload.get("error_summary"),
+                    state_transition=payload.get("state_transition"),
+                )
+            )
+            last_seq = sequence
+    except (OSError, UnicodeError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+        return
 
 
 def _inconsistent(state: TaskState) -> TaskState:
@@ -4016,7 +4063,20 @@ def _state_after_tool(
         if isinstance(artifact_name, str) and artifact_name in state.artifacts:
             artifacts = dict(state.artifacts)
             artifacts[artifact_name] = True
-            return replace(state, artifacts=artifacts)
+            # Atomically mark the phase as completed when its definitive
+            # artifact is written, so that an interrupt between the tool
+            # result and a subsequent FINISH_PHASE action does not leave
+            # the state inconsistent on resume.
+            phase_completed = dict(state.phase_completed)
+            if artifact_name == "SPEC.md":
+                phase_completed[Phase.SPEC.value] = True
+            elif artifact_name == "PLAN.md":
+                phase_completed[Phase.PLAN.value] = True
+            elif artifact_name == "REVIEW.md":
+                phase_completed[Phase.REVIEW.value] = True
+            elif artifact_name == "DELIVERABLES.md":
+                phase_completed[Phase.DELIVER.value] = True
+            return replace(state, artifacts=artifacts, phase_completed=phase_completed)
 
     if not source_write or not result.success:
         return state
@@ -4078,6 +4138,12 @@ def _feedback_report_for_test_result(result: ToolResult) -> FeedbackReport:
         result.exit_code if result.exit_code is not None else (0 if result.success else 1),
         result.timed_out,
     )
+
+
+def _build_status_for_tool_result(result: ToolResult) -> str:
+    if result.timed_out:
+        return "timed_out"
+    return "passed" if result.success else "failed"
 
 
 def _diff_evidence_from_output(output: object) -> tuple[str, bool] | None:

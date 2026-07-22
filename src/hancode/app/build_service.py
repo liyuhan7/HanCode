@@ -9,6 +9,7 @@ from typing import Literal
 from hancode.core.config import load_config
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.state import load_state, save_state
+from hancode.app.delivery_service import DeliveryService
 from hancode.storage.trace import append_trace
 from hancode.storage.workspace import task_path
 from hancode.tooling.build_tools import run_build
@@ -87,6 +88,7 @@ class BuildService:
                 "latest_build_status": [state.latest_build_status, status]
             },
         )
+        DeliveryService().record_build(project_root, task_id, status)
 
         return BuildSummary(
             command=result.command or config.build_command,

@@ -25,6 +25,7 @@ from hancode.core.delivery_evidence import (
     RequirementStatus as NewRequirementStatus,
 )
 from hancode.core.config import load_config
+from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import Phase, TaskStatus
 from hancode.delivery_support.result import (
     KnowledgeCategory,
@@ -37,6 +38,12 @@ from hancode.delivery_support.result import (
 from hancode.runtime.feedback import FeedbackReport
 from hancode.core.state import TaskState, load_state
 from hancode.storage.delivery_evidence import DeliveryEvidenceStore
+from hancode.tooling.file_tools import redact_text
+
+
+_MAX_EVIDENCE_ITEMS = 100
+_MAX_EVIDENCE_TEXT_CHARS = 4096
+_MAX_EVIDENCE_ID_CHARS = 256
 
 
 class DeliveryPipeline:
@@ -89,15 +96,21 @@ class DeliveryPipeline:
         requirements: Sequence[RequirementCoverage | NewRequirementCoverage],
         risks: Sequence[str],
     ) -> Path:
+        _validate_evidence_count(len(requirements), "requirements")
+        _validate_evidence_count(len(risks), "review risks")
         normalized_requirements = tuple(
             _normalize_requirement(item) for item in requirements
         )
+        safe_requirements = tuple(
+            _sanitize_requirement(item) for item in normalized_requirements
+        )
+        safe_risks = tuple(_sanitize_evidence_text(item) for item in risks)
         rows = "".join(
             f"| {item.requirement_id} | {item.status.value} | "
             f"{item.evidence} | {item.risk or 'None.'} |\n"
-            for item in normalized_requirements
+            for item in safe_requirements
         )
-        risk_lines = "\n".join(f"- {risk}" for risk in risks) or "- None."
+        risk_lines = "\n".join(f"- {risk}" for risk in safe_risks) or "- None."
         content = (
             "# 审查记录\n\n"
             "## 需求覆盖\n\n"
@@ -119,9 +132,9 @@ class DeliveryPipeline:
                     risk=item.risk,
                     is_core=item.is_core,
                 )
-                for item in normalized_requirements
+                for item in safe_requirements
             ),
-            review_risks=tuple(risks),
+            review_risks=safe_risks,
         )
         return path
 
@@ -135,7 +148,9 @@ class DeliveryPipeline:
         task_id: str,
         items: Sequence[KnowledgeItem | NewKnowledgeItem],
     ) -> Path:
+        _validate_evidence_count(len(items), "knowledge items")
         normalized_items = tuple(_normalize_knowledge_item(item) for item in items)
+        safe_items = tuple(_sanitize_knowledge_item(item) for item in normalized_items)
         sections = (
             (KnowledgeCategory.REQUIREMENT_UNDERSTANDING, "需求理解"),
             (KnowledgeCategory.DESIGN_DECISION, "设计决策"),
@@ -148,7 +163,7 @@ class DeliveryPipeline:
             (KnowledgeCategory.OTHER, "其他"),
         )
         grouped = {
-            category: [i for i in normalized_items if i.category is category]
+            category: [i for i in safe_items if i.category is category]
             for category, _ in sections
         }
         lines = ["# 知识沉淀\n"]
@@ -174,7 +189,7 @@ class DeliveryPipeline:
                     detail=item.detail,
                     source_trace_id=item.source_trace_id,
                 )
-                for item in normalized_items
+                for item in safe_items
             ),
         )
         return path
@@ -310,6 +325,65 @@ class DeliveryPipeline:
             ),
         )
         self._store.save(task_root, updated)
+
+
+def _validate_evidence_count(count: int, label: str) -> None:
+    if count > _MAX_EVIDENCE_ITEMS:
+        raise HanCodeError(
+            StructuredError(
+                error_code="delivery_evidence_limit_exceeded",
+                message=f"Too many {label} entries for delivery evidence.",
+                phase=Phase.DELIVER.value,
+                denied_rule="delivery_evidence_item_limit",
+                suggested_fix=f"Reduce {label} to {_MAX_EVIDENCE_ITEMS} entries or fewer.",
+            )
+        )
+
+
+def _sanitize_evidence_text(value: str, *, limit: int = _MAX_EVIDENCE_TEXT_CHARS) -> str:
+    if not isinstance(value, str):
+        raise HanCodeError(
+            StructuredError(
+                error_code="delivery_evidence_invalid",
+                message="Delivery evidence text must be a string.",
+                phase=Phase.DELIVER.value,
+                denied_rule="delivery_evidence_text_required",
+                suggested_fix="Provide text values for structured delivery evidence.",
+            )
+        )
+    redacted = redact_text(value)
+    if len(redacted) <= limit:
+        return redacted
+    suffix = "...[TRUNCATED]"
+    return redacted[: limit - len(suffix)] + suffix
+
+
+def _sanitize_optional_evidence_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _sanitize_evidence_text(value, limit=_MAX_EVIDENCE_ID_CHARS) or None
+
+
+def _sanitize_requirement(item: RequirementCoverage) -> RequirementCoverage:
+    return RequirementCoverage(
+        requirement_id=_sanitize_evidence_text(
+            item.requirement_id, limit=_MAX_EVIDENCE_ID_CHARS
+        ),
+        status=item.status,
+        evidence=_sanitize_evidence_text(item.evidence),
+        risk=(None if item.risk is None else _sanitize_evidence_text(item.risk)),
+        is_core=item.is_core,
+    )
+
+
+def _sanitize_knowledge_item(item: KnowledgeItem) -> KnowledgeItem:
+    return KnowledgeItem(
+        category=item.category,
+        summary=_sanitize_evidence_text(item.summary),
+        detail=_sanitize_evidence_text(item.detail),
+        source_phase=item.source_phase,
+        source_trace_id=_sanitize_optional_evidence_id(item.source_trace_id),
+    )
 
 
 def _empty_evidence(task_id: str) -> DeliveryEvidence:

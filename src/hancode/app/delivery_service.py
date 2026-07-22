@@ -64,6 +64,10 @@ class DeliveryService:
         task_root = task_path(project_root, task_id)
         self._pipeline.record_diff(task_root, task_id, digest, drifted=drifted)
 
+    def record_build(self, project_root: Path, task_id: str, status: str) -> None:
+        task_root = task_path(project_root, task_id)
+        self._pipeline.record_build(task_root, task_id, status)
+
     def finalize(
         self,
         project_root: Path,
@@ -71,6 +75,10 @@ class DeliveryService:
     ) -> DeliveryResult:
         task_root = task_path(project_root, task_id)
         return self._pipeline.finalize(task_root, task_id)
+
+    def get_result(self, project_root: Path, task_id: str) -> DeliveryResult:
+        """Return the persisted delivery decision through the unified pipeline."""
+        return self.finalize(project_root, task_id)
 
     def get_evidence(
         self,

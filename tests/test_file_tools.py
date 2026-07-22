@@ -289,16 +289,14 @@ def test_write_file_overwrites_existing_file(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "new\n"
 
 
-def test_write_file_rejects_missing_parent_directory(tmp_path: Path) -> None:
+def test_write_file_rejects_missing_parent_directory_and_auto_creates_it(tmp_path: Path) -> None:
     result = write_file(tmp_path, "missing/answer.txt", "content\n")
 
-    assert result == ToolResult(
-        success=False,
-        action_name="write_file",
-        error_summary="Parent directory does not exist.",
-        mutation_applied=False,
-    )
-    assert not (tmp_path / "missing").exists()
+    assert result.success is True
+    assert result.action_name == "write_file"
+    assert result.mutation_applied is True
+    assert result.output == {"path": "missing/answer.txt", "bytes_written": 8}
+    assert (tmp_path / "missing" / "answer.txt").read_text(encoding="utf-8") == "content\n"
 
 
 @pytest.mark.parametrize("path", [".env", "nested/.env.production"])

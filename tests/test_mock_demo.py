@@ -257,11 +257,6 @@ def test_packaged_mock_demo_runs_without_repository_fixture(
     result = demo.run_packaged_mock_demo()
 
     assert result.status is TaskStatus.COMPLETED
-    assert set(result.deliverables) == {
-        "SPEC.md",
-        "PLAN.md",
-        "TEST_REPORT.md",
-        "REVIEW.md",
-        "KNOWLEDGE.md",
-        "DELIVERABLES.md",
-    }
+    assert result.task_id == "task-001"
+    assert result.latest_test_report_sha256 is not None
+    assert len(result.knowledge_items) == 5

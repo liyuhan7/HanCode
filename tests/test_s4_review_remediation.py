@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from hancode.app.approval_service import ApprovalService
 from hancode.core.actions import Action, ActionType, parse_action
 from hancode.core.approvals import ApprovalCategory
 from hancode.core.config import load_config
@@ -21,6 +23,7 @@ from hancode.runtime.engine import create_agent_loop
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.storage.delivery_evidence import DeliveryEvidenceStore
 from hancode.storage.checkpoint_queries import CheckpointQueryRepository
+from hancode.interfaces import cli
 from hancode.tooling.factory import build_default_tool_registry
 from hancode.tooling.delivery_tools import read_test_report
 from hancode.tooling.registry import ToolResult
@@ -286,6 +289,216 @@ def test_formal_agent_run_build_persists_build_state_and_evidence(tmp_path: Path
         (task_root / "delivery" / "evidence.json").read_text(encoding="utf-8")
     )
     assert evidence["latest_build_status"] == "passed"
+
+
+def test_approved_agent_build_updates_state_and_evidence(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    task_root = init_task_workspace(project_root, "task-001")
+    project_file = project_root / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.update(
+        {
+            "test_command": "pytest -q",
+            "build_command": "python -c \"print('build')\"",
+            "confirm_agent_build": True,
+        }
+    )
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    state = load_state(task_root)
+    save_state(
+        task_root,
+        replace(
+            state,
+            current_phase=Phase.TEST,
+            phase_completed={
+                **state.phase_completed,
+                Phase.SPEC.value: True,
+                Phase.PLAN.value: True,
+                Phase.CODE.value: True,
+            },
+            artifacts={**state.artifacts, "SPEC.md": True, "PLAN.md": True},
+        ),
+    )
+    registry = ToolRegistry()
+    registry.register(
+        "run_build",
+        lambda: ToolResult(
+            success=True,
+            action_name="run_build",
+            exit_code=0,
+            stdout="build",
+            command="python -c print",
+        ),
+    )
+    loop = create_agent_loop(
+        project_root,
+        "task-001",
+        provider=MockLLM(
+            [
+                {
+                    "type": "tool_call",
+                    "phase": "test",
+                    "tool_name": "run_build",
+                    "args": {},
+                    "reason": None,
+                }
+            ]
+        ),
+        tool_registry=registry,
+        max_steps=1,
+    )
+
+    waiting = loop.run("task-001")
+    assert waiting.status.value == "waiting_approval"
+    ApprovalService(project_root).approve("task-001")
+
+    loop.run("task-001", resume=True)
+
+    assert load_state(task_root).latest_build_status == "passed"
+    evidence = DeliveryEvidenceStore().load(task_root)
+    assert evidence is not None
+    assert evidence.latest_build_status == "passed"
+
+
+def test_approved_source_write_updates_edit_tracking(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    task_root = init_task_workspace(project_root, "task-001", goal="Write source.")
+    project_file = project_root / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["approval_mode"] = "all_source_writes"
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    state = load_state(task_root)
+    save_state(
+        task_root,
+        replace(
+            state,
+            current_phase=Phase.CODE,
+            phase_completed={
+                **state.phase_completed,
+                Phase.SPEC.value: True,
+                Phase.PLAN.value: True,
+            },
+            artifacts={**state.artifacts, "SPEC.md": True, "PLAN.md": True},
+        ),
+    )
+    config = load_config(project_root, "task-001")
+    loop = create_agent_loop(
+        project_root,
+        "task-001",
+        provider=MockLLM(
+            [
+                {
+                    "type": "tool_call",
+                    "phase": "code",
+                    "tool_name": "write_file",
+                    "args": {
+                        "path": "src/main.py",
+                        "content": "print('ok')\n",
+                    },
+                    "reason": "Implement the source change.",
+                }
+            ]
+        ),
+        tool_registry=build_default_tool_registry(config),
+        max_steps=1,
+    )
+
+    waiting = loop.run("task-001")
+    assert waiting.status.value == "waiting_approval"
+    ApprovalService(project_root).approve("task-001")
+
+    loop.run("task-001", resume=True)
+
+    final_state = load_state(task_root)
+    assert final_state.source_edits_this_phase == 1
+    assert "src/main.py" in final_state.files_changed
+
+
+def test_cli_build_records_delivery_evidence(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    task_root = init_task_workspace(project_root, "task-001")
+    project_file = project_root / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["build_command"] = "python -c \"print('build')\""
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["task", "build", "task-001", "--project-root", str(project_root)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    evidence = DeliveryEvidenceStore().load(task_root)
+    assert evidence is not None
+    assert evidence.latest_build_status == "passed"
+
+
+def test_structured_delivery_evidence_is_redacted_and_bounded(tmp_path: Path) -> None:
+    from hancode.core.delivery_evidence import (
+        KnowledgeCategory,
+        KnowledgeItem,
+        RequirementCoverage,
+        RequirementStatus,
+    )
+    from hancode.runtime.delivery_pipeline import DeliveryPipeline
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    task_root = init_task_workspace(project_root, "task-001")
+    secret = "token=structured-evidence-secret"
+    long_text = "x" * 10_000
+    pipeline = DeliveryPipeline()
+
+    pipeline.record_review(
+        task_root,
+        "task-001",
+        [RequirementCoverage("REQ-1", RequirementStatus.COVERED, secret + long_text, secret, True)],
+        [secret + long_text],
+    )
+    pipeline.record_knowledge(
+        task_root,
+        "task-001",
+        [KnowledgeItem(KnowledgeCategory.DESIGN_DECISION, secret, secret + long_text, secret)],
+    )
+
+    evidence = DeliveryEvidenceStore().load(task_root)
+    assert evidence is not None
+    assert secret not in json.dumps(evidence, default=str)
+    assert len(evidence.requirements[0].evidence) <= 4096
+    assert len(evidence.knowledge_items[0].detail) <= 4096
+    assert evidence.knowledge_items[0].source_trace_id == "token=[REDACTED]"
+
+
+def test_structured_delivery_evidence_rejects_excess_items(tmp_path: Path) -> None:
+    from hancode.core.delivery_evidence import RequirementCoverage, RequirementStatus
+    from hancode.core.errors import HanCodeError
+    from hancode.runtime.delivery_pipeline import DeliveryPipeline
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    task_root = init_task_workspace(project_root, "task-001")
+
+    with pytest.raises(HanCodeError) as error:
+        DeliveryPipeline().record_review(
+            task_root,
+            "task-001",
+            [RequirementCoverage(str(index), RequirementStatus.COVERED, "ok", None, True) for index in range(101)],
+            [],
+        )
+
+    assert error.value.structured_error.error_code == "delivery_evidence_limit_exceeded"
 
 
 def test_formal_agent_get_diff_persists_diff_evidence(tmp_path: Path) -> None:

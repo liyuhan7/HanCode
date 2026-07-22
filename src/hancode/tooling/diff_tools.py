@@ -170,17 +170,20 @@ def get_diff(
                     return _diff_failure(
                         "Workspace file exceeds the configured diff size limit."
                     )
-                # Check if binary
+                # Keep bounded raw bytes for binary hashing; only text diff
+                # generation is disabled for binary content.
                 with open(workspace_file, "rb") as fh:
-                    probe = fh.read(_BINARY_CHECK_BYTES)
-                if b"\x00" in probe:
+                    raw_bytes = fh.read(max_diff_file_bytes)
+                if b"\x00" in raw_bytes[:_BINARY_CHECK_BYTES]:
                     binary = True
+                    current_bytes = raw_bytes
                 else:
                     try:
-                        current_text = workspace_file.read_text(encoding="utf-8")
-                        current_bytes = current_text.encode("utf-8")
-                    except (UnicodeDecodeError, OSError):
+                        current_text = raw_bytes.decode("utf-8")
+                        current_bytes = current_text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+                    except UnicodeDecodeError:
                         binary = True
+                        current_bytes = raw_bytes
             except OSError:
                 return _diff_failure("Workspace file could not be read safely.")
             if current_bytes is not None:

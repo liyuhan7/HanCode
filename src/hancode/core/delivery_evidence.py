@@ -61,3 +61,33 @@ class DeliveryResult(DeliveryEvidence):
 
     status: TaskStatus
     blockers: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status.value,
+            "task_id": self.task_id,
+            "requirements": [
+                {
+                    "requirement_id": item.requirement_id,
+                    "status": item.status.value,
+                    "evidence": item.evidence,
+                    "risk": item.risk,
+                    "is_core": item.is_core,
+                }
+                for item in self.requirements
+            ],
+            "knowledge_items": [
+                {
+                    "category": item.category.value,
+                    "summary": item.summary,
+                    "detail": item.detail,
+                    "source_trace_id": item.source_trace_id,
+                }
+                for item in self.knowledge_items
+            ],
+            "review_risks": list(self.review_risks),
+            "latest_test_report_sha256": self.latest_test_report_sha256,
+            "latest_diff_sha256": self.latest_diff_sha256,
+            "latest_build_status": self.latest_build_status,
+            "blockers": list(self.blockers),
+        }

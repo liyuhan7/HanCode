@@ -6397,10 +6397,14 @@ S4-R2 Build       S4-R3 Test Report
 - 正式 AgentLoop 在真实 `run_tests` 后生成 `TEST_REPORT.md`，在真实 `get_diff` 后持久化 Diff digest，并在 `record_review`、`record_knowledge`、finalize 后写入交付 trace 事件。
 - Demo action 序列改为通过 MockLLM 驱动 `record_review`、`get_diff`、`record_knowledge` 和 `finish_phase`，移除 Runner 手工推进 Deliver phase、手工写交付证据和手工 finalize。
 - 补齐 `DeliveryPipelinePort.record_diff`、BuildService policy decision、Diff drift fail-closed、snapshot 大小上限前置检查，以及对应回归测试。
-- 专项 `tests/test_s4_delivery_e2e.py tests/test_mock_demo.py tests/test_s4_review_remediation.py`：`40 passed`。
-- 全量 `pytest -q -p no:cacheprovider`：`1231 passed, 17 skipped`。
+- 专项 `tests/test_s4_delivery_e2e.py tests/test_mock_demo.py tests/test_s4_review_remediation.py`：基线为 `40 passed`；审批/恢复、CLI Build、Evidence 安全和二进制 drift follow-up 后历史记录为 `64 passed`；本轮包含 Diff 回归的实际专项命令为 `56 passed`。
+- 全量 `pytest -q -p no:cacheprovider`：`1236 passed, 17 skipped`。
 - `ruff check src tests --no-cache`：`All checks passed!`；`mypy src`：`94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
-- 未使用真实网络、凭据或第三方 Agent 框架；未创建提交，等待用户决定集成方式。
+- 审批后的 `run_build` / source write 统一执行 state 后处理；CLI Build 通过 `DeliveryService.record_build()` 写入 Evidence；Demo 最终返回持久化 core `DeliveryResult`。
+- Structured Evidence 统一执行敏感内容脱敏、字段截断、条目数量限制和 `source_trace_id` 边界校验；二进制 Diff 使用 bounded bytes 计算 drift hash。
+- 普通 source write 不再重复注入 checkpoint 管理器已写入的 trace 事件，避免 Demo 分 stage 逻辑序号与持久化 trace 序列冲突；审批恢复仍保留必要的外部 trace 同步。
+- 未使用真实网络、凭据或第三方 Agent 框架；基线提交为 `f0f8989`，本轮 follow-up 改动尚未提交。
+- GitHub Actions 尚无本轮独立 run 证据；本地质量门与 Windows 平台既有 skip 需与远端 CI 分开记录。
 
 ### 非目标 / 边界
 

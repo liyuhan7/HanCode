@@ -348,13 +348,17 @@ class TestGetDiffBounds:
         assert diff_result.output["files"][0]["unified_diff"] is not None
 
     def test_diff_skips_binary_content(self, tmp_path: Path) -> None:
+        import hashlib
+
         project_root = tmp_path / "proj"
         project_root.mkdir()
         init_project_workspace(project_root, "proj-001", "HanCode", "Test")
         task_root = init_task_workspace(project_root, "task-001")
 
         binary_content = bytes(range(256))
-        _write_source(project_root, "src/data.bin", binary_content.decode("latin-1"))
+        binary_path = project_root / "src/data.bin"
+        binary_path.parent.mkdir(parents=True, exist_ok=True)
+        binary_path.write_bytes(binary_content)
 
         ckpt = _make_checkpoint(task_root, "ckpt-001")
         _write_manifest(
@@ -365,17 +369,19 @@ class TestGetDiffBounds:
                     "action": "modify",
                     "before_snapshot": "files/001-data.before",
                     "before_sha256": None,
-                    "after_sha256": None,
+                    "after_sha256": hashlib.sha256(binary_content).hexdigest(),
                     "_content": binary_content,
                 }
             ],
         )
+        binary_path.write_bytes(b"\x00" + b"changed" * 40)
 
         diff_result = get_diff(project_root, task_root, scope="task")
 
         assert diff_result.success is True
         f = diff_result.output["files"][0]
         assert f["binary"] is True
+        assert f["drifted"] is True
         assert f["unified_diff"] is None
 
 

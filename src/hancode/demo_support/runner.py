@@ -11,15 +11,9 @@ from typing import Mapping, Sequence
 
 from hancode.runtime.agent_loop import AgentRunResult, FilesystemAgentLoopPorts
 from hancode.runtime.engine import create_agent_loop
+from hancode.app.delivery_service import DeliveryService
 from hancode.core.config import HanCodeConfig, load_config
-from hancode.delivery_support.result import (
-    DeliveryResult,
-    KnowledgeCategory,
-    KnowledgeItem,
-    RequirementCoverage,
-    RequirementStatus,
-    ResultBuilder,
-)
+from hancode.core.delivery_evidence import DeliveryResult
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.providers.mock import MockLLM
 from hancode.core.models import Phase, TaskStatus
@@ -244,66 +238,6 @@ def _tool_registry(config: HanCodeConfig, test_runner: _DemoTestRunner) -> ToolR
     )
 
 
-def _covered_requirement() -> tuple[RequirementCoverage, ...]:
-    return (
-        RequirementCoverage(
-            requirement_id="REQ-ADD-001",
-            status=RequirementStatus.COVERED,
-            evidence="tests/test_calculator.py::CalculatorTests.test_add_returns_the_sum_of_two_integers",
-            risk=None,
-            is_core=True,
-        ),
-    )
-
-
-def _knowledge_items(task_root: Path) -> tuple[KnowledgeItem, ...]:
-    return (
-        KnowledgeItem(
-            KnowledgeCategory.REQUIREMENT_UNDERSTANDING,
-            "课程要求不可修改",
-            "assignment.md 受保护，策略拒绝了写入请求。",
-            Phase.CODE,
-            _event_id(task_root, "policy_denied"),
-        ),
-        KnowledgeItem(
-            KnowledgeCategory.DESIGN_DECISION,
-            "业务写入必须先 checkpoint",
-            "每次 source write 在执行前创建可恢复快照。",
-            Phase.CODE,
-            _event_id(task_root, "checkpoint_created"),
-        ),
-        KnowledgeItem(
-            KnowledgeCategory.TESTING_EXPERIENCE,
-            "失败测试应被分类后回灌",
-            "真实 unittest 失败被分类为 assertion_failure。",
-            Phase.TEST,
-            _event_id(task_root, "feedback_generated"),
-        ),
-        KnowledgeItem(
-            KnowledgeCategory.ERROR_FIX,
-            "耗尽重试预算后回退",
-            "第二次失败后恢复最新 checkpoint，再进行最小正确修复。",
-            Phase.REVIEW,
-            _event_id(task_root, "rollback_performed"),
-        ),
-        KnowledgeItem(
-            KnowledgeCategory.REUSABLE_PATTERN,
-            "受限离线测试器",
-            "Demo 以固定 argv 和 shell=False 运行本地 unittest。",
-            Phase.TEST,
-            _event_id(task_root, "retry_budget_consumed"),
-        ),
-    )
-
-
-def _event_id(task_root: Path, event_type: str) -> str:
-    for line in (task_root / "trace.jsonl").read_text(encoding="utf-8").splitlines():
-        event = json.loads(line)
-        if event["event_type"] == event_type:
-            return str(event["event_id"])
-    raise _demo_error("mock_demo_trace_evidence_missing", "Required demo trace event is missing.")
-
-
 def _append(
     task_root: Path,
     event_type: str,
@@ -448,14 +382,8 @@ def run_packaged_mock_demo() -> DeliveryResult:
     with TemporaryDirectory(prefix="hancode-mock-demo-") as temporary_directory:
         project_root = Path(temporary_directory) / "broken_project"
         copy_packaged_fixture(project_root)
-        result = run_mock_demo(project_root)
-        task_root = project_root / ".hancode" / "tasks" / TASK_ID
-        return ResultBuilder().build(
-            task_root,
-            result,
-            _covered_requirement(),
-            _knowledge_items(task_root),
-        )
+        run_mock_demo(project_root)
+        return DeliveryService().get_result(project_root, TASK_ID)
 
 
 def main() -> int:

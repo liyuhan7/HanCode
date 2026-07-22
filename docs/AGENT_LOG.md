@@ -22,7 +22,7 @@
 
 - 使用的技能：未使用 `using-superpowers`；按 S4-R7 任务卡执行 TDD、回归验证和文档同步。
 - 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：用户要求继续处理 S4-R 代码评审中的 P0/P1 阻断；不使用真实网络、凭据或第三方 Agent 框架；保持现有用户改动和未提交状态。
+- 关键提示词 / 上下文：该条目对应基线提交 `f0f8989`；不使用真实网络、凭据或第三方 Agent 框架。
 - TDD Red：新增正式 `get_diff` evidence 回归后先观察到 evidence 未持久化；移除 Demo 手工交付编排后先观察到 Demo 缺少 Diff gate 和 trace 事件；随后以最小实现接入正式 AgentLoop 路径。
 - 实现摘要：
   - AgentLoop 对真实 `run_tests` 自动生成测试报告、写入 `test_completed` / `feedback_generated`；对真实 `get_diff` 持久化 Diff digest 并对 drift fail-closed；结构化 review/knowledge/finalize 写入交付 trace。
@@ -30,10 +30,33 @@
   - 补齐 BuildService 审计字段、DeliveryPipelinePort 协议、checkpoint snapshot 读取大小上限和 Diff drift 清除语义。
   - 新增/扩展 `tests/test_s4_review_remediation.py`，并同步 Demo convergence 断言到正式 AgentLoop 装配路径。
 - 验证：专项 `tests/test_s4_delivery_e2e.py tests/test_mock_demo.py tests/test_s4_review_remediation.py` 为 `40 passed`；全量 pytest 为 `1231 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
-- 提交：未提交，用户未要求创建提交。
-- 人工干预：将 S4 与 S4-R7 在 `docs/PLAN.md` 标记为已完成，并回填完成标准与验证证据；遵守用户“不使用 superpowers 流程”的约束。
+- 提交：`f0f8989`（基线实现提交）。
+- 人工干预：基线阶段将 S4 与 S4-R7 在 `docs/PLAN.md` 标记为已完成；后续评审发现审批恢复和 CLI Build 证据缺口，已在本条目后追加返工记录。
 - 经验教训：交付证据必须在 AgentLoop 的真实 ToolResult 分支中持久化；Demo 只能提供确定性 Provider action，不能绕过 Parser、Policy、Registry、Pipeline 或 Delivery gate。
-- 剩余风险：全量测试仍有 17 个既有平台相关 skip；当前工作区仍是未提交改动，尚未执行提交/合并。
+- 剩余风险：基线阶段仍有 17 个既有平台相关 skip；审批恢复、CLI Build 和 Evidence 安全边界由后续返工处理。
+
+---
+
+### 2026-07-22 — S4-R7 follow-up — 审批恢复与证据安全收口
+
+- 背景：复核确认 `WAITING_APPROVAL -> approve -> resume` 的 Build/source write 路径绕过了状态与 Evidence 后处理，CLI Build 只更新 state；同时发现 Demo 仍使用旧 `ResultBuilder`、结构化 Evidence 缺少统一脱敏/上限、二进制 Diff 未计算 drift hash。
+- TDD Red：新增三条审批/CLI 回归均先失败；新增 Evidence 脱敏/数量限制和二进制 drift 回归先失败。
+- 实现摘要：新增 AgentLoop 审批执行后的统一 `_post_tool_execution`，同步 `_state_after_tool`、Build/Diff/Test Evidence；补充 `DeliveryService.record_build`；Demo 改用持久化 core `DeliveryResult`；Evidence 字段统一脱敏、截断、数量限制和 source_trace_id 校验；二进制文件保留 bounded bytes 计算 drift hash。
+- 额外修复：审批 checkpoint 由外部管理器写 trace 后，同步 AgentLoop 本地 trace 序列，避免合法审批源写入被误判为 trace gap。
+- 验证：S4/审批/Diff/Demo 专项基线记录为 `64 passed`；本轮收尾专项命令实际为 `56 passed`；全量 pytest `1236 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
+- 提交：未提交；改动基于 `f0f8989`，等待用户决定是否创建后续提交。
+- 剩余风险：GitHub Actions 尚未取得独立 run 证据；Windows 环境仍保留既有平台相关 skip。
+
+---
+
+### 2026-07-22 — S4-R7 follow-up — Demo trace 序列回归收尾
+
+- 背景：统一普通工具后处理后，Demo 在跨 stage source write 时出现 `trace_event_invalid`，后续表现为 `phase_mismatch`。
+- 根因：checkpoint 管理器直接写入的 trace 事件被重复注入 AgentLoop 本地事件列表；Demo adapter 每个 stage 使用独立逻辑序号，导致事件 ID/序号语义冲突。
+- 修复：移除普通 source write 路径中不必要的 trace 重新同步，仅保留审批恢复所需的外部 trace 同步；不改变状态与交付 Evidence 后处理。
+- 验证：`tests/test_mock_demo.py` 为 `10 passed`；S4/E2E、Demo、审批修复和 Diff 专项为 `56 passed`；全量 pytest 为 `1236 passed, 17 skipped`；Ruff、MyPy 和 `uv build` 均通过。
+- 提交：未提交；改动基于 `f0f8989`，等待用户决定是否创建后续提交。
+- 剩余风险：GitHub Actions 尚未取得独立 run 证据；Windows 环境仍保留既有平台相关 skip。
 
 ---
 
