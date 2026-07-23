@@ -199,19 +199,37 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["requirement", "status", "evidence"],
+                        "required": ["requirement_id", "status", "evidence"],
                         "properties": {
-                            "requirement": {"type": "string", "minLength": 1},
+                            "requirement_id": {"type": "string", "minLength": 1},
                             "status": {
                                 "type": "string",
-                                "enum": ["covered", "partial", "missing"],
+                                "enum": [
+                                    "covered",
+                                    "partial",
+                                    "not_covered",
+                                    "missing",
+                                    "untested",
+                                ],
                             },
                             "evidence": {"type": "string"},
+                            "risk": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {"type": "null"},
+                                ],
+                            },
+                            "is_core": {
+                                "type": "boolean",
+                            },
                         },
                         "additionalProperties": False,
                     },
                 },
-                "risks": {"type": "array"},
+                "risks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
             },
             "required": ["requirements"],
             "additionalProperties": False,
@@ -229,11 +247,30 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["topic", "summary"],
+                        "required": ["category", "summary", "detail"],
                         "properties": {
-                            "topic": {"type": "string", "minLength": 1},
+                            "category": {
+                                "type": "string",
+                                "enum": [
+                                    "requirement_understanding",
+                                    "design_decision",
+                                    "testing_experience",
+                                    "error_fix",
+                                    "reusable_pattern",
+                                    "bug_fix",
+                                    "test_insight",
+                                    "process_improvement",
+                                    "other",
+                                ],
+                            },
                             "summary": {"type": "string", "minLength": 1},
-                            "evidence": {"type": "string"},
+                            "detail": {"type": "string", "minLength": 1},
+                            "source_trace_id": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {"type": "null"},
+                                ],
+                            },
                         },
                         "additionalProperties": False,
                     },

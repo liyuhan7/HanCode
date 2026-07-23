@@ -342,7 +342,7 @@ def test_read_action_schema_does_not_require_reason() -> None:
         for branch in prompt.action_schema["oneOf"]
         if branch["properties"].get("tool_name", {}).get("const") == "read_file"
     )
-    assert "reason" not in read_branch["required"]
+    assert "reason" in read_branch["required"]
 
 
 def test_prompt_system_message_contains_phase_instruction() -> None:

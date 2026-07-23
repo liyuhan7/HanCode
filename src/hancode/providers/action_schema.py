@@ -43,10 +43,9 @@ def _tool_call_branch(
     phase: Phase,
     tool: ToolDescriptor,
 ) -> dict[str, object]:
-    required = ["type", "phase", "tool_name", "args"]
+    required = ["type", "phase", "tool_name", "args", "reason"]
 
     if tool.name in _WRITE_TOOLS:
-        required.append("reason")
         reason_schema: dict[str, object] = {
             "type": "string",
             "minLength": 1,
@@ -85,7 +84,7 @@ _REASON_ONE_OF = {
 def _control_branch(phase: Phase, action_type: str) -> dict[str, object]:
     return {
         "type": "object",
-        "required": ["type", "phase", "tool_name", "args"],
+        "required": ["type", "phase", "tool_name", "args", "reason"],
         "properties": {
             "type": {"const": action_type},
             "phase": {"const": phase.value},
@@ -100,7 +99,7 @@ def _control_branch(phase: Phase, action_type: str) -> dict[str, object]:
 def _ask_user_branch(phase: Phase) -> dict[str, object]:
     return {
         "type": "object",
-        "required": ["type", "phase", "tool_name", "args"],
+        "required": ["type", "phase", "tool_name", "args", "reason"],
         "properties": {
             "type": {"const": "ask_user"},
             "phase": {"const": phase.value},

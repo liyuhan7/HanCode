@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import jsonschema
 import pytest
 
 from hancode.core.actions import ParseError, parse_action
@@ -145,6 +146,11 @@ def test_schema_requires_reason_non_empty() -> None:
         phase=Phase.SPEC, tool_catalog=_make_catalog()
     )
     for branch in schema["oneOf"]:
+        assert "reason" in branch["required"], (
+            f"Branch {branch['properties']['type']['const']} "
+            f"({branch['properties'].get('tool_name', {}).get('const', 'N/A')}) "
+            "must require reason"
+        )
         reason_schema = branch["properties"]["reason"]
         tool_name = branch["properties"].get("tool_name", {})
         if tool_name.get("const") in {"write_file", "edit_file"}:
@@ -223,3 +229,107 @@ def test_schema_write_file_example_passes_parse_action() -> None:
     assert not isinstance(result, ParseError), (
         f"write_file example rejected by parse_action: {result}"
     )
+
+
+def _minimal_args(args_schema: dict[str, object]) -> dict[str, object]:
+    """Build minimal valid args from an args property schema."""
+    props = args_schema.get("properties", {})
+    if not isinstance(props, dict):
+        return {}
+    req = args_schema.get("required", [])
+    if not isinstance(req, list):
+        req = []
+    max_prop = args_schema.get("maxProperties")
+    if max_prop == 0:
+        return {}
+    result: dict[str, object] = {}
+
+    def _fill_one(name: str, prop: object) -> object:
+        if not isinstance(prop, dict):
+            return ""
+        if prop.get("type") == "string":
+            return "x"
+        if prop.get("type") == "boolean":
+            return True
+        if prop.get("type") == "array":
+            return []
+        if "enum" in prop and isinstance(prop["enum"], list) and prop["enum"]:
+            return prop["enum"][0]
+        if "oneOf" in prop and isinstance(prop["oneOf"], list):
+            for sub in prop["oneOf"]:
+                if not isinstance(sub, dict):
+                    continue
+                if sub.get("type") == "string":
+                    return "x"
+                if sub.get("type") == "null":
+                    return None
+            return None
+        return ""
+
+    for name in req:
+        if name in props:
+            result[name] = _fill_one(name, props[name])
+    if not result and props:
+        for name in props:
+            result[name] = _fill_one(name, props[name])
+    return result
+
+
+def test_every_schema_valid_action_is_accepted_by_parse_action() -> None:
+    """Every payload that passes JSON Schema validation must also pass parse_action."""
+    catalog = _make_catalog()
+    for phase in Phase:
+        schema = build_action_schema(
+            phase=phase,
+            tool_catalog=catalog,
+            interaction_enabled=True,
+        )
+        for branch in schema["oneOf"]:
+            props = branch["properties"]
+            phase_value = props["phase"]["const"]
+            type_const = props["type"]["const"]
+
+            if type_const == "tool_call":
+                tool_name = props["tool_name"]["const"]
+                args = _minimal_args(props["args"])
+                reason_schema = props["reason"]
+                if "oneOf" in reason_schema:
+                    reason: str | None = None
+                else:
+                    reason = "test"
+                payload = {
+                    "type": "tool_call",
+                    "phase": phase_value,
+                    "tool_name": tool_name,
+                    "args": args,
+                    "reason": reason,
+                }
+            elif type_const == "finish_phase":
+                payload = {
+                    "type": "finish_phase",
+                    "phase": phase_value,
+                    "tool_name": None,
+                    "args": {},
+                    "reason": None,
+                }
+            elif type_const == "ask_user":
+                payload = {
+                    "type": "ask_user",
+                    "phase": phase_value,
+                    "tool_name": None,
+                    "args": {"question": "test?"},
+                    "reason": None,
+                }
+            else:
+                continue
+
+            # JSON Schema must accept
+            jsonschema.validate(payload, schema)
+
+            # parse_action must accept
+            result = parse_action(dict(payload), phase)
+            assert not isinstance(result, ParseError), (
+                f"Schema-valid payload for {type_const} "
+                f"(tool={payload.get('tool_name')}) "
+                f"at phase {phase_value} was rejected by parse_action: {result}"
+            )
