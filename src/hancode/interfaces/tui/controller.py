@@ -286,8 +286,9 @@ class TuiSessionController:
                 )
         elif kind is TuiOperationKind.DELIVERY:
             from hancode.core.delivery_evidence import DeliveryEvidence
+            from hancode.app.delivery_inspection_service import DeliverySummary
 
-            if value is None or isinstance(value, DeliveryEvidence):
+            if value is None or isinstance(value, (DeliveryEvidence, DeliverySummary)):
                 self._state = replace(
                     self._state,
                     detail_kind=DetailKind.DELIVERY,

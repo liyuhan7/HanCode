@@ -8,6 +8,7 @@ import pytest
 
 from hancode.core.actions import Action, ActionType
 from hancode.core.approvals import (
+    ApprovalActionSnapshot,
     ApprovalCategory,
     ApprovalRecord,
     ApprovalStatus,
@@ -103,6 +104,16 @@ def _make_rollback_action() -> Action:
     )
 
 
+def _make_run_tests_action(args: dict[str, object]) -> Action:
+    return Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.TEST,
+        tool_name="run_tests",
+        args=args,
+        reason=None,
+    )
+
+
 def _valid_state(**overrides: object) -> TaskState:
     kwargs: dict[str, object] = {
         "schema_version": 1,
@@ -158,6 +169,29 @@ def test_disabled_mode_never_requires_approval() -> None:
     decision = _allowed_decision(Phase.CODE)
 
     result = policy.evaluate(action=action, policy_decision=decision, state=state)
+    assert result.required is False
+
+
+def test_explicit_test_command_requires_approval_when_disabled() -> None:
+    policy = ApprovalPolicy(_make_config(approval_mode="disabled"))
+    action = _make_run_tests_action({"command": "pytest -q"})
+    state = _valid_state(current_phase=Phase.TEST)
+    decision = _allowed_decision(Phase.TEST)
+
+    result = policy.evaluate(action=action, policy_decision=decision, state=state)
+
+    assert result.required is True
+    assert result.category is ApprovalCategory.RUN_TESTS
+
+
+def test_configured_test_command_does_not_require_approval_when_disabled() -> None:
+    policy = ApprovalPolicy(_make_config(approval_mode="disabled"))
+    action = _make_run_tests_action({})
+    state = _valid_state(current_phase=Phase.TEST)
+    decision = _allowed_decision(Phase.TEST)
+
+    result = policy.evaluate(action=action, policy_decision=decision, state=state)
+
     assert result.required is False
 
 
@@ -353,6 +387,63 @@ def test_preview_is_produced_for_write(tmp_path: Path) -> None:
     assert record.preview.unified_diff is not None
     # Diff should show the change
     assert "old" in record.preview.unified_diff or "new" in record.preview.unified_diff
+
+
+def test_explicit_test_command_preview_is_redacted_and_digest_bound(
+    tmp_path: Path,
+) -> None:
+    config = _make_config()
+    builder = ApprovalRequestBuilder(config)
+    init_project_workspace(tmp_path, "proj-001", "test", "hw1")
+
+    command = "pytest -q sk-command-secret"
+    action = _make_run_tests_action({"command": command})
+    requirement = _require(
+        ApprovalCategory.RUN_TESTS,
+        "Running an explicit test command requires confirmation.",
+        targets=(),
+        risk_level="high",
+    )
+
+    preview = builder._build_preview(action, tmp_path, requirement)
+    assert "sk-command-secret" not in preview.summary
+    assert "[REDACTED]" in preview.summary
+    assert preview.redacted is True
+
+    with pytest.raises(Exception) as exc_info:
+        builder.build(
+            project_id="proj-001",
+            task_id="task-001",
+            state=_valid_state(current_phase=Phase.TEST),
+            action=action,
+            requirement=requirement,
+            project_root=tmp_path,
+        )
+
+    assert "sk-command-secret" not in str(exc_info.value)
+
+    safe_command = "pytest -q tests/test_app.py"
+    safe_action = _make_run_tests_action({"command": safe_command})
+    record = builder.build(
+        project_id="proj-001",
+        task_id="task-001",
+        state=_valid_state(current_phase=Phase.TEST),
+        action=safe_action,
+        requirement=requirement,
+        project_root=tmp_path,
+    )
+
+    assert record.preview.summary == f"Run test command: {safe_command}"
+    assert record.preview.redacted is False
+    assert record.action.args["command"] == safe_command
+    tampered = ApprovalActionSnapshot.from_action(
+        action_type=ActionType.TOOL_CALL,
+        phase=Phase.TEST,
+        tool_name="run_tests",
+        args={"command": "pytest -q tests/other.py"},
+        reason="No reason provided.",
+    )
+    assert record.action.digest_matches(tampered) is False
 
 
 def test_sensitive_payload_is_rejected(tmp_path: Path) -> None:

@@ -82,14 +82,14 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="run_tests",
-        description="Run a test command. If command is omitted, the project's configured test command is used.",
+        description="Run one test command. If command is omitted, the project's configured test command is used. Shell syntax is not supported.",
         args_schema={
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Explicit test command to run (e.g. 'gcc hello.c && ./a.out'). "
-                                   "When omitted the project-level test_command is used.",
+                    "description": "Explicit single-command argv input (e.g. 'gcc hello.c'). "
+                                   "When omitted the project-level test_command is used; shell operators are rejected.",
                 },
             },
         },

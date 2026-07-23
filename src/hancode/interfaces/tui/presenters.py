@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import PureWindowsPath
 from typing import Mapping
 
-from hancode.app.delivery_inspection_service import TestReportSummary
+from hancode.app.delivery_inspection_service import DeliverySummary, TestReportSummary
 from hancode.app.build_service import BuildSummary
 from hancode.app.inspection_service import ArtifactPreview
 from hancode.app.recovery_service import RollbackPreview
@@ -380,7 +380,7 @@ def present_checkpoints(
 
 
 def present_delivery(
-    evidence: DeliveryEvidence | None,
+    evidence: DeliveryEvidence | DeliverySummary | None,
     summary: TaskSummary | None = None,
 ) -> DeliveryView:
     if evidence is None:
@@ -397,6 +397,30 @@ def present_delivery(
             knowledge_count=0,
             artifacts=(),
             export_ready=False,
+        )
+    if isinstance(evidence, DeliverySummary):
+        requirements = tuple(
+            RequirementCoverageView(
+                requirement_id=_text(item.requirement_id),
+                status=item.status.value,
+                evidence=_text(item.evidence),
+                risk=None if item.risk is None else _text(item.risk),
+                is_core=item.is_core,
+            )
+            for item in evidence.requirements[:MAX_VIEW_ITEMS]
+        )
+        return DeliveryView(
+            status=_text(evidence.status),
+            blockers=_texts(evidence.blockers),
+            latest_test_status=_text(evidence.latest_test_status),
+            latest_build_status=_text(evidence.latest_build_status),
+            requirement_coverage=requirements,
+            knowledge_count=min(evidence.knowledge_count, MAX_VIEW_ITEMS),
+            artifacts=tuple(
+                (_text(name), bool(present))
+                for name, present in list(evidence.artifacts.items())[:MAX_VIEW_ITEMS]
+            ),
+            export_ready=evidence.export_ready,
         )
     requirements = tuple(
         RequirementCoverageView(

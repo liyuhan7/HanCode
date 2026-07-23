@@ -115,10 +115,10 @@ class _DemoTestRunner:
         self._project_root = project_root
         self.results: list[ToolResult] = []
 
-    def run_tests(self) -> ToolResult:
+    def run_tests(self, command: str | None) -> ToolResult:
         result = run_tests(
             self._project_root,
-            _DEMO_TEST_COMMAND,
+            command or _DEMO_TEST_COMMAND,
             timeout_seconds=_TEST_TIMEOUT_SECONDS,
         )
         self.results.append(result)

@@ -427,7 +427,13 @@ class HanCodeTuiApp(App[None]):
         if not self.controller.can_mutate():
             self._notify("任务正在运行，无法回退。")
             return
-        summary = self._sync_value(TuiIntent(kind=TuiOperationKind.ROLLBACK, task_id=task_id))
+        summary = self._sync_value(
+            TuiIntent(
+                kind=TuiOperationKind.ROLLBACK,
+                task_id=task_id,
+                expected_checkpoint_id=preview.checkpoint_id,
+            )
+        )
         if summary is None:
             return
         summary = cast(RecoverySummary, summary)
@@ -689,10 +695,10 @@ class HanCodeTuiApp(App[None]):
         kind = message.result.kind
         if kind is TuiOperationKind.RUN_TASK:
             self._refresh_phase_bar()
-            self._reflect_waiting_input()
             self._refresh_task_list_data_only()
         elif kind is TuiOperationKind.LIST_TASKS:
             self._refresh_task_list()
+            self._reflect_waiting_input()
         elif kind is TuiOperationKind.SELECT_TASK:
             self._rerender_activity()
             self._refresh_phase_bar()
@@ -705,7 +711,6 @@ class HanCodeTuiApp(App[None]):
                 self._focus_activity()
         elif kind is TuiOperationKind.GET_STATUS:
             self._refresh_phase_bar()
-            self._reflect_waiting_input()
             self._refresh_task_list_data_only()
         elif kind is TuiOperationKind.LIST_ARTIFACTS:
             self._render_artifact_list()

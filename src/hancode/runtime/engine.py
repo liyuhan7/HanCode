@@ -60,29 +60,25 @@ def create_agent_loop(
     selected_mutation_guard = mutation_guard or ports.mutation_guard
     selected_max_steps = config.max_steps if max_steps is None else max_steps
 
-    # Approval gate: only active when the project enables it and rollback
-    # confirmation is not needed otherwise. The store/builder are cheap to
-    # construct, so wire them whenever approvals could ever fire.
-    approval_policy: ApprovalPolicyPort | None = None
-    approval_store: ApprovalStorePort | None = None
-    approval_request_builder: ApprovalRequestBuilderPort | None = None
-    if (
-        config.approval_mode != "disabled"
-        or config.confirm_agent_rollback
-        or config.confirm_agent_build
-    ):
-        try:
-            metadata = load_project_metadata(
-                project_root / ".hancode" / "project.json"
-            )
-            project_id = str(metadata.get("project_id", "unknown"))
-        except Exception:
-            project_id = "unknown"
-        approval_policy = cast(ApprovalPolicyPort, ApprovalPolicy(config))
-        approval_store = cast(ApprovalStorePort, ApprovalStore(project_root, project_id))
-        approval_request_builder = cast(
-            ApprovalRequestBuilderPort, ApprovalRequestBuilder(config)
+    # Always wire the approval ports: explicit run_tests commands require
+    # confirmation even when approval_mode is disabled, while the policy still
+    # allows configured fallback commands without an approval request.
+    try:
+        metadata = load_project_metadata(
+            project_root / ".hancode" / "project.json"
         )
+        project_id = str(metadata.get("project_id", "unknown"))
+    except Exception:
+        project_id = "unknown"
+    approval_policy: ApprovalPolicyPort | None = cast(
+        ApprovalPolicyPort, ApprovalPolicy(config)
+    )
+    approval_store: ApprovalStorePort | None = cast(
+        ApprovalStorePort, ApprovalStore(project_root, project_id)
+    )
+    approval_request_builder: ApprovalRequestBuilderPort | None = cast(
+        ApprovalRequestBuilderPort, ApprovalRequestBuilder(config)
+    )
 
     return AgentLoop(
         llm=llm,

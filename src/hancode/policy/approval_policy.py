@@ -100,6 +100,9 @@ class ApprovalPolicy:
         if tool_name == "run_build":
             return self._evaluate_build()
 
+        if tool_name == "run_tests" and "command" in action.args:
+            return self._evaluate_test_command()
+
         if self._mode == "disabled":
             return _no_approval("Approval mode is disabled.")
 
@@ -167,6 +170,15 @@ class ApprovalPolicy:
         return _require(
             ApprovalCategory.RUN_BUILD,
             "Running the configured build command requires confirmation.",
+            targets=(),
+            risk_level="high",
+        )
+
+    @staticmethod
+    def _evaluate_test_command() -> ApprovalRequirement:
+        return _require(
+            ApprovalCategory.RUN_TESTS,
+            "Running an explicit test command requires confirmation.",
             targets=(),
             risk_level="high",
         )

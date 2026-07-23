@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -13,22 +14,26 @@ from hancode.tooling.build_tools import run_build
 from hancode.tooling.checkpoint_tools import list_checkpoints
 from hancode.tooling.delivery_tools import record_knowledge, record_review, read_test_report
 from hancode.tooling.diff_tools import get_diff
-from hancode.tooling.file_tools import edit_file, list_files, read_file, search_text, write_file
+from hancode.tooling.file_tools import (
+    edit_file,
+    list_files,
+    read_file,
+    redact_text,
+    search_text,
+    write_file,
+)
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.registry import ToolRegistry, ToolResult
 from hancode.providers.base import ToolDescriptor
 
 
-RunTestsTool = Callable[[], ToolResult]
+RunTestsTool = Callable[[str | None], ToolResult]
 
 
 def _resolve_test_command(
     fallback_command: str | None, **kwargs: object
 ) -> tuple[str | None, dict[str, object]]:
-    """Extract ``command`` from tool kwargs, falling back to the configured
-    test command.  This lets the LLM supply a dynamic test command (e.g.
-    ``gcc hello.c && ./a.out``) instead of being locked into the project's
-    static ``test_command``."""
+    """Select one explicit command or the configured test-command fallback."""
     raw_command = kwargs.pop("command", fallback_command)
     command = raw_command if isinstance(raw_command, str) or raw_command is None else fallback_command
     return command, kwargs
@@ -37,10 +42,35 @@ def _resolve_test_command(
 def _run_tests_dispatch(
     project_root: Path,
     fallback_command: str | None,
+    run_tests_tool: RunTestsTool | None = None,
     **kwargs: object,
 ) -> ToolResult:
     command, remaining = _resolve_test_command(fallback_command, **kwargs)
+    if run_tests_tool is not None:
+        if remaining:
+            return ToolResult(
+                success=False,
+                action_name="run_tests",
+                error_summary="Unexpected run_tests arguments.",
+            )
+        return _redact_test_result(run_tests_tool(command))
     return run_tests(project_root, command, **cast(dict[str, Any], remaining))
+
+
+def _redact_test_result(result: ToolResult) -> ToolResult:
+    """Keep injected test adapters under the same output redaction contract."""
+    return replace(
+        result,
+        output=redact_text(result.output) if isinstance(result.output, str) else result.output,
+        error_summary=(
+            redact_text(result.error_summary)
+            if result.error_summary is not None
+            else None
+        ),
+        stdout=redact_text(result.stdout) if result.stdout is not None else None,
+        stderr=redact_text(result.stderr) if result.stderr is not None else None,
+        command=redact_text(result.command) if result.command is not None else None,
+    )
 
 
 def build_default_tool_registry(
@@ -59,8 +89,12 @@ def build_default_tool_registry(
     registry.register("edit_file", partial(edit_file, project_root))
     registry.register(
         "run_tests",
-        run_tests_tool
-        or partial(_run_tests_dispatch, project_root, config.test_command),
+        partial(
+            _run_tests_dispatch,
+            project_root,
+            config.test_command,
+            run_tests_tool,
+        ),
     )
 
     # S4 tools

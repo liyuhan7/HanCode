@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.registry import ToolResult
 
@@ -91,4 +93,34 @@ def test_run_tests_does_not_start_runner_without_a_configured_command(
         assert result.success is False
         assert result.command is None
 
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gcc hello.c && ./a.out",
+        "pytest -q || echo failed",
+        "pytest -q | tee report.txt",
+        "pytest -q > report.txt",
+        "pytest -q < input.txt",
+        "pytest -q; echo done",
+        "pytest -q $(Get-Content secret.txt)",
+        "pytest -q `Get-Content secret.txt`",
+    ],
+)
+def test_run_tests_rejects_shell_syntax_without_starting_runner(
+    tmp_path: Path, command: str
+) -> None:
+    calls: list[object] = []
+
+    def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args[0], 0)
+
+    result = run_tests(tmp_path, command, runner=runner)
+
+    assert result.success is False
+    assert result.error_summary == "Shell syntax is not supported for test commands."
+    assert result.command is None
     assert calls == []

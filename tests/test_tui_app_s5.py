@@ -262,3 +262,38 @@ def test_inspection_commands_dispatch_query_intents(tmp_path: Path, monkeypatch)
     assert intents[0].diff_scope == "latest"
     assert intents[0].diff_path == "src/main.py"
     assert intents[-1].event_id == "evt-000001"
+
+
+def test_waiting_approval_query_starts_after_task_list_refresh(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = HanCodeTuiApp(project_root=tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(app.controller, "apply_result", lambda _result: True)
+    monkeypatch.setattr(app, "_refresh_phase_bar", lambda: None)
+    monkeypatch.setattr(app, "_refresh_task_list_data_only", lambda: calls.append("list"))
+    monkeypatch.setattr(app, "_reflect_waiting_input", lambda: calls.append("approval"))
+
+    app.on_operation_finished(
+        OperationFinished(
+            TuiOperationResult(
+                request_id="req-run",
+                kind=TuiOperationKind.RUN_TASK,
+                task_id="task-001",
+                value={},
+            )
+        )
+    )
+    assert calls == ["list"]
+
+    app.on_operation_finished(
+        OperationFinished(
+            TuiOperationResult(
+                request_id="req-list",
+                kind=TuiOperationKind.LIST_TASKS,
+                task_id=None,
+                value=(),
+            )
+        )
+    )
+    assert calls == ["list", "approval"]

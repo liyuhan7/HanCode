@@ -88,7 +88,13 @@ def test_rollback_modal_escape_does_not_call_recovery(tmp_path: Path) -> None:
         def preview_last(self, project_root: Path, task_id: str) -> RollbackPreview:
             return RollbackPreview("ckpt-001", True, ("src/main.py",))
 
-        def rollback_last(self, project_root: Path, task_id: str) -> object:
+        def rollback_last(
+            self,
+            project_root: Path,
+            task_id: str,
+            *,
+            expected_checkpoint_id: str | None = None,
+        ) -> object:
             rollback_calls.append(task_id)
             return object()
 

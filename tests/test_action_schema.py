@@ -88,12 +88,25 @@ def test_run_tests_accepts_optional_command() -> None:
         type=ActionType.TOOL_CALL,
         phase=Phase.TEST,
         tool_name="run_tests",
-        args={"command": "gcc hello.c && ./a.out"},
-        reason="compile and run the C hello world",
+        args={"command": "gcc hello.c"},
+        reason="compile the C hello world",
     )
 
     assert isinstance(result, Action)
-    assert result.args["command"] == "gcc hello.c && ./a.out"
+    assert result.args["command"] == "gcc hello.c"
+
+
+def test_run_tests_rejects_non_string_command() -> None:
+    result = Action.from_values(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.TEST,
+        tool_name="run_tests",
+        args={"command": ["pytest", "-q"]},
+        reason=None,
+    )
+
+    assert isinstance(result, ParseError)
+    assert result.error_code == "invalid_action_args"
 
 
 def test_finish_action_has_no_tool_side_effect() -> None:

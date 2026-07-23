@@ -19,6 +19,7 @@ from hancode.app.change_inspection_service import ChangeInspectionService
 from hancode.app.checkpoint_inspection_service import CheckpointInspectionService
 from hancode.app.delivery_inspection_service import (
     DeliveryInspectionService,
+    DeliverySummary,
     TestReportSummary,
 )
 from hancode.app.delivery_service import DeliveryService
@@ -84,6 +85,7 @@ class TuiIntent:
     diff_scope: str | None = None
     diff_path: str | None = None
     event_id: str | None = None
+    expected_checkpoint_id: str | None = None
     export_output_dir: Path | None = None
 
 
@@ -104,6 +106,7 @@ class TuiOperation:
     diff_scope: str | None = None
     diff_path: str | None = None
     event_id: str | None = None
+    expected_checkpoint_id: str | None = None
     export_output_dir: Path | None = None
 
     @classmethod
@@ -122,6 +125,7 @@ class TuiOperation:
             diff_scope=intent.diff_scope,
             diff_path=intent.diff_path,
             event_id=intent.event_id,
+            expected_checkpoint_id=intent.expected_checkpoint_id,
             export_output_dir=intent.export_output_dir,
         )
 
@@ -145,6 +149,7 @@ TuiOperationValue = (
     | TaskDiff
     | tuple[CheckpointSummary, ...]
     | DeliveryEvidence
+    | DeliverySummary
     | TracePage
     | DeliveryResult
     | ExportResult
@@ -292,7 +297,9 @@ class TuiOperationExecutor:
             )
         if kind is TuiOperationKind.ROLLBACK:
             return self._services.recovery.rollback_last(
-                self._project_root, self._require_task(task_id, "rollback")
+                self._project_root,
+                self._require_task(task_id, "rollback"),
+                expected_checkpoint_id=operation.expected_checkpoint_id,
             )
         if kind is TuiOperationKind.LIST_ARTIFACTS:
             return self._services.task.get(
@@ -330,9 +337,7 @@ class TuiOperationExecutor:
                 self._require_task(task_id, "list checkpoints"),
             )
         if kind is TuiOperationKind.DELIVERY:
-            # get_evidence is intentionally read-only.  Do not use
-            # DeliveryService.get_result(), which finalizes the task.
-            return self._services.delivery.get_evidence(
+            return self._services.test_reports.read_delivery_summary(
                 self._project_root,
                 self._require_task(task_id, "read delivery evidence"),
             )

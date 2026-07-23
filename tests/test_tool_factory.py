@@ -29,7 +29,7 @@ def test_default_registry_registers_file_edit_and_configured_test_tools(tmp_path
 
     registry = build_default_tool_registry(
         load_config(tmp_path),
-        run_tests_tool=lambda: run_tests(tmp_path, "pytest -q", runner=runner),
+        run_tests_tool=lambda command: run_tests(tmp_path, command, runner=runner),
     )
     (tmp_path / "notes.txt").write_text("notes\n", encoding="utf-8")
 
@@ -55,6 +55,14 @@ def test_default_registry_registers_file_edit_and_configured_test_tools(tmp_path
     assert test_result.success is True
     assert test_result.command == "pytest -q"
     assert calls == [["pytest", "-q"]]
+
+    dynamic_result = registry.dispatch(
+        _action("run_tests", {"command": "python -m pytest"})
+    )
+
+    assert dynamic_result.success is True
+    assert dynamic_result.command == "python -m pytest"
+    assert calls == [["pytest", "-q"], ["python", "-m", "pytest"]]
 
 
 def _action(name: str, args: dict[str, object]) -> Action:

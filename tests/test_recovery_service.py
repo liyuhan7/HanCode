@@ -88,6 +88,49 @@ def test_rollback_last_uses_rollback_manager(
     assert "src/main.py" in summary.restored_files
 
 
+def test_rollback_last_rejects_stale_preview(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _project(tmp_path)
+
+    from dataclasses import replace
+
+    from hancode.app import recovery_service as module
+    from hancode.core.models import Phase, TaskStatus
+    from hancode.core.state import load_state, save_state
+
+    task_root = tmp_path / ".hancode" / "tasks" / "task-001"
+    state = load_state(task_root)
+    save_state(
+        task_root,
+        replace(
+            state,
+            current_phase=Phase.REVIEW,
+            status=TaskStatus.BLOCKED,
+            latest_checkpoint="ckpt-004",
+            checkpoint_seq=4,
+        ),
+    )
+    called = False
+
+    def fake_rollback(*args: object, **kwargs: object) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("stale preview must not reach rollback storage")
+
+    monkeypatch.setattr(module, "rollback_last_checkpoint", fake_rollback)
+
+    with pytest.raises(HanCodeError) as caught:
+        RecoveryService().rollback_last(
+            tmp_path,
+            "task-001",
+            expected_checkpoint_id="ckpt-003",
+        )
+
+    assert caught.value.structured_error.error_code == "rollback_preview_stale"
+    assert called is False
+
+
 # ---------------------------------------------------------------------------
 # TUI rollback confirmation flow
 # ---------------------------------------------------------------------------
@@ -106,7 +149,13 @@ class _FakeRecoveryService:
             files=("src/main.py", "src/parser.py"),
         )
 
-    def rollback_last(self, project_root: Path, task_id: str):  # type: ignore[no-untyped-def]
+    def rollback_last(
+        self,
+        project_root: Path,
+        task_id: str,
+        *,
+        expected_checkpoint_id: str | None = None,
+    ):  # type: ignore[no-untyped-def]
         self.rollback_calls.append(task_id)
         from hancode.app.recovery_service import RecoverySummary
 

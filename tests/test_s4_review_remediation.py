@@ -185,12 +185,12 @@ def test_formal_agent_run_tests_generates_test_report(tmp_path: Path) -> None:
     registry = ToolRegistry()
     registry.register(
         "run_tests",
-        lambda: ToolResult(
+        lambda command: ToolResult(
             success=True,
             action_name="run_tests",
             exit_code=0,
             stdout="1 passed",
-            command="pytest -q",
+            command=command or "pytest -q",
         ),
     )
     loop = create_agent_loop(
@@ -219,6 +219,130 @@ def test_formal_agent_run_tests_generates_test_report(tmp_path: Path) -> None:
         result.final_state,
     )
     assert load_state(task_root).artifacts["TEST_REPORT.md"] is True
+
+
+def _prepare_explicit_test_task(
+    tmp_path: Path,
+) -> tuple[Path, Path, list[str | None], ToolRegistry]:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    project_file = project_root / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["test_command"] = "pytest -q"
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+    task_root = init_task_workspace(project_root, "task-001")
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    state = load_state(task_root)
+    save_state(
+        task_root,
+        replace(
+            state,
+            current_phase=Phase.TEST,
+            phase_completed={
+                **state.phase_completed,
+                Phase.SPEC.value: True,
+                Phase.PLAN.value: True,
+                Phase.CODE.value: True,
+            },
+            artifacts={
+                **state.artifacts,
+                "SPEC.md": True,
+                "PLAN.md": True,
+            },
+        ),
+    )
+
+    calls: list[str | None] = []
+    registry = ToolRegistry()
+
+    def run_tests_tool(command: str | None) -> ToolResult:
+        calls.append(command)
+        return ToolResult(
+            success=True,
+            action_name="run_tests",
+            exit_code=0,
+            stdout="1 passed",
+            command=command,
+        )
+
+    registry.register("run_tests", run_tests_tool)
+    return project_root, task_root, calls, registry
+
+
+def test_explicit_run_tests_rejection_does_not_start_runner(tmp_path: Path) -> None:
+    project_root, task_root, calls, registry = _prepare_explicit_test_task(tmp_path)
+    provider = MockLLM(
+        [
+            {
+                "type": "tool_call",
+                "phase": "test",
+                "tool_name": "run_tests",
+                "args": {"command": "python -m pytest tests/test_app.py"},
+                "reason": "Run the selected test file.",
+            }
+        ]
+    )
+    loop = create_agent_loop(
+        project_root,
+        "task-001",
+        provider=provider,
+        tool_registry=registry,
+        max_steps=1,
+    )
+
+    waiting = loop.run("task-001")
+    assert waiting.status.value == "waiting_approval", (
+        waiting.error,
+        waiting.final_state,
+    )
+    assert calls == []
+
+    ApprovalService(project_root).reject("task-001", reason="Do not run this command.")
+    loop.run("task-001", resume=True)
+
+    assert calls == []
+    assert load_state(task_root).status.value != "completed"
+
+
+def test_approved_explicit_run_tests_executes_the_approved_command(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root, calls, registry = _prepare_explicit_test_task(tmp_path)
+    command = "python -m pytest tests/test_app.py"
+    loop = create_agent_loop(
+        project_root,
+        "task-001",
+        provider=MockLLM(
+            [
+                {
+                    "type": "tool_call",
+                    "phase": "test",
+                    "tool_name": "run_tests",
+                    "args": {"command": command},
+                    "reason": "Run the selected test file.",
+                }
+            ]
+        ),
+        tool_registry=registry,
+        max_steps=1,
+    )
+
+    waiting = loop.run("task-001")
+    assert waiting.status.value == "waiting_approval", (
+        waiting.error,
+        waiting.final_state,
+    )
+    ApprovalService(project_root).approve("task-001")
+
+    loop.run("task-001", resume=True)
+
+    assert calls == [command]
+    report = (task_root / "TEST_REPORT.md").read_text(encoding="utf-8")
+    trace = (task_root / "trace.jsonl").read_text(encoding="utf-8")
+    assert command in report
+    assert command in trace
 
 
 def test_formal_agent_run_build_persists_build_state_and_evidence(tmp_path: Path) -> None:
@@ -804,12 +928,12 @@ def test_provider_to_agent_to_delivery_path_completes_offline(tmp_path: Path) ->
     config = load_config(project_root, "task-001")
     registry = build_default_tool_registry(
         config,
-        run_tests_tool=lambda: ToolResult(
+        run_tests_tool=lambda command: ToolResult(
             success=True,
             action_name="run_tests",
             exit_code=0,
             stdout="1 passed",
-            command="pytest -q",
+            command=command or "pytest -q",
         ),
     )
     provider = MockLLM(

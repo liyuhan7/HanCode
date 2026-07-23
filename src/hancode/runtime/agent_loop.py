@@ -1852,6 +1852,11 @@ class AgentLoop:
                         observation={
                             "exit_code": tool_result.exit_code,
                             "timed_out": tool_result.timed_out,
+                            "command": (
+                                None
+                                if tool_result.command is None
+                                else redact_text(tool_result.command)
+                            ),
                         },
                     )
                     if trace_error is not None:
@@ -1940,6 +1945,11 @@ class AgentLoop:
                             "action_name": tool_result.action_name,
                             "exit_code": tool_result.exit_code,
                             "timed_out": tool_result.timed_out,
+                            "command": (
+                                None
+                                if tool_result.command is None
+                                else redact_text(tool_result.command)
+                            ),
                         },
                         error_summary=redact_text(
                             tool_result.error_summary
@@ -3292,7 +3302,11 @@ class AgentLoop:
                     pipeline.record_test(
                         task_root,
                         _feedback_report_for_test_result(tool_result),
-                        tool_result.command or "run_tests",
+                        (
+                            redact_text(tool_result.command)
+                            if tool_result.command
+                            else "run_tests"
+                        ),
                     )
                 elif action.tool_name == "run_build":
                     pipeline.record_build(
@@ -3996,6 +4010,9 @@ def _trace_action(
     args: dict[str, object] = {}
     if include_path and isinstance(action.args.get("path"), str):
         args["path"] = action.args["path"]
+    command = action.args.get("command")
+    if action.tool_name == "run_tests" and isinstance(command, str):
+        args["command"] = redact_text(command)
     target_zone = getattr(decision, "target_zone", None)
     reason = redact_text(action.reason or "Run the configured test command.")
     return {

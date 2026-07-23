@@ -18,6 +18,29 @@
 
 ---
 
+### 2026-07-23 — T21-R1 Task 8 — 动态测试命令审批与执行安全化
+
+- 使用的技能：按用户明确要求不使用 TDD；使用执行计划、代码审查、专项验证和完成前验证流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：保留 LLM 的可选 `run_tests.args.command` 能力；省略命令时使用配置 fallback；显式命令必须人工审批；仅允许单条 argv；保留当前无关 TUI 范围不变。
+- 实现摘要：
+  - `run_tests` dispatch 统一选择显式命令或 `config.test_command`，注入的 `RunTestsTool` 改为接收 `str | None`，并对注入结果复用命令/输出脱敏。
+  - `run_tests` 使用 `shlex.split`、固定 project root、`shell=False`、捕获输出和 `check=False`；拒绝 `&&`、`||`、管道、重定向、分号、命令替换、反引号和换行等 shell 控制语法。
+  - 显式命令复用 `ApprovalCategory.RUN_TESTS`，不受 `approval_mode=disabled` 绕过；审批端口默认装配，拒绝时不进入 ToolRegistry，批准恢复使用带完整 args digest 的原 Action。
+  - 审批预览、trace 的 `tool_called` / `tool_completed` / `test_completed` / `test_failed`、state 和 `TEST_REPORT.md` 的命令字段统一脱敏；敏感值不会进入持久化审批记录。
+  - 更新 ToolSpec、Demo/test stub、schema、工具/审批/AgentLoop 回归测试及 SPEC/PLAN 契约。
+- 验证：
+  - 动态命令专项 pytest：`92 passed`。
+  - 全量 pytest：`1297 passed, 17 skipped in 92.21s`。
+  - `uv run --no-sync ruff check src tests --no-cache`：`All checks passed!`。
+  - `uv run --no-sync mypy src`：`Success: no issues found in 97 source files`。
+  - `uv build`：成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`。
+  - `git diff --check`：通过。
+- 人工干预：用户明确要求本轮不使用 TDD；分支创建因 `.git/refs/heads` 锁文件权限被阻断，未执行 destructive git 命令，改在当前工作区实施。
+- 剩余风险：shell 控制字符拒绝采用保守策略，可能拒绝包含这些字符的合法测试参数；`docs/系统架构.md` 的历史性 run_tests 描述未在本卡允许文件范围内改动，规范以本轮 SPEC/PLAN 为准。
+
+---
+
 ### 2026-07-23 — S5-R2 — 通用异步 Operation 查询路由与过期结果防护
 
 - 使用的技能：按用户要求不使用 TDD；使用代码库探索、验证前置和最小范围实现流程。
@@ -100,6 +123,22 @@
 - 提交：未提交；等待用户统一审阅 S5-R0~R6 后提交。
 - 人工干预：联网 `uv build` 因 TLS handshake eof 失败，改用同一环境缓存依赖的 `uv build --offline`，源码构建过程和 wheel/sdist 生成均成功。
 - 剩余风险：GitHub Actions 尚无本轮独立 run 证据；17 个既有平台相关 skip 保留；工作区仍包含用户在本轮之前的未提交改动。
+
+---
+
+### 2026-07-23 — S5 review follow-up — 三个 P0 状态一致性修复
+
+- 使用的技能：`receiving-code-review`、`systematic-debugging`、`verification-before-completion`；按用户既有要求不使用 TDD。
+- 使用的智能体：OpenAI Codex。
+- 审查结论：确认 Approval 查询会被后续 `LIST_TASKS` 覆盖，Delivery Presenter 会错误推导 Ready，Rollback confirm 未绑定预览 checkpoint。
+- 实现摘要：
+  - 调整 `RUN_TASK`/`GET_STATUS` 的 UI 查询顺序，Task List 完成后才触发 WAITING_INPUT/WAITING_APPROVAL 反映，避免 `GET_APPROVAL` request 被覆盖。
+  - 新增只读 `DeliverySummary` 与 `DeliveryInspectionService.read_delivery_summary()`，复用 DeliveryPipeline 的真实 blocker/status 计算，查询不写 Artifact、不调用 finalize。
+  - `TuiOperation` 携带 `expected_checkpoint_id`；RecoveryService 在 Task Lock 内复核最新 checkpoint，stale 时结构化拒绝并不触碰回滚存储。
+  - 新增 Approval 查询顺序、缺失交付物 blocked、stale rollback 三类回归。
+- 验证：P0 专项 `19 passed`；修复后全量 Pytest `1300 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误；`git diff --check` 通过。
+- 提交：未提交；当前工作区仍包含用户此前的未提交改动。
+- 剩余风险：P1 的 Mutation Worker 全面化、Detail 滚动、Recent Trace 查询和 App 拆分尚未处理；远端 CI 仍无独立 run 证据。
 
 ---
 

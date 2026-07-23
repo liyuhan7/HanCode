@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from hancode.app.delivery_inspection_service import TestReportSummary as ReportSummary
+from hancode.app.delivery_inspection_service import (
+    DeliverySummary,
+    TestReportSummary as ReportSummary,
+)
 from hancode.app.task_models import TaskSummary
 from hancode.core.change_models import (
     ChangeType,
@@ -14,7 +17,6 @@ from hancode.core.change_models import (
     FileDiff,
     TaskDiff,
 )
-from hancode.core.delivery_evidence import DeliveryEvidence
 from hancode.core.models import Phase, TaskStatus
 from hancode.core.state import TaskState
 from hancode.interfaces.tui.app import HanCodeTuiApp
@@ -194,15 +196,17 @@ class _InspectionServices:
             ),
         )
 
-    def get_evidence(self, project_root: Path, task_id: str) -> DeliveryEvidence:
-        return DeliveryEvidence(
+    def read_delivery_summary(self, project_root: Path, task_id: str) -> DeliverySummary:
+        return DeliverySummary(
             task_id=task_id,
-            requirements=(),
-            knowledge_items=(),
-            review_risks=(),
-            latest_test_report_sha256="test",
-            latest_diff_sha256="diff",
+            status="ready",
+            blockers=(),
+            latest_test_status="passed",
             latest_build_status="passed",
+            requirements=(),
+            knowledge_count=0,
+            artifacts={"TEST_REPORT.md": True},
+            export_ready=True,
         )
 
     def get_result(self, project_root: Path, task_id: str) -> None:

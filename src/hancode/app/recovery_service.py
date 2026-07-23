@@ -58,7 +58,13 @@ class RecoveryService:
             files=tuple(f.path for f in manifest.files),
         )
 
-    def rollback_last(self, project_root: Path, task_id: str) -> RecoverySummary:
+    def rollback_last(
+        self,
+        project_root: Path,
+        task_id: str,
+        *,
+        expected_checkpoint_id: str | None = None,
+    ) -> RecoverySummary:
         task_root = task_path(project_root, task_id)
         state = reconcile_state(task_root, load_state(task_root))
         if state.latest_checkpoint is None:
@@ -70,6 +76,16 @@ class RecoveryService:
 
         guard = FilesystemTaskMutationGuard(project_root)
         with guard.acquire(task_id, state.current_phase):
+            locked_state = reconcile_state(task_root, load_state(task_root))
+            if (
+                expected_checkpoint_id is not None
+                and locked_state.latest_checkpoint != expected_checkpoint_id
+            ):
+                raise _recovery_error(
+                    "rollback_preview_stale",
+                    "The rollback preview is stale because the latest checkpoint changed.",
+                    "Preview rollback again and confirm the current latest checkpoint.",
+                )
             result = rollback_last_checkpoint(task_root)
         if result.status is not OperationStatus.SUCCEEDED:
             raise HanCodeError(

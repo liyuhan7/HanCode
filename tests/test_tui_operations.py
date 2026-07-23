@@ -154,6 +154,10 @@ def test_executor_routes_read_only_inspection_operations_without_finalize(
             calls.append("test-report")
             return report
 
+        def read_delivery_summary(self, project_root, task_id):  # type: ignore[no-untyped-def]
+            calls.append("delivery-evidence")
+            return evidence
+
     class _Checkpoints:
         def list_checkpoints(self, project_root, task_id):  # type: ignore[no-untyped-def]
             calls.append("checkpoints")
@@ -165,10 +169,6 @@ def test_executor_routes_read_only_inspection_operations_without_finalize(
             return SimpleNamespace(events=(), next_seq=None, has_more=False)
 
     class _Delivery:
-        def get_evidence(self, project_root, task_id):  # type: ignore[no-untyped-def]
-            calls.append("delivery-evidence")
-            return evidence
-
         def get_result(self, project_root, task_id):  # type: ignore[no-untyped-def]
             raise AssertionError("delivery inspection must not finalize")
 

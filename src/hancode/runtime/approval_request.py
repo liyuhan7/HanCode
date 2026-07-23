@@ -27,6 +27,7 @@ from hancode.core.config import HanCodeConfig
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.state import TaskState
 from hancode.policy.approval_policy import ApprovalRequirement
+from hancode.tooling.file_tools import redact_text
 
 
 _SENSITIVE_PATTERNS = (
@@ -56,7 +57,10 @@ def _contains_sensitive_content(text: str) -> bool:
     for pattern in _SENSITIVE_PATTERNS:
         if pattern.lower() in lower:
             return True
-    return False
+    # Keep the approval manifest from persisting values that the shared
+    # redactor would hide (for example, sk-* credentials) even when they do
+    # not match the keyword list above.
+    return redact_text(text) != text
 
 
 def _compute_file_hash(file_path: Path) -> str | None:
@@ -247,6 +251,17 @@ class ApprovalRequestBuilder:
                 unified_diff=None,
                 truncated=False,
                 redacted=False,
+            )
+        elif tool_name == "run_tests":
+            command = action.args.get("command")
+            redacted_command = (
+                redact_text(command) if isinstance(command, str) else "configured test command"
+            )
+            return ApprovalPreview(
+                summary=f"Run test command: {redacted_command}",
+                unified_diff=None,
+                truncated=False,
+                redacted=redacted_command != command,
             )
         else:
             summary = f"Execute {tool_name} with reason: {action.reason or 'N/A'}"

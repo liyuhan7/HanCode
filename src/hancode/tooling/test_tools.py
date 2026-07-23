@@ -12,6 +12,7 @@ from hancode.tooling.registry import ToolResult
 
 
 TestRunner = Callable[..., subprocess.CompletedProcess[str]]
+_SHELL_OPERATOR_CHARS = frozenset("&|;<>$`\r\n")
 
 
 def run_tests(
@@ -23,6 +24,8 @@ def run_tests(
 ) -> ToolResult:
     if not isinstance(command, str) or not command.strip():
         return _failed("No configured test command.")
+    if any(character in command for character in _SHELL_OPERATOR_CHARS):
+        return _failed("Shell syntax is not supported for test commands.")
     try:
         argv = shlex.split(command)
     except ValueError:

@@ -902,15 +902,15 @@ phase
 
 * `finish_phase` action 表示模型请求阶段结束，但是否 completed 由 ResultBuilder / AgentLoop 状态判定。
 * write action 包括 `write_file`、`edit_file`。
-* `run_tests` 不允许携带任意 shell command，实际命令来自 config。
+* `run_tests` 可携带一个显式测试 `command`；省略时使用 config fallback，显式命令必须经过人工审批，且不支持 shell 组合语义。
 
 ### 实现结果
 
 * 新增冻结、slots 化的 `Action`、`ActionType` 和 `ParseError`，并以 `Action.from_values()` 作为类型化候选 action 的确定性校验入口；原始 dict 的字段解析仍由 T8 实现。
 * `ActionType` 固定为 `tool_call`、`finish_phase`、`ask_user`、`final`；action 不含 `target_kind`。
-* 七个 MVP 工具使用固定参数 schema：`read_file(path)`、`list_files()` / `list_files(path)`、`search_text(query)`、`write_file(path, content)`、`edit_file(path, old_string, new_string)`、`run_tests()`、`rollback_last_checkpoint()`。
-* `write_file` 和 `edit_file` 必须有非空 `reason`；`run_tests` 不接收 `command`；非法类型、phase、工具、参数和控制 action 工具名均返回不回显候选值的 `ParseError`。
-* `run_tests` 与 `rollback_last_checkpoint` 是唯一的无参数工具；即使未来工具已注册但未声明 schema，也会 fail-closed 拒绝。
+* 七个 MVP 工具使用固定参数 schema：`read_file(path)`、`list_files()` / `list_files(path)`、`search_text(query)`、`write_file(path, content)`、`edit_file(path, old_string, new_string)`、`run_tests()` / `run_tests(command)`、`rollback_last_checkpoint()`。
+* `write_file` 和 `edit_file` 必须有非空 `reason`；`run_tests.command` 为可选非空字符串，显式命令需审批且拒绝 shell 语法；非法类型、phase、工具、参数和控制 action 工具名均返回不回显候选值的 `ParseError`。
+* `rollback_last_checkpoint` 是无参数工具；`run_tests` 仅允许可选 `command` 参数；即使未来工具已注册但未声明 schema，也会 fail-closed 拒绝。
 * `Action` 防御性复制并冻结 `args`，直接构造也会拒绝不合 schema 的对象。
 * 实际验证：专项 31 passed；Ruff、MyPy 通过；审查修正后全量 183 passed；`git diff --check` 通过。
 
@@ -2423,7 +2423,7 @@ uv run --no-sync mypy src
 
 ### 目标
 
-在 `feature/M7` 完成 T21-R1 剩余机制：凭据路径保护一致性、精确文件编辑、受限测试执行、默认工具装配，以及 pending checkpoint 的可审计 abort / 恢复。保持 Mock/stub 可替换、禁止通用 shell，并通过 TDD、结构化错误和证据化验证收口。
+在 `feature/M7` 完成 T21-R1 剩余机制：凭据路径保护一致性、精确文件编辑、受限测试执行、默认工具装配，以及 pending checkpoint 的可审计 abort / 恢复。保持 Mock/stub 可替换、禁止通用 shell，并通过结构化错误和证据化验证收口。
 
 ### 修复边界
 
@@ -2431,7 +2431,7 @@ uv run --no-sync mypy src
 * policy denial 保留为主错误；trace 写失败作为审计风险，不得导致工具执行。（Task 2 已实现：`policy_denied` 主错误保留、trace 失败降级为 `Risk`）
 * 纯审计标记点（phase_started / phase_completed / run_completed / policy_denied）trace 写失败降级为 risk 不掩盖主错误；变更与工具执行点（tool_called / source_write_authorized / checkpoint）保持 fail-closed。（Task 2 已实现）
 * `edit_file` 使用恰好一次匹配规则和原子写入；失败在可证明未写入时返回 `mutation_applied=False`，原子替换阶段不确定时返回 `None`。
-* `run_tests` 只执行配置提供的命令：用 `shlex.split` 固定拆分 argv，固定 `cwd=project_root`、`shell=False`、`capture_output=True`、`check=False`，默认超时 120 秒；命令和输出先脱敏再进入结果、state 和 trace。
+* `run_tests` 未提供 `command` 时执行配置命令；显式 `command` 必须经过人工审批。两种路径都用 `shlex.split` 固定拆分为单条 argv，固定 `cwd=project_root`、`shell=False`、`capture_output=True`、`check=False`，默认超时 120 秒；`&&`、`||`、管道、重定向、分号等 shell 操作符直接拒绝，命令和输出先脱敏再进入结果、state、trace 和报告。
 * 凭据路径由 `src/hancode/path_security.py` 统一判定，覆盖 `.env*`、credentials/secrets/certificates/keys 目录、`id_rsa` 等精确文件名及 `.key/.pem/.token/.crt/.cer/.der/.p12/.pfx` 后缀；后缀本身作为隐藏文件名（如 `.pem`、`.key`、`.crt`）时同样拒绝；FileTools、PathClassifier 和 CheckpointManager 共用该边界。
 * `redact_text()` 在通用规则前完整替换 PEM 私钥块（包括 `PRIVATE KEY`、`RSA PRIVATE KEY`、`OPENSSH PRIVATE KEY` 和 `ENCRYPTED PRIVATE KEY`），不将私钥正文、BEGIN/END 标记写入工具结果、state 或 trace。
 * pending checkpoint 状态只允许 `pending | committed | rolled_back | aborted`。普通启动对未修改 pending 自动 abort；发现源文件变化时保存 `inconsistent + rollback_required` 并 fail-closed；只有 `resume=True` 才恢复已校验的 before snapshot。恢复成功后状态为 `blocked`，由显式 resume 转为 running；manifest、快照、hash、symlink/junction 无法验证时不写业务文件。
@@ -2448,11 +2448,19 @@ uv run --no-sync mypy src
 * `src/hancode/path_security.py`
 * `src/hancode/test_tools.py`
 * `src/hancode/tool_factory.py`
-* 对应 `tests/` 回归测试与本文件、`docs/AGENT_LOG.md`
+* `src/hancode/core/tool_specs.py`
+* `src/hancode/core/actions.py`
+* `src/hancode/tooling/test_tools.py`
+* `src/hancode/tooling/factory.py`
+* `src/hancode/demo_support/runner.py`
+* `src/hancode/policy/approval_policy.py`
+* `src/hancode/runtime/approval_request.py`
+* `src/hancode/runtime/agent_loop.py`
+* 对应 `tests/` 回归测试、`docs/SPEC.md`、本文件和 `docs/AGENT_LOG.md`
 
 ### 验证要求
 
-* 每组先新增失败测试，再实现最小修复。
+* 直接实现最小修复，并用专项测试、全量测试和静态检查验证；本轮按用户要求不采用 TDD Red/Green 流程。
 * 通过专项 pytest、全量 pytest、Ruff、MyPy、源码编译和 `git diff --check`。
 * 覆盖凭据路径、原子写入、junction、精确编辑、受限测试执行、默认工具装配、trace 生命周期/并发、错误优先级和 pending checkpoint 恢复。
 
@@ -2491,7 +2499,7 @@ def run_tests(
 def build_default_tool_registry(
     config: HanCodeConfig,
     *,
-    run_tests_tool: Callable[[], ToolResult] | None = None,
+    run_tests_tool: Callable[[str | None], ToolResult] | None = None,
 ) -> ToolRegistry: ...
 
 def abort_pending_checkpoint(
@@ -2509,7 +2517,35 @@ def reconcile_pending_checkpoint(
 ) -> TaskState: ...
 ```
 
-`CheckpointManifest.status` 的生命周期为 `pending | committed | rolled_back | aborted`。`FilesystemStateStore.reconcile()` 接收 `recover_pending`，AgentLoop 只在调用方显式传入 `resume=True` 时授权 pending 恢复；不接受 LLM 提供的任意测试命令，也不提供通用 shell 或多文件 patch。
+`CheckpointManifest.status` 的生命周期为 `pending | committed | rolled_back | aborted`。`FilesystemStateStore.reconcile()` 接收 `recover_pending`，AgentLoop 只在调用方显式传入 `resume=True` 时授权 pending 恢复；`run_tests` 可接收一个显式 `command`，但该命令必须先获人工批准，只能作为单条 argv 执行；不提供通用 shell 或多文件 patch。
+
+### T21-R1 Task 8：动态测试命令审批与执行安全化
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现，专项与全量验证通过 |
+| 目标 | 保留 LLM 传入单条测试命令的能力，同时强制动态命令人工确认并形成可审计脱敏链路。 |
+| 允许修改 | `src/hancode/core/tool_specs.py`、`src/hancode/core/actions.py`、`src/hancode/tooling/test_tools.py`、`src/hancode/tooling/factory.py`、`src/hancode/demo_support/runner.py`、`src/hancode/policy/approval_policy.py`、`src/hancode/runtime/approval_request.py`、`src/hancode/runtime/agent_loop.py`、对应测试、`docs/SPEC.md`、`docs/PLAN.md`、`docs/AGENT_LOG.md`。 |
+
+#### 行为契约
+
+* Action 的 `run_tests.args` 可省略 `command`；省略时使用 `config.test_command`，不额外触发审批。
+* 显式提供 `command` 时，无论 `approval_mode` 是否为 `disabled`，都必须返回 `ApprovalCategory.RUN_TESTS` 要求；审批拒绝或未批准时不得调用 ToolRegistry。
+* 批准记录的 digest 绑定完整 Action（含完整 args），resume 只能执行原批准命令；恢复时命令被替换必须 fail-closed。
+* 执行统一采用 `shlex.split`、固定 `cwd=project_root`、`shell=False`、`capture_output=True`、`check=False`，拒绝 `&&`、`||`、管道、重定向、分号等 shell 语法。
+* 命令、审批预览/记录、ToolResult、state、trace 和 `TEST_REPORT.md` 的用户可见字段必须脱敏；敏感命令不得进入持久化审批记录。
+
+#### 验收标准
+
+* schema 接受可选字符串 `command`，拒绝非字符串和额外参数；fallback、显式命令、注入 callback 均有专项回归。
+* shell 操作符在 runner 启动前被拒绝；自定义 `run_tests_tool` 接收最终命令，不再因零参数签名产生 TypeError。
+* 显式命令覆盖 disabled 模式的审批门；拒绝不启动 runner，批准后执行原命令，digest 或恢复篡改会被拒绝。
+* 审批预览、tool/test trace、state 和测试报告不出现敏感值；`SPEC`、`PLAN`、`AGENT_LOG` 与实现和实际验证结果一致。
+
+#### 非目标
+
+* 不引入通用 `run_shell`，不启用 shell，不支持 pipeline、重定向或多命令组合。
+* 不修改无关 TUI 文件，不增加配置字段，不接真实 LLM、网络或依赖自动安装。
 
 ---
 
@@ -6412,6 +6448,14 @@ S4-R2 Build       S4-R3 Test Report
 - 不重写既有 Checkpoint/Rollback 生命周期，只补 S4 查询和交付边界。
 - 不修改与本评审无关的历史兼容入口或 UI 视觉行为。
 ---
+## S5 总体状态
+
+| 状态 | `[~]` 核心 TUI 产品能力已实现；Approval 查询竞态、Delivery Gate 展示和 Rollback 确认绑定已修复，等待最终集成/远端 CI 证据 |
+
+本轮审查发现的三个 P0 已分别由 Query 顺序、只读 `DeliverySummary` 和 `expected_checkpoint_id` 绑定修复；P1 的 Mutation Worker 全面化、Detail 滚动、Recent Trace 查询和 App 进一步拆分不纳入本轮修复范围。
+
+---
+
 ## S5-R0：TUI Intent/Operation 契约与 App 瘦身
 
 | 元信息 | 值 |
@@ -6609,7 +6653,7 @@ S4-R2 Build       S4-R3 Test Report
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [x] 已完成 |
+| 状态 | [~] 核心能力完成，等待最终集成证据 |
 | 依赖 | S5-R2~R5 |
 | 分支 | `main`（按用户要求不在阶段中提交） |
 | 边界 | 用 MockLLM 和 Textual `run_test` 验证完整产品路径，不使用真实网络或凭据 |
@@ -6636,3 +6680,10 @@ S4-R2 Build       S4-R3 Test Report
 - `uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`；首次联网 `uv build` 因环境 TLS 握手失败，离线缓存构建作为本地证据。
 - `uv run hancode demo --provider mock` 成功返回 completed DeliveryResult；未使用真实网络、凭据或真实 LLM。
 - S5-R0~R6 未提交 commit；当前工作区保留既有用户改动和本阶段实现，等待用户统一审阅/提交。
+
+### P0 审查修复
+
+- Approval 查询竞态：`RUN_TASK`/`GET_STATUS` 先刷新 Task List，`LIST_TASKS` 完成后才反映 WAITING_APPROVAL 并启动 `GET_APPROVAL`。
+- Delivery Gate：新增 `DeliveryInspectionService.read_delivery_summary()`，复用 DeliveryPipeline blocker/status 计算；Presenter 只展示服务结果，不自行推测 ready。
+- Rollback 绑定：Rollback preview 的 checkpoint ID 随 Operation 传递，在 Task Lock 内复核最新 checkpoint，不一致返回 `rollback_preview_stale`。
+- P0 回归专项：`19 passed`；修复后全量 Pytest：`1300 passed, 17 skipped`。
