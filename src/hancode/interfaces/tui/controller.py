@@ -181,7 +181,6 @@ class TuiSessionController:
         """Mark a request active and return its request ID."""
 
         is_mutation = operation.kind in _MUTATIONS
-        is_query = operation.kind in _QUERIES
 
         if self._state.busy:
             if is_mutation:
