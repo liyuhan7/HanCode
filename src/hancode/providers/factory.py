@@ -43,6 +43,7 @@ def create_provider_adapter(
             max_retries=config.provider_max_retries,
             max_output_tokens=config.provider_max_output_tokens,
             max_response_bytes=config.provider_max_response_bytes,
+            response_mode=config.provider_response_mode,
             prompt_builder=PromptBuilder(),
             transport=transport or HttpxProviderTransport(),
             sleeper=sleeper or cast(Sleeper, time.sleep),

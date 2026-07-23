@@ -101,6 +101,7 @@ def test_interaction_round_trip_pauses_answers_resumes_and_keeps_trace_safe(
         max_retries=0,
         max_output_tokens=2048,
         max_response_bytes=1048576,
+        response_mode="json_object",
         prompt_builder=PromptBuilder(),
         transport=transport,
         sleeper=lambda _: None,

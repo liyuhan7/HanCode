@@ -140,6 +140,9 @@ class HanCodeTuiApp(App[None]):
         if task_id == self.controller.state.active_task_id:
             return
         if not self.controller.can_mutate():
+            if task_id == self.controller.state.running_task_id:
+                self._select(task_id)
+                return
             self._notify("任务正在运行，无法切换。")
             return
         self._select(task_id)
@@ -256,8 +259,9 @@ class HanCodeTuiApp(App[None]):
 
     def _select(self, task_id: str) -> None:
         if not self.controller.can_mutate():
-            self._notify("任务正在运行，无法切换。")
-            return
+            if task_id != self.controller.state.running_task_id:
+                self._notify("任务正在运行，无法切换。")
+                return
         self._start_query(
             TuiIntent(kind=TuiOperationKind.SELECT_TASK, task_id=task_id)
         )

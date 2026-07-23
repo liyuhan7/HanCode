@@ -109,6 +109,7 @@ class TuiSessionController:
         self._state = TuiViewState.initial(project_root)
         self._active_request_id: str | None = None
         self._active_operation_task_id: str | None = None
+        self._active_query_request_id: str | None = None
 
     @property
     def state(self) -> TuiViewState:
@@ -131,11 +132,12 @@ class TuiSessionController:
         """Validate an intent and assign a request ID, without doing I/O."""
 
         if self._state.busy:
-            return self._reject(
-                "tui_operation_busy",
-                "任务正在运行，无法开始新的操作。",
-                "等待当前任务结束后重试。",
-            )
+            if intent.kind in _MUTATIONS:
+                return self._reject(
+                    "tui_operation_busy",
+                    "任务正在运行，无法开始新的操作。",
+                    "等待当前任务结束后重试。",
+                )
 
         task_id = intent.task_id
         if intent.kind in _TASK_REQUIRED:
@@ -178,29 +180,41 @@ class TuiSessionController:
     def begin_operation(self, operation: TuiOperation) -> str:
         """Mark a request active and return its request ID."""
 
-        if self._state.busy:
-            raise HanCodeError(
-                StructuredError(
-                    error_code="tui_operation_busy",
-                    message="任务正在运行，无法开始新的操作。",
-                    phase="spec",
-                    denied_rule="single_mutation_worker",
-                    suggested_fix="等待当前任务结束后重试。",
-                )
-            )
-        self._active_request_id = operation.request_id
-        self._active_operation_task_id = operation.task_id
         is_mutation = operation.kind in _MUTATIONS
         is_query = operation.kind in _QUERIES
-        self._state = replace(
-            self._state,
-            current_request_id=operation.request_id,
-            busy=is_mutation,
-            active_mutation=operation.kind.value if is_mutation else None,
-            active_query=operation.kind.value if is_query else None,
-            running_task_id=operation.task_id if is_mutation else None,
-            last_error=None,
-        )
+
+        if self._state.busy:
+            if is_mutation:
+                raise HanCodeError(
+                    StructuredError(
+                        error_code="tui_operation_busy",
+                        message="任务正在运行，无法开始新的操作。",
+                        phase="spec",
+                        denied_rule="single_mutation_worker",
+                        suggested_fix="等待当前任务结束后重试。",
+                    )
+                )
+
+        if is_mutation:
+            self._active_request_id = operation.request_id
+            self._active_operation_task_id = operation.task_id
+            self._state = replace(
+                self._state,
+                current_request_id=operation.request_id,
+                busy=True,
+                active_mutation=operation.kind.value,
+                active_query=None,
+                running_task_id=operation.task_id,
+                last_error=None,
+            )
+        else:
+            self._active_query_request_id = operation.request_id
+            self._state = replace(
+                self._state,
+                current_request_id=operation.request_id,
+                active_query=operation.kind.value,
+                last_error=None,
+            )
         return operation.request_id
 
     def execute(
@@ -317,7 +331,8 @@ class TuiSessionController:
                         else self._state.detail
                     ),
                 )
-        self._finish_operation()
+        preserve_busy = kind not in _MUTATIONS and self._state.busy
+        self._finish_operation(preserve_busy=preserve_busy)
         return True
 
     def apply_error(self, error: TuiOperationError) -> bool:
@@ -333,7 +348,8 @@ class TuiSessionController:
             self._state,
             last_error=error.structured_error,
         )
-        self._finish_operation()
+        preserve_busy = error.kind not in _MUTATIONS and self._state.busy
+        self._finish_operation(preserve_busy=preserve_busy)
         return True
 
     def _accepts_result(self, result: TuiOperationResult) -> bool:
@@ -350,8 +366,15 @@ class TuiSessionController:
         task_id: str | None,
         kind: TuiOperationKind,
     ) -> bool:
-        if self._active_request_id != request_id:
-            return False
+        # Mutations and queries use separate request ID tracking so that a
+        # query running concurrently with a mutation does not overwrite the
+        # mutation's request ID.
+        if kind in _MUTATIONS:
+            if self._active_request_id != request_id:
+                return False
+        else:
+            if self._active_query_request_id != request_id:
+                return False
         if (
             task_id is not None
             and self._active_operation_task_id is not None
@@ -370,17 +393,29 @@ class TuiSessionController:
             return False
         return True
 
-    def _finish_operation(self) -> None:
-        self._active_request_id = None
-        self._active_operation_task_id = None
-        self._state = replace(
-            self._state,
-            current_request_id=None,
-            busy=False,
-            active_mutation=None,
-            active_query=None,
-            running_task_id=None,
-        )
+    def _finish_operation(self, *, preserve_busy: bool = False) -> None:
+        if preserve_busy:
+            # A query finished while a mutation is still running.
+            # Only clear query tracking; preserve the mutation's busy state so
+            # that in-flight mutation results are still accepted.
+            self._active_query_request_id = None
+            self._state = replace(
+                self._state,
+                current_request_id=None,
+                active_query=None,
+            )
+        else:
+            self._active_request_id = None
+            self._active_operation_task_id = None
+            self._active_query_request_id = None
+            self._state = replace(
+                self._state,
+                current_request_id=None,
+                busy=False,
+                active_mutation=None,
+                active_query=None,
+                running_task_id=None,
+            )
 
     def execute_sync(self, intent: TuiIntent) -> TuiOperationValue:
         """Execute one operation synchronously through the controller boundary."""

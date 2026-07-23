@@ -64,6 +64,7 @@ _OPTIONAL_STRING_FIELDS = (
     "provider_base_url",
     "interaction_mode",
     "approval_mode",
+    "provider_response_mode",
 )
 _INTEGER_FIELDS = (
     "max_steps",
@@ -108,6 +109,9 @@ _SUPPORTED_LLM_PROVIDERS = frozenset(
 )
 _SUPPORTED_CREDENTIAL_SOURCES = frozenset({"keyring", "env", "dotenv"})
 _SUPPORTED_INTERACTION_MODES = frozenset({"disabled", "ask_user"})
+_SUPPORTED_PROVIDER_RESPONSE_MODES = frozenset(
+    {"json_object", "json_schema"}
+)
 _SUPPORTED_APPROVAL_MODES = frozenset({"disabled", "first_source_write", "all_source_writes"})
 _REMOTE_LLM_PROVIDERS = frozenset({"openai_compatible", "anthropic"})
 _SENSITIVE_FIELD_MARKERS = (
@@ -163,6 +167,7 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "max_diff_chars",
         "max_diff_file_bytes",
         "diff_context_lines",
+        "provider_response_mode",
     }
 )
 _ALLOWED_PROJECT_FIELDS = _PROJECT_METADATA_FIELDS | _ACTIVE_CONFIG_FIELDS
@@ -207,6 +212,10 @@ class HanCodeConfig:
     max_diff_chars: int = 30_000
     max_diff_file_bytes: int = 524_288
     diff_context_lines: int = 3
+    provider_response_mode: Literal[
+        "json_object",
+        "json_schema",
+    ] = "json_object"
 
 
 def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig:
@@ -318,9 +327,14 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         diff_context_lines=cast(
             int, project_data.get("diff_context_lines", 3)
         ),
+        provider_response_mode=cast(
+            Literal["json_object", "json_schema"],
+            project_data.get("provider_response_mode", "json_object"),
+        ),
     )
     _validate_interaction_config(config)
     _validate_approval_config(config)
+    _validate_provider_config(config)
     return config
 
 
@@ -367,6 +381,24 @@ def _validate_approval_config(config: HanCodeConfig) -> None:
                 phase="spec",
                 denied_rule="config_approval_limit",
                 suggested_fix="Set max_approval_preview_chars to a positive integer.",
+            )
+        )
+
+
+def _validate_provider_config(config: HanCodeConfig) -> None:
+    if config.provider_response_mode not in _SUPPORTED_PROVIDER_RESPONSE_MODES:
+        raise HanCodeError(
+            StructuredError(
+                error_code="config_invalid",
+                message=(
+                    "Unsupported provider_response_mode: "
+                    f"{config.provider_response_mode!r}."
+                ),
+                phase="spec",
+                denied_rule="config_provider_response_mode",
+                suggested_fix=(
+                    "Use json_object or json_schema."
+                ),
             )
         )
 

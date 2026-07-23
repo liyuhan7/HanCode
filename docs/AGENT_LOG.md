@@ -1972,3 +1972,42 @@
 - CI 边界：最新合并后没有独立 GitHub Actions run/combined status 证据；以上只记录本地 Windows 验证结果。
 - 提交：未提交，等待用户在 R1-R6 全部完成后统一提交。
 - 剩余边界：完整 Query Worker 取消策略、Inspection Views、HITL 产品化、Export/恢复布局、S5-R6 E2E 与后续全量质量门禁仍待继续开发。
+
+### 2026-07-23 — 修复 /use 在任务运行时无法查询执行状态
+
+- 使用技能：无（直接分析+修复）。
+- 范围：修复 TUI 中任务运行时 `/use <task-id>` 被 `busy` 状态阻塞的问题。
+- Red：`dispatch()`、`begin_operation()`、`_select()` 三处均无条件检测 `busy=True` 并拒绝所有操作，导致运行中的任务无法通过 `/use` 刷新视图。
+- 修复：
+  - `controller.py:dispatch()`：仅拒绝变更操作（`_MUTATIONS`），允许查询操作（`SELECT_TASK` 等）在 `busy` 时通过。
+  - `controller.py:begin_operation()`：查询操作在 `busy` 时仍允许执行，使用新增的 `_active_query_request_id` 与变更加载的 `_active_request_id` 分离追踪。
+  - `controller.py:_accepts_task_context()`：根据操作类型（mutation/query）检查对应的 `request_id`。
+  - `controller.py:_finish_operation()`：新增 `preserve_busy` 参数；查询在变更期间结束时不清除变更的 `busy` 状态。
+  - `controller.py:apply_result()`/`apply_error()`：根据操作类型和当前 `busy` 状态决定 `preserve_busy`。
+  - `app.py:_select()`：`busy` 时允许重新选中与 `running_task_id` 相同的任务（刷新视图），阻止切换到其他任务。
+  - `app.py:on_list_view_selected()`：同上。
+- 新增测试：`test_controller_allows_query_during_mutation_preserving_busy`、`test_controller_allows_sync_query_during_mutation`。
+- Green：TUI 全量测试 `117 passed`。
+- CI 边界：未检查 TypeScript/Lint；无独立 GitHub Actions run。
+
+## Prompt Contract v2
+
+### 修改内容
+
+- 移除 LLM 可见的 `final` Action。
+- 新增统一 PhaseGate。
+- Prompt 增加 Workspace 不可信边界。
+- Context 增加 runtime_state 与 phase_gate。
+- 增加严格 JSON Schema Provider 模式。
+- 完善工具描述与参数 Schema。
+
+### 验证
+
+- `pytest tests/test_phases.py`
+- `pytest tests/test_tool_policy.py`
+- `pytest tests/test_context_builder.py`
+- `pytest tests/providers/test_prompt_builder.py`
+- `pytest tests/providers/test_openai_compatible.py`
+- `pytest tests/test_provider_factory.py`
+- `pytest tests/test_config.py`
+- 完整测试、lint、type check

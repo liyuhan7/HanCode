@@ -91,6 +91,7 @@ def test_config_loads_defaults(tmp_path: Path) -> None:
         provider_max_retries=2,
         provider_max_output_tokens=2048,
         provider_max_response_bytes=1048576,
+        provider_response_mode="json_object",
     )
 
 
@@ -1084,3 +1085,66 @@ def _link_directory(link_path: Path, target_path: Path) -> None:
             "Directory link creation unavailable in this environment: "
             f"{result.stdout}{result.stderr}"
         )
+
+
+def test_provider_response_mode_defaults_to_json_object(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.provider_response_mode == "json_object"
+
+
+@pytest.mark.parametrize("mode", ["json_object", "json_schema"])
+def test_supported_provider_response_modes_are_loaded(
+    tmp_path: Path, mode: str
+) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = tmp_path / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["provider_response_mode"] = mode
+    project_data["llm_provider"] = "openai_compatible"
+    project_data["model_name"] = "test-model"
+    project_data["credential_source"] = "env"
+    project_data["provider_base_url"] = "https://example.invalid/v1"
+    project_file.write_text(
+        json.dumps(project_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.provider_response_mode == mode
+
+
+def test_invalid_provider_response_mode_is_rejected(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = tmp_path / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["provider_response_mode"] = "yaml"
+    project_data["llm_provider"] = "openai_compatible"
+    project_data["model_name"] = "test-model"
+    project_data["credential_source"] = "env"
+    project_data["provider_base_url"] = "https://example.invalid/v1"
+    project_file.write_text(
+        json.dumps(project_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.structured_error.denied_rule == "config_provider_response_mode"

@@ -2116,11 +2116,15 @@ class AgentLoop:
                     tuple(tool_calls),
                     observation,
                     StructuredError(
-                        error_code="final_requires_router_completion",
-                        message="Final actions cannot bypass router-controlled completion.",
+                        error_code="final_not_model_selectable",
+                        message=(
+                            "Global completion is controlled by the deterministic router."
+                        ),
                         phase=routing.phase.value,
                         denied_rule="router_completion_required",
-                        suggested_fix="Finish the current phase and let the router determine completion.",
+                        suggested_fix=(
+                            "Finish the current phase and let the router determine completion."
+                        ),
                     ),
                     state,
                 )

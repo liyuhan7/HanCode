@@ -60,9 +60,27 @@ def test_prompt_system_message_contains_harness_contract() -> None:
         tool_catalog=_make_catalog(),
     )
     system_content = prompt.messages[0].content
-    assert "exactly one structured Action" in system_content
-    assert "Do not wrap" in system_content or "Do not wrap the response in Markdown" in system_content
-    assert "Do not execute tools yourself" in system_content
+    assert "exactly one next Action" in system_content
+    assert "Do not use Markdown" in system_content
+    assert "You do not execute tools" in system_content
+
+
+def test_system_prompt_marks_workspace_content_untrusted() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+    )
+    assert "untrusted data" in prompt.messages[0].content
+
+
+def test_system_prompt_forbids_model_final() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+    )
+    assert "Never return final" in prompt.messages[0].content
 
 
 def test_prompt_system_message_contains_current_phase() -> None:
@@ -147,8 +165,8 @@ def test_prompt_contains_artifact_targets() -> None:
     )
     prompt = PromptBuilder().build(context=context, tool_catalog=_make_catalog())
     payload = json.loads(prompt.messages[1].content)
-    assert payload["context"]["task_workspace"] == ".hancode/tasks/task-001"
-    assert payload["context"]["artifact_targets"]["SPEC.md"] == (
+    assert payload["task_context"]["task_workspace"] == ".hancode/tasks/task-001"
+    assert payload["task_context"]["artifact_targets"]["SPEC.md"] == (
         ".hancode/tasks/task-001/SPEC.md"
     )
 
@@ -162,7 +180,7 @@ def test_prompt_user_message_contains_action_schema() -> None:
     user_content = prompt.messages[1].content
     assert "tool_call" in user_content
     assert "finish_phase" in user_content
-    assert "final" in user_content
+    assert "final" not in user_content
 
 
 def test_prompt_excludes_ask_user_in_stage_two() -> None:
@@ -236,10 +254,95 @@ def test_prompt_user_message_is_valid_json() -> None:
     user_content = prompt.messages[1].content
     parsed = json.loads(user_content)
     assert isinstance(parsed, dict)
-    assert "instruction" in parsed
-    assert "context" in parsed
+    assert parsed["prompt_version"] == "hancode-action-v2"
+    assert parsed["request"]["kind"] == "select_next_action"
+    assert "task_context" in parsed
     assert "available_tools" in parsed
     assert "output_contract" in parsed
+
+
+def test_user_payload_contains_prompt_version() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+    )
+    payload = json.loads(prompt.messages[1].content)
+    assert payload["prompt_version"] == "hancode-action-v2"
+
+
+def test_strict_mode_omits_embedded_output_contract() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+        embed_action_schema=False,
+    )
+    payload = json.loads(prompt.messages[1].content)
+    assert "output_contract" not in payload
+    assert payload["response_contract"]["strict"] is True
+
+
+def test_compatibility_mode_embeds_output_contract() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+        embed_action_schema=True,
+    )
+    payload = json.loads(prompt.messages[1].content)
+    assert "output_contract" in payload
+    assert payload["response_contract"]["strict"] is False
+
+
+def test_provider_schema_does_not_expose_final() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+    )
+    action_types = {
+        branch["properties"]["type"]["const"]
+        for branch in prompt.action_schema["oneOf"]
+    }
+    assert "final" not in action_types
+    assert "finish_phase" in action_types
+
+
+def test_write_action_schema_requires_reason() -> None:
+    catalog = (
+        ToolDescriptor(
+            name="write_file",
+            description="Write.",
+            args_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["path", "content"],
+            },
+        ),
+    )
+    prompt = PromptBuilder().build(
+        context=_make_context(phase=Phase.CODE),
+        tool_catalog=catalog,
+    )
+    write_branch = next(
+        branch
+        for branch in prompt.action_schema["oneOf"]
+        if branch["properties"].get("tool_name", {}).get("const") == "write_file"
+    )
+    assert "reason" in write_branch["required"]
+
+
+def test_read_action_schema_does_not_require_reason() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+    )
+    read_branch = next(
+        branch
+        for branch in prompt.action_schema["oneOf"]
+        if branch["properties"].get("tool_name", {}).get("const") == "read_file"
+    )
+    assert "reason" not in read_branch["required"]
 
 
 def test_prompt_system_message_contains_phase_instruction() -> None:

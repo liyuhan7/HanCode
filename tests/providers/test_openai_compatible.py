@@ -80,6 +80,7 @@ def _make_provider(
     sleeper: object = None,
     max_retries: int = 2,
     interaction_enabled: bool = False,
+    response_mode: str = "json_object",
 ) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
         model_name="test-model",
@@ -89,6 +90,7 @@ def _make_provider(
         max_retries=max_retries,
         max_output_tokens=2048,
         max_response_bytes=1048576,
+        response_mode=response_mode,  # type: ignore[arg-type]
         prompt_builder=PromptBuilder(),
         transport=transport,
         sleeper=sleeper if sleeper is not None else (lambda _: None),
@@ -350,3 +352,56 @@ def test_provider_credential_not_in_error() -> None:
 
     error_str = str(exc_info.value)
     assert "test-key" not in error_str
+
+
+def test_json_object_mode_uses_json_object_response_format() -> None:
+    transport = _ScriptedTransport([_ok_response()])
+    provider = _make_provider(transport=transport, response_mode="json_object")
+
+    provider.next_action(_make_context())
+
+    body = transport.requests[0].json_body
+    assert body["response_format"] == {
+        "type": "json_object",
+    }
+
+
+def test_json_schema_mode_uses_strict_action_schema() -> None:
+    transport = _ScriptedTransport([_ok_response()])
+    provider = _make_provider(transport=transport, response_mode="json_schema")
+
+    provider.next_action(_make_context())
+
+    body = transport.requests[0].json_body
+    response_format = body["response_format"]
+
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "hancode_action"
+    assert response_format["json_schema"]["strict"] is True
+    assert "oneOf" in response_format["json_schema"]["schema"]
+
+
+def test_json_schema_mode_does_not_embed_full_schema_in_user_message() -> None:
+    transport = _ScriptedTransport([_ok_response()])
+    provider = _make_provider(transport=transport, response_mode="json_schema")
+
+    provider.next_action(_make_context())
+
+    body = transport.requests[0].json_body
+    user_message = body["messages"][1]["content"]
+    payload = __import__("json").loads(user_message)
+
+    assert "output_contract" not in payload
+
+
+def test_json_object_mode_embeds_action_contract_in_prompt() -> None:
+    transport = _ScriptedTransport([_ok_response()])
+    provider = _make_provider(transport=transport, response_mode="json_object")
+
+    provider.next_action(_make_context())
+
+    body = transport.requests[0].json_body
+    user_message = body["messages"][1]["content"]
+    payload = __import__("json").loads(user_message)
+
+    assert "output_contract" in payload

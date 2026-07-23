@@ -213,17 +213,18 @@ def test_ask_user_rejects_question_over_schema_limit() -> None:
     assert result.error_code == "invalid_action_args"
 
 
-def test_final_rejects_arguments() -> None:
+def test_internal_final_action_retains_fixed_core_schema() -> None:
     result = Action.from_values(
         type=ActionType.FINAL,
         phase=Phase.DELIVER,
         tool_name=None,
-        args={"result": "done"},
+        args={},
         reason=None,
     )
 
-    assert isinstance(result, ParseError)
-    assert result.error_code == "invalid_action_args"
+    assert isinstance(result, Action)
+    assert result.type is ActionType.FINAL
+    assert result.tool_name is None
 
 
 def test_direct_construction_rejects_invalid_schema() -> None:

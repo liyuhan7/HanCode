@@ -1609,7 +1609,7 @@ def test_final_action_after_failed_test_cannot_bypass_router_completion() -> Non
 
     assert result.status is TaskStatus.BLOCKED
     assert result.error is not None
-    assert result.error.error_code == "final_requires_router_completion"
+    assert result.error.error_code == "final_not_model_selectable"
 
 
 def test_feedback_construction_failure_blocks_with_its_structured_error() -> None:

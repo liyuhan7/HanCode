@@ -9,7 +9,7 @@ from hancode.core.actions import Action, ActionType
 from hancode.core.config import HanCodeConfig
 from hancode.core.models import Phase, TaskStatus
 from hancode.policy.path_policy import PathClassifier, PathZone
-from hancode.core.phases import can_write_artifact
+from hancode.core.phases import build_phase_gate, can_write_artifact
 from hancode.core.state import TaskState
 from hancode.core.tool_specs import TOOL_SPEC_BY_NAME
 
@@ -91,7 +91,12 @@ class ToolPolicy:
         if action.type is ActionType.ASK_USER:
             return self._evaluate_ask_user(action, phase, state)
         if action.type is ActionType.FINAL:
-            return _allowed(phase)
+            return _denied(
+                phase,
+                "Global completion is controlled by the deterministic router.",
+                "final_not_model_selectable",
+                "Finish the current phase and let the router determine task completion.",
+            )
         if action.type is not ActionType.TOOL_CALL or action.tool_name is None:
             return _denied(
                 phase,
@@ -291,43 +296,26 @@ class ToolPolicy:
         )
 
     @staticmethod
-    def _evaluate_finish_phase(phase: Phase, state: TaskState) -> PolicyDecision:
-        if phase is Phase.SPEC:
-            ready = state.artifacts["SPEC.md"]
-            rule = "spec_finish_requirements"
-            fix = "Generate SPEC.md before finishing the spec phase."
-        elif phase is Phase.PLAN:
-            ready = state.artifacts["PLAN.md"]
-            rule = "plan_finish_requirements"
-            fix = "Generate PLAN.md before finishing the plan phase."
-        elif phase is Phase.CODE:
-            ready = state.source_edits_this_phase > 0
-            rule = "code_finish_requirements"
-            fix = "Make an allowed source change before finishing the code phase."
-        elif phase is Phase.TEST:
-            ready = state.latest_test_status != "none"
-            rule = "test_finish_requirements"
-            fix = "Run the configured tests before finishing the test phase."
-        elif phase is Phase.REVIEW:
-            ready = state.artifacts["REVIEW.md"] and (
-                not state.rollback_required or state.rollback_done
-            )
-            rule = "review_finish_requirements"
-            fix = "Generate REVIEW.md and complete any required rollback."
-        else:
-            ready = state.artifacts["KNOWLEDGE.md"] and (
-                state.artifacts["DELIVERABLES.md"]
-                or state.latest_test_status == "passed"
-            )
-            rule = "deliver_finish_requirements"
-            fix = "Generate KNOWLEDGE.md and DELIVERABLES.md before finishing."
-        if ready:
+    def _evaluate_finish_phase(
+        phase: Phase,
+        state: TaskState,
+    ) -> PolicyDecision:
+        gate = build_phase_gate(phase, state)
+
+        if gate.can_finish:
             return _allowed(phase)
+
+        unsatisfied = [
+            requirement.description
+            for requirement in gate.requirements
+            if not requirement.satisfied
+        ]
+
         return _denied(
             phase,
             "Current phase completion requirements are not met.",
-            rule,
-            fix,
+            f"{phase.value}_finish_requirements",
+            " ".join(unsatisfied),
         )
 
 

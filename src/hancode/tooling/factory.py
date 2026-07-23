@@ -10,7 +10,7 @@ from typing import Any, cast
 
 from hancode.core.config import HanCodeConfig
 from hancode.core.tool_specs import ALL_TOOL_SPECS
-from hancode.tooling.build_tools import run_build
+from hancode.tooling.build_tools import run_build as _run_build_tool
 from hancode.tooling.checkpoint_tools import list_checkpoints
 from hancode.tooling.delivery_tools import record_knowledge, record_review, read_test_report
 from hancode.tooling.diff_tools import get_diff
@@ -73,6 +73,16 @@ def _redact_test_result(result: ToolResult) -> ToolResult:
     )
 
 
+def _run_build_dispatch(
+    project_root: Path,
+    fallback_command: str | None,
+    **kwargs: object,
+) -> ToolResult:
+    """Dispatch run_build, allowing the LLM to supply an explicit ``command`` arg."""
+    command, remaining = _resolve_test_command(fallback_command, **kwargs)
+    return _run_build_tool(project_root, command, **cast(dict[str, Any], remaining))
+
+
 def build_default_tool_registry(
     config: HanCodeConfig,
     *,
@@ -121,7 +131,7 @@ def build_default_tool_registry(
         )
     registry.register(
         "run_build",
-        partial(run_build, project_root, config.build_command),
+        partial(_run_build_dispatch, project_root, config.build_command),
     )
 
     return registry

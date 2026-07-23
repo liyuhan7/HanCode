@@ -267,14 +267,20 @@ def test_allows_control_actions_without_tool_dispatch(tmp_path: Path) -> None:
     ask_user = policy.evaluate(
         action=_ask_user_action(Phase.CODE), phase=Phase.CODE, state=state
     )
-    final = policy.evaluate(
-        action=_final_action(Phase.CODE), phase=Phase.CODE, state=state
-    )
 
     assert ask_user.allowed is True
-    assert final.allowed is True
     assert ask_user.requires_checkpoint is False
-    assert final.requires_checkpoint is False
+
+
+def test_final_is_not_model_selectable(tmp_path: Path) -> None:
+    decision = _policy(tmp_path).evaluate(
+        action=_final_action(Phase.CODE),
+        phase=Phase.CODE,
+        state=_state(Phase.CODE),
+    )
+
+    assert not decision.allowed
+    assert decision.denied_rule == "final_not_model_selectable"
 
 
 def test_denies_ask_user_when_interaction_is_disabled(tmp_path: Path) -> None:

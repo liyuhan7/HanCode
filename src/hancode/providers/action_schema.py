@@ -15,6 +15,9 @@ __all__ = [
 ]
 
 
+_WRITE_TOOLS = frozenset({"write_file", "edit_file"})
+
+
 def build_action_schema(
     *,
     phase: Phase,
@@ -25,27 +28,41 @@ def build_action_schema(
     branches: list[dict[str, object]] = []
 
     branches.extend(_tool_call_branch(phase, tool) for tool in tool_catalog)
-    branches.append(
-        _control_branch(phase, "finish_phase")
-    )
-    branches.append(
-        _control_branch(phase, "final")
-    )
+    branches.append(_control_branch(phase, "finish_phase"))
+
     if interaction_enabled:
         branches.append(_ask_user_branch(phase))
 
-    return {"oneOf": branches, "$schema": "https://json-schema.org/draft/2020-12/schema"}
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": branches,
+    }
 
 
-def _tool_call_branch(phase: Phase, tool: ToolDescriptor) -> dict[str, object]:
-    reason_schema: dict[str, object] = (
-        {"type": "string", "minLength": 1}
-        if tool.name in {"write_file", "edit_file"}
-        else {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
-    )
+def _tool_call_branch(
+    phase: Phase,
+    tool: ToolDescriptor,
+) -> dict[str, object]:
+    required = ["type", "phase", "tool_name", "args"]
+
+    if tool.name in _WRITE_TOOLS:
+        required.append("reason")
+        reason_schema: dict[str, object] = {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+        }
+    else:
+        reason_schema = {
+            "oneOf": [
+                {"type": "string", "minLength": 1, "maxLength": 1024},
+                {"type": "null"},
+            ]
+        }
+
     return {
         "type": "object",
-        "required": ["type", "phase", "tool_name", "args"],
+        "required": required,
         "properties": {
             "type": {"const": "tool_call"},
             "phase": {"const": phase.value},
@@ -57,6 +74,14 @@ def _tool_call_branch(phase: Phase, tool: ToolDescriptor) -> dict[str, object]:
     }
 
 
+_REASON_ONE_OF = {
+    "oneOf": [
+        {"type": "string", "minLength": 1, "maxLength": 1024},
+        {"type": "null"},
+    ]
+}
+
+
 def _control_branch(phase: Phase, action_type: str) -> dict[str, object]:
     return {
         "type": "object",
@@ -64,7 +89,7 @@ def _control_branch(phase: Phase, action_type: str) -> dict[str, object]:
         "properties": {
             "type": {"const": action_type},
             "phase": {"const": phase.value},
-            "reason": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+            "reason": dict(_REASON_ONE_OF),
             "tool_name": {"type": "null"},
             "args": {"type": "object", "maxProperties": 0},
         },
@@ -79,7 +104,7 @@ def _ask_user_branch(phase: Phase) -> dict[str, object]:
         "properties": {
             "type": {"const": "ask_user"},
             "phase": {"const": phase.value},
-            "reason": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+            "reason": dict(_REASON_ONE_OF),
             "tool_name": {"type": "null"},
             "args": {
                 "type": "object",

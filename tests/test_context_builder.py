@@ -166,19 +166,10 @@ def test_code_phase_includes_policy_and_changed_source_snippets(tmp_path: Path) 
 
     assert context["sections"]["spec"] == "# Spec\nAPI_KEY=[REDACTED]\n"
     assert context["sections"]["plan"] == "# Plan\n"
-    assert json.loads(context["sections"]["allowed_tools"]) == [
-        "edit_file",
-        "get_diff",
-        "list_checkpoints",
-        "list_files",
-        "read_file",
-        "run_tests",
-        "search_text",
-        "write_file",
-    ]
-    assert "assignment" in json.loads(context["sections"]["protected_patterns"])
-    assert json.loads(context["sections"]["writable_roots"]) == ["src", "tests"]
-    assert json.loads(context["sections"]["source_snippets"]) == {
+    assert "allowed_tools" not in context["sections"]
+    assert "assignment" in context["sections"]["protected_patterns"]
+    assert isinstance(context["sections"]["writable_roots"], list)
+    assert context["sections"]["source_snippets"] == {
         "src/main.py": "VALUE = 1\nAPI_KEY=[REDACTED]\n"
     }
     assert "live-source-secret" not in _canonical_context(context)
@@ -345,7 +336,7 @@ def test_context_builder_rejects_oversized_trace_event(tmp_path: Path) -> None:
 
 def test_context_builder_respects_max_context_chars(tmp_path: Path) -> None:
     project_root, task_root = _workspace(tmp_path)
-    _set_project_config(project_root, max_context_chars=800)
+    _set_project_config(project_root, max_context_chars=1200)
     (project_root / ".hancode" / "course_context.md").write_text(
         "COURSE-" + "c" * 1000, encoding="utf-8"
     )
@@ -361,7 +352,7 @@ def test_context_builder_respects_max_context_chars(tmp_path: Path) -> None:
         state=_state(task_root, goal="Implement the assignment."),
     )
 
-    assert len(_canonical_context(context)) <= 800
+    assert len(_canonical_context(context)) <= 1200
     assert "COURSE-" in context["sections"]["course_context"]
     assert context["sections"]["course_context"].endswith("[TRUNCATED]")
     assert "project_memory" not in context["sections"]

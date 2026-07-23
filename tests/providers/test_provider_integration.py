@@ -105,6 +105,7 @@ def _make_provider(
         max_retries=max_retries if max_retries is not None else config.provider_max_retries,
         max_output_tokens=config.provider_max_output_tokens,
         max_response_bytes=config.provider_max_response_bytes,
+        response_mode="json_object",
         prompt_builder=PromptBuilder(),
         transport=transport,
         sleeper=lambda _: None,

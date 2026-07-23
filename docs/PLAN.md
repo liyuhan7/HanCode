@@ -6687,3 +6687,107 @@ S4-R2 Build       S4-R3 Test Report
 - Delivery Gate：新增 `DeliveryInspectionService.read_delivery_summary()`，复用 DeliveryPipeline blocker/status 计算；Presenter 只展示服务结果，不自行推测 ready。
 - Rollback 绑定：Rollback preview 的 checkpoint ID 随 Operation 传递，在 Task Lock 内复核最新 checkpoint，不一致返回 `rollback_preview_stale`。
 - P0 回归专项：`19 passed`；修复后全量 Pytest：`1300 passed, 17 skipped`。
+
+---
+
+## S5-R1：统一阶段完成门禁
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5 |
+| 可并行 | 不并行 |
+| 主贡献相关 | 是 |
+| Commit | 未提交 |
+
+### 范围
+
+- `src/hancode/core/phases.py`
+- `src/hancode/providers/action_schema.py`
+- `src/hancode/policy/tool_policy.py`
+- `src/hancode/runtime/agent_loop.py`
+
+### 验收
+
+- Context 和 Policy 消费同一个 PhaseGate。
+- LLM 可看到 `phase_gate.can_finish`。
+- 不存在重复的阶段完成判断逻辑。
+- 模型 Schema 中没有 `final`。
+- 写工具必须提供 `reason`。
+- Router 仍是唯一全局完成控制者。
+
+---
+
+## S5-R2：规范 Provider Prompt Contract
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R1 |
+| 可并行 | 不并行 |
+| 主贡献相关 | 是 |
+| Commit | 未提交 |
+
+### 范围
+
+- `src/hancode/providers/prompt_contract.py`
+- `src/hancode/providers/prompt_builder.py`
+- `src/hancode/runtime/context.py`
+- `src/hancode/core/tool_specs.py`
+
+### 验收
+
+- Prompt 明确 Workspace 内容为不可信证据。
+- Provider Schema 不暴露 `final`。
+- 写操作 Schema 必须包含非空 `reason`。
+- Prompt 带版本号。
+- Context 含 `runtime_state` 和 `phase_gate`。
+- 不再重复注入 `allowed_tools`。
+- 不再双重 JSON 编码。
+
+---
+
+## S5-R3：严格结构化 Provider 输出
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R2 |
+| 可并行 | 不并行 |
+| 主贡献相关 | 是 |
+| Commit | 未提交 |
+
+### 范围
+
+- `src/hancode/core/config.py`
+- `src/hancode/providers/base.py`
+- `src/hancode/providers/openai_compatible.py`
+- `src/hancode/providers/factory.py`
+
+### 验收
+
+- 支持 `json_object` 和 `json_schema` 两种模式。
+- 严格模式实际把 Action Schema 放入 API `response_format`。
+- 兼容模式仍嵌入 Schema。
+
+---
+
+## S5-R4：完善工具语义
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R2 |
+| 可并行 | 不并行 |
+| 主贡献相关 | 是 |
+| Commit | 未提交 |
+
+### 范围
+
+- `src/hancode/core/tool_specs.py`
+
+### 验收
+
+- 所有工具参数禁止额外字段。
+- 写工具说明何时使用、何时避免。
+- 结构化数组定义 `items`。

@@ -14,9 +14,9 @@ from hancode.storage.checkpoints import _load_manifest, _validate_manifest_ident
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.tooling.file_tools import redact_text
 from hancode.core.models import Phase
+from hancode.core.phases import build_phase_gate
 from hancode.policy.path_policy import PathClassifier, PathZone
 from hancode.core.state import TaskState, load_state, reconcile_state
-from hancode.policy.tool_policy import allowed_tools_for_phase
 from hancode.storage.workspace import load_project_metadata, task_path
 
 
@@ -29,7 +29,7 @@ _REQUIRED_ARTIFACTS = {
 }
 
 _OMITTABLE_SECTIONS = frozenset(
-    {"experience", "project_memory", "project_structure", "source_snippets"}
+    {"experience", "project_memory", "project_structure"}
 )
 
 _TRUNCATION_ORDER = {
@@ -41,7 +41,7 @@ _TRUNCATION_ORDER = {
         "course_context",
         "spec",
     ),
-    Phase.CODE: ("source_snippets", "protected_patterns", "allowed_tools", "plan", "spec"),
+    Phase.CODE: ("source_snippets", "protected_patterns", "plan", "spec"),
     Phase.TEST: ("checkpoint", "changed_files", "test_command", "plan"),
     Phase.REVIEW: ("checkpoint", "changed_files", "test_report", "plan", "spec"),
     Phase.DELIVER: ("trace_summary", "review", "test_report", "plan", "spec"),
@@ -111,7 +111,7 @@ def build_context(
             "Repair task artifacts or state before building context.",
         )
 
-    sections: dict[str, str] = {}
+    sections: dict[str, object] = {}
     risks: list[dict[str, object]] = []
     for artifact_name in _REQUIRED_ARTIFACTS.get(phase, ()):
         sections[_artifact_section_name(artifact_name)] = _read_required_artifact(
@@ -149,13 +149,11 @@ def build_context(
         if config.test_command is not None:
             sections["test_command"] = config.test_command
     if phase is Phase.CODE:
-        sections["allowed_tools"] = _canonical_json(
-            list(allowed_tools_for_phase(phase))
+        sections["protected_patterns"] = list(config.protected_patterns)
+        sections["writable_roots"] = _writable_root_paths(
+            config,
+            resolved_project_root,
         )
-        sections["protected_patterns"] = _canonical_json(
-            list(config.protected_patterns)
-        )
-        sections["writable_roots"] = _writable_roots(config, resolved_project_root)
         _add_source_snippets(sections, risks, resolved_project_root, current_state, config)
     if phase in {Phase.TEST, Phase.REVIEW}:
         sections["changed_files"] = _canonical_json(
@@ -182,6 +180,8 @@ def build_context(
             risks,
         )
 
+    phase_gate = build_phase_gate(phase, current_state)
+
     context: dict[str, object] = {
         "task_id": task_id,
         "phase": phase.value,
@@ -192,6 +192,18 @@ def build_context(
             for name in _ARTIFACT_NAMES
         },
         "sections": sections,
+        "runtime_state": {
+            "status": current_state.status.value,
+            "current_phase": current_state.current_phase.value,
+            "artifacts": dict(current_state.artifacts),
+            "source_edits_this_phase": current_state.source_edits_this_phase,
+            "latest_test_status": current_state.latest_test_status,
+            "test_status_consumed": current_state.test_status_consumed,
+            "retry_budget_remaining": current_state.retry_budget_remaining,
+            "rollback_required": current_state.rollback_required,
+            "rollback_done": current_state.rollback_done,
+        },
+        "phase_gate": phase_gate.to_dict(),
         "context_risks": risks,
         "truncation": {
             "applied": False,
@@ -263,6 +275,9 @@ def _apply_context_budget(
         if len(_canonical_json(context)) <= max_context_chars:
             return context
 
+    if _truncate_source_snippets(sections, context, max_context_chars, truncated):
+        return context
+
     for section_name in _TRUNCATION_ORDER[phase]:
         value = sections.get(section_name)
         if not isinstance(value, str):
@@ -291,6 +306,29 @@ def _apply_context_budget(
         "context_budget_sufficient",
         "Increase max_context_chars or reduce the required task artifacts.",
     )
+
+
+def _truncate_source_snippets(
+    sections: dict[str, object],
+    context: dict[str, object],
+    max_context_chars: int,
+    truncated: list[str],
+) -> bool:
+    raw = sections.get("source_snippets")
+    if not isinstance(raw, dict):
+        return False
+
+    paths = sorted(raw, key=str.casefold, reverse=True)
+
+    while paths and len(_canonical_json(context)) > max_context_chars:
+        removed = paths.pop(0)
+        raw.pop(removed, None)
+        truncated.append(f"source_snippets:{removed}")
+
+    if not raw:
+        sections.pop("source_snippets", None)
+
+    return len(_canonical_json(context)) <= max_context_chars
 
 
 def _largest_fitting_prefix(
@@ -354,7 +392,7 @@ def _artifact_section_name(artifact_name: str) -> str:
 
 
 def _add_source_snippets(
-    sections: dict[str, str],
+    sections: dict[str, object],
     risks: list[dict[str, object]],
     project_root: Path,
     state: TaskState,
@@ -374,7 +412,7 @@ def _add_source_snippets(
         except (OSError, UnicodeError):
             _append_risk(risks, "source_snippet_skipped", relative_path)
     if snippets:
-        sections["source_snippets"] = _canonical_json(snippets)
+        sections["source_snippets"] = snippets
 
 
 def _safe_changed_files(
@@ -396,7 +434,7 @@ def _is_link(path: Path) -> bool:
 
 
 def _add_checkpoint_summary(
-    sections: dict[str, str],
+    sections: dict[str, object],
     risks: list[dict[str, object]],
     task_root: Path,
     state: TaskState,
@@ -592,7 +630,7 @@ def _validate_context_identity(
 
 
 def _add_optional_project_document(
-    sections: dict[str, str],
+    sections: dict[str, object],
     risks: list[dict[str, object]],
     path: Path,
     section_name: str,

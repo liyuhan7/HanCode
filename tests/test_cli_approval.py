@@ -78,6 +78,7 @@ def _pending(tmp_path: Path) -> None:
         max_retries=0,
         max_output_tokens=2048,
         max_response_bytes=1048576,
+        response_mode="json_object",
         prompt_builder=PromptBuilder(),
         transport=_ScriptedTransport([_resp(_WRITE), _err()]),
         sleeper=lambda _: None,

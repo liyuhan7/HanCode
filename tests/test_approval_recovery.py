@@ -73,6 +73,7 @@ def _provider(tmp_path: Path, transport: _ScriptedTransport) -> OpenAICompatible
         max_retries=0,
         max_output_tokens=2048,
         max_response_bytes=1048576,
+        response_mode="json_object",
         prompt_builder=PromptBuilder(),
         transport=transport,
         sleeper=lambda _: None,

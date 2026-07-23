@@ -459,7 +459,7 @@ def test_agent_loop_result_preserves_non_state_port_boundaries() -> None:
     assert rollback_manager.calls == []
 
 
-def test_final_action_requires_router_controlled_completion() -> None:
+def test_model_final_cannot_complete_task() -> None:
     loop, _, _, _, tools, _ = _build_loop([_final_action(), _read_file_action()])
 
     result = loop.run("task-001")
@@ -469,7 +469,7 @@ def test_final_action_requires_router_controlled_completion() -> None:
     assert result.tool_calls == ()
     assert not tools.actions
     assert result.error is not None
-    assert result.error.error_code == "final_requires_router_completion"
+    assert result.error.error_code == "final_not_model_selectable"
 
 
 def test_tool_observation_is_fed_into_next_context() -> None:

@@ -83,17 +83,16 @@ def test_schema_includes_finish_phase_branch() -> None:
     assert branch["properties"]["args"] == {"type": "object", "maxProperties": 0}
 
 
-def test_schema_includes_final_branch() -> None:
+def test_schema_does_not_expose_final() -> None:
     schema = build_action_schema(
         phase=Phase.DELIVER, tool_catalog=_make_catalog()
     )
     branches = schema["oneOf"]
-    final_branches = [
-        b for b in branches if b["properties"]["type"]["const"] == "final"
-    ]
-    assert len(final_branches) == 1
-    branch = final_branches[0]
-    assert branch["properties"]["phase"]["const"] == "deliver"
+    action_types = {
+        branch["properties"]["type"]["const"] for branch in branches
+    }
+    assert "final" not in action_types
+    assert "finish_phase" in action_types
 
 
 def test_schema_excludes_ask_user_in_stage_two() -> None:
@@ -151,9 +150,10 @@ def test_schema_requires_reason_non_empty() -> None:
         if tool_name.get("const") in {"write_file", "edit_file"}:
             assert reason_schema["type"] == "string"
             assert reason_schema["minLength"] == 1
+            assert reason_schema["maxLength"] == 1024
         else:
             assert reason_schema["oneOf"] == [
-                {"type": "string", "minLength": 1},
+                {"type": "string", "minLength": 1, "maxLength": 1024},
                 {"type": "null"},
             ]
 

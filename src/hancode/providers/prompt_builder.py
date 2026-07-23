@@ -10,47 +10,21 @@ from hancode.core.models import Phase
 from hancode.policy.tool_policy import allowed_tools_for_phase
 from hancode.providers.action_schema import build_action_schema
 from hancode.providers.base import ToolDescriptor
+from hancode.providers.prompt_contract import (
+    BASE_SYSTEM_CONTRACT,
+    INTERACTION_CONTRACT,
+    PHASE_CONTRACTS,
+)
 
 __all__ = ["ChatMessage", "PromptBuilder", "ProviderPrompt", "build_prompt"]
+
+_PROMPT_VERSION = "hancode-action-v2"
+_ACTION_SCHEMA_ID = "hancode.action.v2"
 
 
 def build_prompt(context: Mapping[str, object]) -> str:
     """Serialize structured runtime context without invoking a provider."""
     return json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-_SYSTEM_PROMPT = """\
-You are the action-selection component of HanCode.
-
-Return exactly one structured Action.
-Do not execute tools yourself.
-Do not claim that a file was changed unless a tool result confirms it.
-Use only the supplied tools.
-Respect the current phase.
-Never reveal credentials.
-Never modify protected course files.
-Do not wrap the response in Markdown.
-Do not return explanations outside the Action object."""
-
-_INTERACTION_SYSTEM_PROMPT = """\
-Use ask_user only when information is genuinely required
-and cannot be inferred from the provided context.
-Ask one precise question at a time.
-Do not ask for API keys, passwords, tokens, credentials,
-private keys, or other secrets.
-Do not use ask_user merely to ask for permission to continue.
-Do not ask questions whose answers are already available
-in SPEC.md, PLAN.md, course context, project files, or prior
-interaction history."""
-
-_PHASE_INSTRUCTIONS: dict[Phase, str] = {
-    Phase.SPEC: "Understand the assignment and produce SPEC.md. Do not modify source code.",
-    Phase.PLAN: "Use SPEC.md to produce PLAN.md. Do not modify source code.",
-    Phase.CODE: "Implement only what is required by SPEC.md and PLAN.md. Source writes require the normal tool and policy path.",
-    Phase.TEST: "Run the configured test command. Do not edit protected tests to manufacture a pass.",
-    Phase.REVIEW: "Review requirement coverage, test results and rollback risk.",
-    Phase.DELIVER: "Produce the required review, knowledge and delivery artifacts.",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +35,7 @@ class ChatMessage:
 
 @dataclass(frozen=True, slots=True)
 class ProviderPrompt:
+    prompt_version: str
     messages: tuple[ChatMessage, ...]
     action_schema: Mapping[str, object]
 
@@ -74,6 +49,7 @@ class PromptBuilder:
         context: Mapping[str, object],
         tool_catalog: tuple[ToolDescriptor, ...],
         interaction_enabled: bool = False,
+        embed_action_schema: bool = True,
     ) -> ProviderPrompt:
         phase = _require_phase(context)
         phase_catalog = _phase_tool_catalog(phase, tool_catalog)
@@ -82,20 +58,22 @@ class PromptBuilder:
             phase,
             interaction_enabled=interaction_enabled,
         )
-        user_content = _build_user_message(
-            context=context,
-            tool_catalog=phase_catalog,
-            phase=phase,
-            interaction_enabled=interaction_enabled,
-        )
-
         action_schema = build_action_schema(
             phase=phase,
             tool_catalog=phase_catalog,
             interaction_enabled=interaction_enabled,
         )
+        user_content = _build_user_message(
+            context=context,
+            tool_catalog=phase_catalog,
+            phase=phase,
+            interaction_enabled=interaction_enabled,
+            embed_action_schema=embed_action_schema,
+            action_schema=action_schema,
+        )
 
         return ProviderPrompt(
+            prompt_version=_PROMPT_VERSION,
             messages=(
                 ChatMessage(role="system", content=system_content),
                 ChatMessage(role="user", content=user_content),
@@ -114,15 +92,23 @@ def _require_phase(context: Mapping[str, object]) -> Phase:
         raise ValueError(f"Unsupported phase: {raw_phase}") from exc
 
 
-def _build_system_message(phase: Phase, *, interaction_enabled: bool) -> str:
-    instruction = _PHASE_INSTRUCTIONS.get(phase, "")
-    interaction_instruction = (
-        f"\n\n{_INTERACTION_SYSTEM_PROMPT}" if interaction_enabled else ""
+def _build_system_message(
+    phase: Phase,
+    *,
+    interaction_enabled: bool,
+) -> str:
+    parts = [BASE_SYSTEM_CONTRACT]
+
+    if interaction_enabled:
+        parts.append(INTERACTION_CONTRACT)
+
+    parts.append(
+        f"CURRENT PHASE\n\n"
+        f"Phase: {phase.value}\n"
+        f"{PHASE_CONTRACTS[phase]}"
     )
-    return (
-        f"{_SYSTEM_PROMPT}{interaction_instruction}\n\n"
-        f"Current phase: {phase.value}\n{instruction}"
-    )
+
+    return "\n\n".join(parts)
 
 
 def _build_user_message(
@@ -131,16 +117,18 @@ def _build_user_message(
     tool_catalog: tuple[ToolDescriptor, ...],
     phase: Phase,
     interaction_enabled: bool,
+    embed_action_schema: bool,
+    action_schema: Mapping[str, object],
 ) -> str:
     safe_context = _sanitize_context(context)
-    action_schema = build_action_schema(
-        phase=phase,
-        tool_catalog=tool_catalog,
-        interaction_enabled=interaction_enabled,
-    )
+
     payload: dict[str, object] = {
-        "instruction": "Select the next single action.",
-        "context": safe_context,
+        "prompt_version": _PROMPT_VERSION,
+        "request": {
+            "kind": "select_next_action",
+            "phase": phase.value,
+        },
+        "task_context": safe_context,
         "available_tools": [
             {
                 "name": tool.name,
@@ -149,9 +137,21 @@ def _build_user_message(
             }
             for tool in tool_catalog
         ],
-        "output_contract": action_schema,
+        "response_contract": {
+            "schema_id": _ACTION_SCHEMA_ID,
+            "strict": not embed_action_schema,
+        },
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    if embed_action_schema:
+        payload["output_contract"] = dict(action_schema)
+
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _phase_tool_catalog(
@@ -178,10 +178,22 @@ _SENSITIVE_CONTEXT_KEYS = frozenset(
 
 def _sanitize_context(context: Mapping[str, object]) -> dict[str, object]:
     return {
-        key: value
+        key: _sanitize_value(value)
         for key, value in context.items()
         if not _is_sensitive_key(str(key))
     }
+
+
+def _sanitize_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            key: _sanitize_value(nested)
+            for key, nested in value.items()
+            if not _is_sensitive_key(str(key))
+        }
+    if isinstance(value, list):
+        return [_sanitize_value(item) for item in value]
+    return value
 
 
 def _is_sensitive_key(key: str) -> bool:

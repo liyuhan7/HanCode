@@ -8,7 +8,7 @@ from typing import Mapping
 
 from hancode.core.errors import StructuredError
 from hancode.core.models import Phase
-from hancode.providers.base import ToolDescriptor
+from hancode.providers.base import ProviderResponseMode, ToolDescriptor
 from hancode.providers.errors import ProviderError
 from hancode.providers.prompt_builder import PromptBuilder, ProviderPrompt
 from hancode.providers.transport import (
@@ -44,6 +44,7 @@ class OpenAICompatibleProvider:
         max_retries: int,
         max_output_tokens: int,
         max_response_bytes: int,
+        response_mode: ProviderResponseMode,
         prompt_builder: PromptBuilder,
         transport: ProviderTransport,
         sleeper: Sleeper,
@@ -57,6 +58,7 @@ class OpenAICompatibleProvider:
         self._max_retries = max_retries
         self._max_output_tokens = max_output_tokens
         self._max_response_bytes = max_response_bytes
+        self._response_mode = response_mode
         self._prompt_builder = prompt_builder
         self._transport = transport
         self._sleeper = sleeper
@@ -69,6 +71,7 @@ class OpenAICompatibleProvider:
             context=context,
             tool_catalog=self._tool_catalog,
             interaction_enabled=self._interaction_enabled,
+            embed_action_schema=self._response_mode != "json_schema",
         )
         request = self._build_request(prompt)
 
@@ -85,12 +88,27 @@ class OpenAICompatibleProvider:
             {"role": msg.role, "content": msg.content}
             for msg in prompt.messages
         ]
+
+        if self._response_mode == "json_schema":
+            response_format: dict[str, object] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "hancode_action",
+                    "strict": True,
+                    "schema": dict(prompt.action_schema),
+                },
+            }
+        else:
+            response_format = {
+                "type": "json_object",
+            }
+
         body: dict[str, object] = {
             "model": self._model_name,
             "messages": messages,
             "temperature": 0,
             "max_tokens": self._max_output_tokens,
-            "response_format": {"type": "json_object"},
+            "response_format": response_format,
         }
         headers = {
             "Authorization": f"Bearer {self._credential}",
