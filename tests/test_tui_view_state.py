@@ -11,6 +11,7 @@ from hancode.interfaces.tui.view_state import (
     reduce_run_finished,
     reduce_trace_arrived,
 )
+from hancode.interfaces.tui.presenters import DetailKind
 from hancode.storage.trace import TraceEvent
 
 
@@ -32,6 +33,8 @@ def test_initial_state_is_empty() -> None:
     assert state.trace_events == ()
     assert state.busy is False
     assert state.active_task_id is None
+    assert state.detail_kind is DetailKind.TASK
+    assert state.detail is None
 
 
 def test_view_state_reducer_preserves_event_order() -> None:

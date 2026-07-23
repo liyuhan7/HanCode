@@ -27,13 +27,30 @@ _COMMANDS: dict[str, tuple[int, int | None, str]] = {
     "approve": (0, 0, ""),
     "reject": (0, None, ""),
     "status": (0, 0, ""),
-    "trace": (0, 0, ""),
+    "trace": (0, 1, ""),
+    "diff": (0, 2, ""),
+    "test": (0, 0, ""),
+    "checkpoints": (0, 0, ""),
+    "delivery": (0, 0, ""),
+    "export": (1, 1, "tui_export_directory_required"),
+    "build": (0, 0, ""),
     "artifacts": (0, 0, ""),
     "open": (1, 1, "tui_artifact_name_required"),
     "rollback": (0, 1, ""),
     "clear": (0, 0, ""),
     "quit": (0, 0, ""),
 }
+
+_ARTIFACT_NAMES = frozenset(
+    {
+        "SPEC.md",
+        "PLAN.md",
+        "TEST_REPORT.md",
+        "REVIEW.md",
+        "KNOWLEDGE.md",
+        "DELIVERABLES.md",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +117,13 @@ def parse_command(raw: str) -> TuiCommand | TuiCommandError:
 
     name = tokens[0].lower()
     args = tuple(tokens[1:])
+    if name in {"diff", "export"}:
+        try:
+            path_tokens = shlex.split(body, posix=False)
+        except ValueError:
+            path_tokens = tokens
+        if len(path_tokens) == len(tokens):
+            args = tuple(_strip_quotes(token) for token in path_tokens[1:])
     spec = _COMMANDS.get(name)
     if spec is None:
         return TuiCommandError(
@@ -130,7 +154,26 @@ def parse_command(raw: str) -> TuiCommand | TuiCommandError:
             goal = goal[1:-1]
         return TuiCommand(name="task", args=(goal,))
 
+    if name == "diff" and args and args[0] not in {"task", "latest"}:
+        return TuiCommandError(
+            "tui_diff_scope_invalid",
+            "The first /diff argument must be 'task' or 'latest'.",
+            "Use /diff, /diff task [path], or /diff latest [path].",
+        )
+    if name == "open" and args[0] not in _ARTIFACT_NAMES:
+        return TuiCommandError(
+            "tui_artifact_name_invalid",
+            "The artifact name is not allow-listed.",
+            "Open one of SPEC.md, PLAN.md, TEST_REPORT.md, REVIEW.md, KNOWLEDGE.md, or DELIVERABLES.md.",
+        )
+
     return TuiCommand(name=name, args=args)
+
+
+def _strip_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def classify_plain_text(

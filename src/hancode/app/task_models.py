@@ -27,6 +27,8 @@ class TaskSummary:
     inconsistent: bool
     artifacts: Mapping[str, bool]
     resumable: bool
+    latest_build_status: str = "none"
+    builds_run: tuple[str, ...] = ()
     requires_input: bool = False
     pending_interaction: Mapping[str, object] | None = None
     requires_approval: bool = False
@@ -70,6 +72,8 @@ class TaskSummary:
             latest_test_status=state.latest_test_status,
             files_changed=state.files_changed,
             tests_run=state.tests_run,
+            latest_build_status=state.latest_build_status,
+            builds_run=state.builds_run,
             latest_checkpoint=state.latest_checkpoint,
             rollback_required=state.rollback_required,
             inconsistent=state.inconsistent,
@@ -98,6 +102,8 @@ class TaskSummary:
             "current_phase": self.current_phase.value,
             "retry_budget_remaining": self.retry_budget_remaining,
             "latest_test_status": self.latest_test_status,
+            "latest_build_status": self.latest_build_status,
+            "builds_run": list(self.builds_run),
             "files_changed": list(self.files_changed),
             "tests_run": list(self.tests_run),
             "latest_checkpoint": self.latest_checkpoint,

@@ -6416,27 +6416,223 @@ S4-R2 Build       S4-R3 Test Report
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [x] 已完成 |
+| 状态 | [x] 已完成（返工后） |
 | 依赖 | S4-R7 |
-| Worktree / 分支 | `codex/s5-r0` |
-| 边界 | 仅迁移现有 TUI 编排；不实现 S5-R1~R6 |
+| Worktree / 分支 | `main`（按用户要求不在阶段中提交） |
+| 边界 | 收口 Intent/Operation、Controller/Executor 和 Worker 结果协议；S5-R1~R6 的产品化视图与端到端功能另行推进 |
 
 ### 交付内容
 
 - 新增 `src/hancode/interfaces/tui/operations.py`，冻结 `TuiIntent`、`TuiOperation`、`TuiOperationResult`、`TuiOperationError` 和 `TuiOperationExecutor`。
 - `TuiSessionController` 负责 Intent 校验、request ID、busy guard、结果应用和过期结果丢弃；Application Service 由 Executor 注入和调用。
-- `HanCodeTuiApp` 的创建、运行、交互、审批、回退、状态和 Artifact 操作均通过 Controller/Executor 边界；Worker 只执行 Operation 并发布既有 Textual Message。
+- `HanCodeTuiApp` 的创建、运行、交互、审批、回退、状态和 Artifact 操作均通过 Controller/Executor 边界；Worker 只执行 Operation，并发布带完整 request context 的 `OperationFinished` / `OperationFailed`。
+- `Controller.execute_sync()` 是同步生命周期的唯一入口；`TuiIntent` / `TuiOperation` 传递 `diff_scope`、`diff_path`、`export_output_dir`，`TuiOperationValue` 覆盖当前及已预留 S4 操作的公开返回对象。
 - 保留 S4 的命令、Message、Widget 行为和兼容构造参数；新增 App 边界、Executor 路由和 Controller 生命周期测试。
 
 ### Red → Green
 
-- Red：`LIST_TASKS` 在无 Active Task 时被错误拒绝；Worker 迁移补丁和边界测试文件曾出现截断，语法测试准确复现了问题。
-- Green：修正 `LIST_TASKS` 的 task guard，并补齐 Worker、边界测试和临时乱码；`tests/test_tui_app_s5.py tests/test_tui_operations.py tests/test_tui_controller_s5.py`：`6 passed`。
-- 现有 TUI 回归：指定的 11 个 TUI 测试文件：`66 passed`。
-- 变更文件 Ruff：`All checks passed!`；TUI 变更文件 MyPy：`Success: no issues found in 4 source files`；`git diff --check`：通过。
-- 全仓 Pytest 复验：`1240 passed, 17 skipped, 2 failed`；失败均为 `tests/test_s4_tools.py` 导入 `tests.test_checkpoint_query` 的基线环境问题，未纳入 S5-R0 修复。
+- Red：评审复现了 RUN_TASK 丢失 request context、App 重复同步生命周期和预留操作参数缺失；返工测试又准确复现了非运行态 `OperationFailed` 处理启动 Worker 时的 `RuntimeError: no running event loop`，以及契约字段尚未传递时的 `TypeError`。
+- Green：Worker 成功/失败均发布完整 `TuiOperationResult` / `TuiOperationError`；结果统一经 `Controller.apply_result()` / `apply_error()`；删除 App 的 `_execute_sync()`，同步入口集中到 `Controller.execute_sync()`；新增字段和结果联合类型测试通过。R0 聚焦测试：`15 passed`。
+- TUI 与 TaskService 回归：`113 passed`；全仓 Pytest：`1261 passed, 17 skipped`。
+- 全仓 Ruff：`All checks passed!`；全仓 MyPy：`Success: no issues found in 96 source files`；`git diff --check`：通过。
+- 最新合并后没有独立 GitHub Actions run/combined status 证据；本卡只记录本地 Windows 验证结果，不将本地结果冒充远程 CI。
 
 ### 未纳入边界
 
-- 查询进入独立 Query Worker、`OperationFinished/OperationFailed` Message 和跨 Task 查询取消留给 S5-R2。
-- Typed ViewModel、Presenter、Inspection Views、Export、响应式布局和完整端到端质量门留给 S5-R1~R6。
+- 更完整的 Query Worker 取消策略、Inspection Views、Export 视图、响应式布局和完整端到端质量门留给 S5-R2~R6；R0 只冻结并闭环操作结果协议。
+- 不引入真实网络 LLM、凭据或第三方 Agent 框架；不在本阶段提交 Git commit。
+
+---
+
+## S5-R1：ViewState、Presenter 与事件展示契约
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R0 |
+| 分支 | `main`（按用户要求不在阶段中提交） |
+| 边界 | 只补齐 ViewModel、Presenter、Build 展示信息和 TraceEvent 映射；完整 Query Worker 取消策略与 Inspection Views 留给 S5-R2/R3 |
+
+### 交付内容
+
+- 新增 `interfaces/tui/presenters.py`，提供 `DetailKind`、Task/Activity/Event/Interaction/Approval/Artifact ViewModel 和纯 Presenter。
+- Presenter 对用户文本执行脱敏、控制字符清理、长度上限和条目上限；绝对路径显示为 `<absolute-path-hidden>`。
+- `TaskSummary` 暴露 `latest_build_status` 与 `builds_run`，并由 `TaskState` 统一传递到 TUI Task Overview。
+- ViewState 保存当前 Detail 类型与纯 Task ViewModel；ActivityLog 使用 Presenter 的事件标签映射，未知事件仍保留原始类型。
+- App 的活动记录和 Task Overview 渲染改为消费 Presenter 结果，并保留既有 TraceEvent 兼容入口。
+
+### Red → Green 与验证
+
+- Red：新 Presenter 测试首先因 `interfaces.tui.presenters` 缺失而无法导入；Build 传递测试的第一次失败来自不完整的 `TaskState.artifacts` 夹具，修正夹具后进入 Green。
+- `tests/test_tui_presenters.py tests/test_tui_view_state.py tests/test_tui_controller.py tests/test_tui_app.py tests/test_tui_operations.py tests/test_tui_app_s5.py tests/test_tui_controller_s5.py tests/test_task_service.py`：`54 passed`。
+- R1 专项 Presenter：`8 passed`。
+- Ruff：变更文件 `All checks passed!`；MyPy：5 个 TUI/TaskSummary 源文件无错误；`git diff --check` 通过。
+
+### 未纳入边界
+
+- 更完整的 Query Worker 取消策略、过期 Query 体验和 Inspection Views 留给 S5-R2/R3；R0 已提供基础的 request-scoped Operation 消息。
+- Diff、Test、Checkpoint、Delivery、Export 视图和完整 HITL Modal 留给 S5-R3~R6。
+
+---
+
+## S5-R2：通用异步 Operation
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R0、S5-R1 |
+| 分支 | `main`（按用户要求不在阶段中提交） |
+| 边界 | 统一 Mutation/Query Worker 生命周期、request-scoped 结果和过期查询丢弃；不实现 Inspection 视图 |
+
+### 任务拆分与验收
+
+1. **统一 Worker 执行器**：在 `app.py` 中收敛成功、结构化错误和未知异常的发布逻辑；Mutation 使用 `task-mutation` 组，Query 使用 `task-query` 组；Worker 不触碰 Widget。
+2. **补齐 Query 路由**：`TuiOperationExecutor` 为 Diff、Test Report、Checkpoint、Delivery、Trace 和 Artifact 提供只读服务路由；每个请求通过 `dispatch → begin_operation → Worker → OperationFinished/Failed`。
+3. **过期与失败回归**：补充 request ID、task ID、旧 Query 不污染新 Detail、异常清除 loading 状态和取消 Worker 不泄漏原始异常的测试。
+
+### 完成标准
+
+- Diff/Test/Checkpoint/Delivery/Artifact 查询不在 Textual 主线程执行。
+- 旧 task 或旧 request 的结果不会覆盖当前 Detail。
+- Worker 异常始终通过 `OperationFailed` 清理当前请求状态。
+- R2 聚焦测试、现有 TUI 回归和 Ruff/MyPy 通过。
+
+### 实现与验证
+
+- `TuiOperationExecutor` 已路由 Diff、Test Report、Checkpoint、Delivery evidence、Artifact 和 Trace 查询；Delivery 查询只调用 `get_evidence()`，不触发 `finalize()`。
+- `/trace` 与 `/artifacts` 已切换到 `task-query` Worker；Trace 结果通过 `TracePage` 有界写入 ViewState。
+- Controller 对 request ID、operation task ID 和当前 active task 做联合校验；旧请求、旧任务结果或错误不会清理/覆盖当前请求。
+- Worker 统一使用 `task-mutation` / `task-query` 分组和 `OperationFinished` / `OperationFailed` 消息，取消 Worker 不发布结果。
+- R2 聚焦测试：`20 passed`；TUI/TaskService 回归：`118 passed`；全量 Pytest：`1266 passed, 17 skipped`。
+- Ruff：`All checks passed!`；MyPy：`Success: no issues found in 96 source files`；`git diff --check`：通过。
+- 未提交 commit；R3 继续负责 Inspection View、命令参数和 Detail 路由。
+
+## S5-R3：Inspection Views
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R2 |
+| 分支 | `main`（按用户要求不在阶段中提交） |
+| 边界 | 接入 Diff/Test/Checkpoint/Delivery/Artifact 只读视图和命令，不改变 S4 服务算法 |
+
+### 任务拆分与验收
+
+1. **命令契约**：扩展 `commands.py` 支持 `/diff [task|latest] [path]`、`/test`、`/checkpoints`、`/delivery`、`/artifacts`、`/open <artifact>` 和 `/trace [event-id]`，所有非法参数返回结构化 `TuiCommandError`。
+2. **安全 ViewModel/Presenter**：在 `presenters.py` 增加 Diff、Test Report、Checkpoint、Delivery、Export 视图模型；继续执行脱敏、Plain Text、长度/条目上限和路径隐藏。
+3. **Detail 路由**：根据 `DetailKind` 更新 Detail Panel 和 ViewState；Trace 事件可选中并展示安全摘要，完整 Diff/Provider 原始响应不进入 UI。
+
+### 完成标准
+
+- Diff 只调用 `ChangeInspectionService`，不调用 Git 或直接读取 checkpoint。
+- Test Report 只调用 `DeliveryInspectionService`，不直接读取文件。
+- Checkpoint 只调用 `CheckpointInspectionService`，Artifact 只调用 `InspectionService`。
+- Delivery 查询不调用 `DeliveryService.finalize()`。
+- R3 命令、Presenter、Executor 和 Textual 集成测试通过。
+
+### 实现与验证
+
+- `commands.py` 支持 `/diff [task|latest] [path]`、`/test`、`/checkpoints`、`/delivery`、`/artifacts`、`/open <artifact>` 和 `/trace [event-id]`，非法 Diff scope 与非 allow-list Artifact 返回结构化命令错误。
+- `presenters.py` 增加 Diff、Test Report、Checkpoint、Delivery、Export ViewModel；所有内容继续执行脱敏、截断、数量上限和路径隐藏。
+- Controller 根据 `DetailKind` 保存 Diff/Test/Checkpoint/Delivery/Artifact/Event ViewModel；App 使用 Plain Text Detail Panel 渲染，未知 TraceEvent 仍保留。
+- Inspection 数据仍只来自既有 Application Service；Delivery evidence 缺失时显示只读 blocked 状态，不执行 finalize。
+- R3 专项新增测试：`50 passed`；TUI/TaskService 回归：`124 passed`；全量 Pytest：`1272 passed, 17 skipped`。
+- Ruff：`All checks passed!`；MyPy：`Success: no issues found in 96 source files`。
+- 未提交 commit；R4 继续负责 ASK_USER、Approval Modal 和 Rollback Modal。
+
+## S5-R4：Human-in-the-Loop 产品界面
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R3 |
+| 分支 | `main`（按用户要求不在阶段中提交） |
+| 边界 | 将 ASK_USER、Approval、Rollback 的现有安全流程产品化；不修改 S3 状态机和 Recovery 算法 |
+
+### 任务拆分与验收
+
+1. **ASK_USER Panel**：使用 Presenter 显示有界问题文本、interaction ID 和输入提示；回答仍经 `InteractionService.answer()` 后自动 resume。
+2. **Approval Modal**：显示工具、风险、原因、目标和有界 diff preview；只在 Modal 获得焦点时接受 Y/N/Esc，普通文本不得触发 Approval。
+3. **Rollback Modal**：显示 `RecoveryService.preview_last()` 的 checkpoint 和文件列表；只有显式确认才调用 rollback，取消和关闭不产生写操作。
+4. **过期/失败反馈**：过期 Approval、服务错误和自动 resume 失败通过结构化错误和安全 Notice 展示。
+
+### 完成标准
+
+- 普通文本不能批准或拒绝 Approval。
+- Approval approve/reject 后只执行一次对应决策并自动 resume。
+- Rollback 必须二次确认，Modal 取消不修改状态。
+- Approval preview、ASK_USER 文本和错误 Notice 均有界且脱敏。
+- R4 Textual 集成和现有 HITL E2E 通过。
+
+### 实现与验证
+
+- 新增 `ApprovalDialog` 和 `RollbackDialog`；Approval 只在 Modal 焦点内接受 Y/N/Esc，Rollback 只在显式确认后调用已有 RecoveryService。
+- ASK_USER 面板改用 `InteractionView`，问题和 interaction ID 经过 Presenter 有界脱敏；Approval 结果校验 approval ID，过期 Modal 不执行决策。
+- 保留 `/approve`、`/reject`、`/rollback confirm` 显式命令和自动 resume；Modal 取消、服务错误和 stale Approval 只生成安全 Notice。
+- R4 Modal/HITL 专项：`18 passed`；TUI/TaskService 回归：`128 passed`；全量 Pytest：`1277 passed, 17 skipped`。
+- Ruff：`All checks passed!`；MyPy：`Success: no issues found in 97 source files`。
+- 当前进入 R5：Export、启动恢复和响应式布局；未提交 commit。
+
+## S5-R5：Export、恢复与响应式布局
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R4 |
+| 分支 | `main`（按用户要求不在阶段中提交） |
+| 边界 | 接入 Export、启动恢复和宽中窄布局；不扩展为 IDE、Shell 或多项目工作区 |
+
+### 任务拆分与验收
+
+1. **Export Operation**：`/export <directory>` 通过 `DeliveryService.export()` 在 Mutation Worker 中执行，展示导出目录和实际 artifact 列表，不覆盖已有目录。
+2. **启动恢复**：启动时刷新任务列表；选择或恢复任务时通过 `InspectionService` 恢复当前 Task 的有界 Trace，退出不写入额外业务状态。
+3. **响应式布局**：让 `COMPACT_WIDTH_THRESHOLD` 真正控制宽、中、窄三种布局，并确保窄布局仍能访问 Task、Activity、Detail、Composer 核心操作。
+4. **恢复/导出回归**：补充退出后重新进入 WAITING_INPUT/WAITING_APPROVAL、Export 只导出 state 声明 Artifact 和窄终端命令测试。
+
+### 完成标准
+
+- TUI 退出不破坏 Task state/trace，重新进入能恢复未完成任务。
+- Export 只经 `DeliveryService`，不直接读写 artifact，也不覆盖已有输出目录。
+- 宽、中、窄布局均可挂载并执行核心命令。
+- R5 专项测试和静态检查通过。
+
+### 实现与验证
+
+- `/export <directory>` 已路由到 `DeliveryService.export()` 的 `task-mutation` Worker，使用 `ExportResultView` 显示有界目录和 Artifact 列表；覆盖行为继续由 DeliveryService 拒绝。
+- 启动时保留无残留 Worker 的同步任务列表初始化；Task 选择通过 Query Worker 恢复有界 Trace 和 WAITING 状态，退出不写入业务状态。
+- `MainScreen` 增加 `wide`、`medium`、`narrow` 三档布局模式，窄终端切换为纵向核心区域，宽/中终端保留任务、Activity、Detail 三栏。
+- R5 Export/布局/恢复回归已纳入 TUI/TaskService 测试；全量 Pytest：`1279 passed, 17 skipped`。
+- Ruff：`All checks passed!`；MyPy：`Success: no issues found in 97 source files`。
+- 未提交 commit；R6 继续负责完整 Textual E2E、Build、Demo 和最终质量门。
+
+## S5-R6：端到端验收
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R2~R5 |
+| 分支 | `main`（按用户要求不在阶段中提交） |
+| 边界 | 用 MockLLM 和 Textual `run_test` 验证完整产品路径，不使用真实网络或凭据 |
+
+### 任务拆分与验收
+
+1. 补充基本任务 E2E：create → run → completed。
+2. 补充 ASK_USER E2E：waiting input → answer → auto resume。
+3. 补充 Approval E2E：waiting approval → explicit approve/reject → exact action → auto resume。
+4. 补充 Delivery E2E：diff → test report → checkpoints → delivery → export，并断言 Delivery 查询不触发 finalize。
+5. 运行全量 `pytest`、`ruff`、`mypy`、`uv build` 和 packaged Mock Demo；同步 PLAN、AGENT_LOG、README/架构文档中的 S5 状态。
+
+### 完成标准
+
+- S5 完成清单的每一项都有源码和测试证据。
+- 全量质量门通过，且本地验证与远程 CI 状态分开记录。
+- 未提交 commit，等待用户在 R2-R6 全部完成后统一提交。
+
+### 实现与验证
+
+- 新增 `/build` Mutation Operation，使用注入的 BuildService，在后台 Worker 执行配置 Build 并展示安全摘要；`/export`、Inspection 和 HITL 路径均有统一 TUI 边界。
+- 新增 S5 Textual E2E：基本任务 create/run/completed 和 Delivery diff/test/checkpoints/delivery/export；ASK_USER、Approval 路径复用既有 MockLLM E2E，并断言 Delivery 查询不触发 finalize。
+- 全量 Pytest：`1283 passed, 17 skipped`；Ruff：`All checks passed!`；MyPy：`Success: no issues found in 97 source files`；`git diff --check`：通过。
+- `uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`；首次联网 `uv build` 因环境 TLS 握手失败，离线缓存构建作为本地证据。
+- `uv run hancode demo --provider mock` 成功返回 completed DeliveryResult；未使用真实网络、凭据或真实 LLM。
+- S5-R0~R6 未提交 commit；当前工作区保留既有用户改动和本阶段实现，等待用户统一审阅/提交。

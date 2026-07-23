@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import TypeGuard
 from uuid import uuid4
 
 from hancode.app.approval_service import ApprovalService
@@ -16,11 +17,13 @@ from hancode.app.change_inspection_service import ChangeInspectionService
 from hancode.app.checkpoint_inspection_service import CheckpointInspectionService
 from hancode.app.delivery_inspection_service import DeliveryInspectionService
 from hancode.app.delivery_service import DeliveryService
-from hancode.app.inspection_service import InspectionService
+from hancode.app.build_service import BuildService
+from hancode.app.inspection_service import InspectionService, TracePage
 from hancode.app.interaction_service import InteractionService
 from hancode.app.recovery_service import RecoveryService
 from hancode.app.task_models import TaskSummary
 from hancode.app.task_service import TaskService
+from hancode.core.change_models import CheckpointSummary
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.interfaces.tui.operations import (
     TaskSelectionResult,
@@ -30,7 +33,17 @@ from hancode.interfaces.tui.operations import (
     TuiOperationExecutor,
     TuiOperationKind,
     TuiOperationResult,
+    TuiOperationValue,
     TuiServices,
+)
+from hancode.interfaces.tui.presenters import (
+    DetailKind,
+    present_artifact,
+    present_checkpoints,
+    present_delivery,
+    present_diff,
+    present_event_detail,
+    present_test_report,
 )
 from hancode.interfaces.tui.view_state import (
     MAX_EVENT_BUFFER,
@@ -52,8 +65,11 @@ _MUTATIONS = frozenset(
         TuiOperationKind.APPROVE,
         TuiOperationKind.REJECT,
         TuiOperationKind.ROLLBACK,
+        TuiOperationKind.BUILD,
+        TuiOperationKind.EXPORT,
     }
 )
+_QUERIES = frozenset(kind for kind in TuiOperationKind if kind not in _MUTATIONS)
 _TASK_REQUIRED = frozenset(
     kind
     for kind in TuiOperationKind
@@ -87,6 +103,7 @@ class TuiSessionController:
             checkpoints=CheckpointInspectionService(),
             recovery=recovery_service or RecoveryService(),
             delivery=DeliveryService(),
+            build=BuildService(),
         )
         self._executor = executor or TuiOperationExecutor(project_root, self._services)
         self._state = TuiViewState.initial(project_root)
@@ -174,10 +191,13 @@ class TuiSessionController:
         self._active_request_id = operation.request_id
         self._active_operation_task_id = operation.task_id
         is_mutation = operation.kind in _MUTATIONS
+        is_query = operation.kind in _QUERIES
         self._state = replace(
             self._state,
             current_request_id=operation.request_id,
             busy=is_mutation,
+            active_mutation=operation.kind.value if is_mutation else None,
+            active_query=operation.kind.value if is_query else None,
             running_task_id=operation.task_id if is_mutation else None,
             last_error=None,
         )
@@ -193,15 +213,15 @@ class TuiSessionController:
 
         return self._executor.execute(operation, trace_observer=trace_observer)
 
-    def apply_result(self, result: TuiOperationResult) -> None:
+    def apply_result(self, result: TuiOperationResult) -> bool:
         """Apply only the result belonging to the active request/task."""
 
-        if not self._accepts_result(result.request_id, result.task_id):
-            return
+        if not self._accepts_result(result):
+            return False
         kind = result.kind
         value = result.value
         if kind is TuiOperationKind.LIST_TASKS:
-            if isinstance(value, tuple) and all(isinstance(item, TaskSummary) for item in value):
+            if _is_task_summary_tuple(value):
                 self._state = replace(self._state, tasks=value)
         elif kind is TuiOperationKind.CREATE_TASK:
             if isinstance(value, TaskSummary):
@@ -236,27 +256,115 @@ class TuiSessionController:
                     self._state,
                     selected_artifact=value.name,
                     artifact_preview=value.content,
+                    detail_kind=DetailKind.ARTIFACT,
+                    detail=present_artifact(value),
+                )
+        elif kind is TuiOperationKind.DIFF:
+            from hancode.core.change_models import TaskDiff
+
+            if isinstance(value, TaskDiff):
+                self._state = replace(
+                    self._state,
+                    detail_kind=DetailKind.DIFF,
+                    detail=present_diff(value),
+                )
+        elif kind is TuiOperationKind.TEST_REPORT:
+            from hancode.app.delivery_inspection_service import TestReportSummary
+
+            if isinstance(value, TestReportSummary):
+                self._state = replace(
+                    self._state,
+                    detail_kind=DetailKind.TEST_REPORT,
+                    detail=present_test_report(value),
+                )
+        elif kind is TuiOperationKind.CHECKPOINTS:
+            if _is_checkpoint_summary_tuple(value):
+                self._state = replace(
+                    self._state,
+                    detail_kind=DetailKind.CHECKPOINTS,
+                    detail=present_checkpoints(value),
+                )
+        elif kind is TuiOperationKind.DELIVERY:
+            from hancode.core.delivery_evidence import DeliveryEvidence
+
+            if value is None or isinstance(value, DeliveryEvidence):
+                self._state = replace(
+                    self._state,
+                    detail_kind=DetailKind.DELIVERY,
+                    detail=present_delivery(value, self._state.active_task),
+                )
+        elif kind is TuiOperationKind.TRACE:
+            if isinstance(value, TracePage):
+                selected_event = None
+                if result.event_id is not None:
+                    selected_event = next(
+                        (event for event in value.events if event.event_id == result.event_id),
+                        None,
+                    )
+                self._state = replace(
+                    self._state,
+                    trace_events=tuple(value.events[-MAX_EVENT_BUFFER:]),
+                    selected_event_id=(
+                        result.event_id if selected_event is not None else None
+                    ),
+                    detail_kind=(
+                        DetailKind.EVENT if selected_event is not None else self._state.detail_kind
+                    ),
+                    detail=(
+                        present_event_detail(selected_event)
+                        if selected_event is not None
+                        else self._state.detail
+                    ),
                 )
         self._finish_operation()
+        return True
 
-    def apply_error(self, error: TuiOperationError) -> None:
+    def apply_error(self, error: TuiOperationError) -> bool:
         """Surface a structured error and clear the active operation."""
 
-        if self._active_request_id != error.request_id:
-            return
+        if not self._accepts_task_context(
+            request_id=error.request_id,
+            task_id=error.task_id,
+            kind=error.kind,
+        ):
+            return False
         self._state = replace(
             self._state,
             last_error=error.structured_error,
         )
         self._finish_operation()
+        return True
 
-    def _accepts_result(self, request_id: str, task_id: str | None) -> bool:
+    def _accepts_result(self, result: TuiOperationResult) -> bool:
+        return self._accepts_task_context(
+            request_id=result.request_id,
+            task_id=result.task_id,
+            kind=result.kind,
+        )
+
+    def _accepts_task_context(
+        self,
+        *,
+        request_id: str,
+        task_id: str | None,
+        kind: TuiOperationKind,
+    ) -> bool:
         if self._active_request_id != request_id:
             return False
         if (
             task_id is not None
             and self._active_operation_task_id is not None
             and task_id != self._active_operation_task_id
+        ):
+            return False
+        # Selecting a task is the operation that changes the active task.  All
+        # other task-scoped results must still target the currently selected
+        # task, otherwise a late query can overwrite the new detail panel.
+        if (
+            kind is not TuiOperationKind.SELECT_TASK
+            and task_id is not None
+            and self._state.active_task_id is not None
+            and task_id != self._state.active_task_id
         ):
             return False
         return True
@@ -268,10 +376,14 @@ class TuiSessionController:
             self._state,
             current_request_id=None,
             busy=False,
+            active_mutation=None,
+            active_query=None,
             running_task_id=None,
         )
 
-    def _execute_sync(self, intent: TuiIntent) -> TuiOperationResult:
+    def execute_sync(self, intent: TuiIntent) -> TuiOperationValue:
+        """Execute one operation synchronously through the controller boundary."""
+
         operation = self.dispatch(intent)
         if operation is None:
             error = self._state.last_error or _controller_error(
@@ -287,15 +399,15 @@ class TuiSessionController:
             self.apply_error(exc)
             raise HanCodeError(exc.structured_error) from exc
         self.apply_result(result)
-        return result
+        return result.value
 
     # Compatibility helpers used by the existing TUI and its S4 tests.  They
     # now route through the operation boundary rather than calling services.
     def refresh_tasks(self) -> None:
-        self._execute_sync(TuiIntent(kind=TuiOperationKind.LIST_TASKS))
+        self.execute_sync(TuiIntent(kind=TuiOperationKind.LIST_TASKS))
 
     def select_task(self, task_id: str) -> None:
-        self._execute_sync(TuiIntent(kind=TuiOperationKind.SELECT_TASK, task_id=task_id))
+        self.execute_sync(TuiIntent(kind=TuiOperationKind.SELECT_TASK, task_id=task_id))
 
     def mark_running(self, task_id: str) -> None:
         self._state = self._state.with_busy(True, running_task_id=task_id)
@@ -309,21 +421,24 @@ class TuiSessionController:
     def clear_activity(self) -> None:
         self._state = replace(self._state, trace_events=(), selected_event_id=None)
 
-    def on_run_finished(self) -> None:
+    def on_run_finished(self, *, refresh_status: bool = True) -> str | None:
         running_task_id = self._state.running_task_id
         self._active_request_id = None
         self._active_operation_task_id = None
         self._state = reduce_run_finished(self._state)
         if running_task_id is not None:
+            if not refresh_status:
+                return running_task_id
             try:
-                self._execute_sync(
+                self.execute_sync(
                     TuiIntent(
                         kind=TuiOperationKind.GET_STATUS,
                         task_id=running_task_id,
                     )
                 )
             except HanCodeError:
-                return
+                return running_task_id
+        return running_task_id
 
     def set_active_summary(self, summary: TaskSummary) -> None:
         self._state = self._with_active_summary(summary)
@@ -359,6 +474,22 @@ def _controller_error(error_code: str, message: str, suggested_fix: str) -> Stru
         phase="spec",
         denied_rule="tui_operation_contract",
         suggested_fix=suggested_fix,
+    )
+
+
+def _is_task_summary_tuple(
+    value: TuiOperationValue,
+) -> TypeGuard[tuple[TaskSummary, ...]]:
+    return isinstance(value, tuple) and all(
+        isinstance(item, TaskSummary) for item in value
+    )
+
+
+def _is_checkpoint_summary_tuple(
+    value: TuiOperationValue,
+) -> TypeGuard[tuple[CheckpointSummary, ...]]:
+    return isinstance(value, tuple) and all(
+        isinstance(item, CheckpointSummary) for item in value
     )
 
 

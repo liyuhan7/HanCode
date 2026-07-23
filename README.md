@@ -267,13 +267,14 @@ hancode tui --project-root .
 界面元素与命令：
 
 - 直接输入自然语言目标会创建并运行任务；任务等待输入时，输入内容作为回答并自动 resume。任务等待批准时，明文输入不会决策，必须使用 `/approve` 或 `/reject`。
-- Slash 命令：`/task <goal>`、`/tasks`、`/use <task-id>`、`/run`、`/resume`、`/approve`、`/reject <理由>`、`/status`、`/trace`、`/artifacts`、`/open <name>`、`/rollback`、`/clear`、`/help`、`/quit`。
+- Slash 命令：`/task <goal>`、`/tasks`、`/use <task-id>`、`/run`、`/resume`、`/approve`、`/reject <理由>`、`/status`、`/diff [task|latest] [path]`、`/test`、`/checkpoints`、`/delivery`、`/trace [event-id]`、`/artifacts`、`/open <name>`、`/export <directory>`、`/build`、`/rollback`、`/clear`、`/help`、`/quit`。
 - PhaseBar 展示 `spec → plan → code → test → review → deliver` 六阶段状态，只反映持久化状态，不自行推进。
-- ActivityLog 逐条显示 TraceEvent；DetailPanel 展示选中事件与产物预览。
+- ActivityLog 逐条显示 TraceEvent；DetailPanel 展示事件、Diff、Test Report、Checkpoint、Delivery、Artifact 和 Build 摘要。
+- Approval 和 Rollback 使用显式 Modal；Y/N/Esc 只在 Modal 获得焦点时生效，窄终端自动切换为纵向布局。
 
 设计边界（TUI 只是展示层，不绕过 Harness 内核）：
 
-- TUI 只通过应用服务（TaskService / InteractionService / ApprovalService / InspectionService / RecoveryService）操作，不直接调用 AgentLoop、工具、state 或 trace 写入。
+- TUI 只通过应用服务（TaskService / InteractionService / ApprovalService / InspectionService / ChangeInspectionService / DeliveryInspectionService / CheckpointInspectionService / DeliveryService / BuildService / RecoveryService）操作，不直接调用 AgentLoop、工具、state 或 trace 写入。
 - **审批需显式决策**：批准/拒绝是不可逆的外向操作，等待批准时明文输入被拒绝并提示使用 `/approve`、`/reject <理由>`，绝不由零散输入推断决策；决策后自动 resume（批准执行操作，拒绝作为反馈继续）。
 - Trace 先持久化成功才进入界面；界面观察失败不影响 AgentLoop 运行结果。
 - **回答不回显**：提交后只显示 `Answer submitted · N chars`，回答正文不进入界面、trace 或错误信息。

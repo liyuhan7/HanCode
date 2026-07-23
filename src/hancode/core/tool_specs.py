@@ -82,8 +82,17 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="run_tests",
-        description="Run the configured test command.",
-        args_schema={"type": "object", "maxProperties": 0},
+        description="Run a test command. If command is omitted, the project's configured test command is used.",
+        args_schema={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Explicit test command to run (e.g. 'gcc hello.c && ./a.out'). "
+                                   "When omitted the project-level test_command is used.",
+                },
+            },
+        },
         allowed_phases=frozenset({Phase.CODE, Phase.TEST, Phase.REVIEW}),
         read_only=False,
     ),

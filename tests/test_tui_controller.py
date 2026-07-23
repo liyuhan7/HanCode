@@ -180,9 +180,13 @@ def test_activity_log_formats_known_and_unknown_events() -> None:
 
 def test_small_terminal_uses_compact_layout() -> None:
     from hancode.interfaces.tui.screens.main import is_compact_width
+    from hancode.interfaces.tui.screens.main import layout_mode
 
     assert is_compact_width(60) is True
     assert is_compact_width(200) is False
+    assert layout_mode(60) == "narrow"
+    assert layout_mode(80) == "medium"
+    assert layout_mode(200) == "wide"
 
 
 def test_worker_unexpected_exception_clears_busy(tmp_path: Path) -> None:

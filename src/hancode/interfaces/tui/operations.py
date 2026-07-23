@@ -13,17 +13,26 @@ from enum import Enum
 from pathlib import Path
 
 from hancode.app.approval_service import ApprovalService
+from hancode.app.build_service import BuildSummary
+from hancode.app.build_service import BuildService
 from hancode.app.change_inspection_service import ChangeInspectionService
 from hancode.app.checkpoint_inspection_service import CheckpointInspectionService
-from hancode.app.delivery_inspection_service import DeliveryInspectionService
+from hancode.app.delivery_inspection_service import (
+    DeliveryInspectionService,
+    TestReportSummary,
+)
 from hancode.app.delivery_service import DeliveryService
-from hancode.app.inspection_service import InspectionService
+from hancode.app.inspection_service import ArtifactPreview, InspectionService, TracePage
 from hancode.app.interaction_service import InteractionService
-from hancode.app.recovery_service import RecoveryService
+from hancode.app.recovery_service import RecoveryService, RecoverySummary, RollbackPreview
 from hancode.app.task_models import TaskSummary
 from hancode.app.task_service import TaskService
+from hancode.core.change_models import CheckpointSummary, DiffScope, TaskDiff
+from hancode.core.delivery_evidence import DeliveryEvidence, DeliveryResult
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.runtime.observation import TraceObserver
+from hancode.runtime.agent_loop import AgentRunResult
+from hancode.storage.export import ExportResult
 from hancode.storage.trace import TraceEvent
 
 
@@ -53,6 +62,7 @@ class TuiOperationKind(str, Enum):
     DELIVERY = "delivery"
     EXPORT = "export"
     BUILD = "build"
+    TRACE = "trace"
 
 
 TuiIntentKind = TuiOperationKind
@@ -71,6 +81,10 @@ class TuiIntent:
     approval_id: str | None = None
     reason: str | None = None
     artifact_name: str | None = None
+    diff_scope: str | None = None
+    diff_path: str | None = None
+    event_id: str | None = None
+    export_output_dir: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +101,10 @@ class TuiOperation:
     approval_id: str | None = None
     reason: str | None = None
     artifact_name: str | None = None
+    diff_scope: str | None = None
+    diff_path: str | None = None
+    event_id: str | None = None
+    export_output_dir: Path | None = None
 
     @classmethod
     def from_intent(cls, intent: TuiIntent, *, request_id: str) -> TuiOperation:
@@ -101,6 +119,10 @@ class TuiOperation:
             approval_id=intent.approval_id,
             reason=intent.reason,
             artifact_name=intent.artifact_name,
+            diff_scope=intent.diff_scope,
+            diff_path=intent.diff_path,
+            event_id=intent.event_id,
+            export_output_dir=intent.export_output_dir,
         )
 
 
@@ -110,12 +132,34 @@ class TaskSelectionResult:
     trace_events: tuple[TraceEvent, ...]
 
 
+TuiOperationValue = (
+    TaskSummary
+    | tuple[TaskSummary, ...]
+    | TaskSelectionResult
+    | AgentRunResult
+    | ArtifactPreview
+    | RollbackPreview
+    | RecoverySummary
+    | BuildSummary
+    | TestReportSummary
+    | TaskDiff
+    | tuple[CheckpointSummary, ...]
+    | DeliveryEvidence
+    | TracePage
+    | DeliveryResult
+    | ExportResult
+    | dict[str, object]
+    | None
+)
+
+
 @dataclass(frozen=True, slots=True)
 class TuiOperationResult:
     request_id: str
     kind: TuiOperationKind
     task_id: str | None
-    value: object
+    value: TuiOperationValue
+    event_id: str | None = None
 
 
 class TuiOperationError(Exception):
@@ -148,6 +192,7 @@ class TuiServices:
     checkpoints: CheckpointInspectionService
     recovery: RecoveryService
     delivery: DeliveryService
+    build: BuildService | None = None
 
 
 class TuiOperationExecutor:
@@ -190,6 +235,7 @@ class TuiOperationExecutor:
             kind=operation.kind,
             task_id=operation.task_id,
             value=value,
+            event_id=operation.event_id,
         )
 
     def _execute(
@@ -197,7 +243,7 @@ class TuiOperationExecutor:
         operation: TuiOperation,
         *,
         trace_observer: TraceObserver | None,
-    ) -> object:
+    ) -> TuiOperationValue:
         kind = operation.kind
         task_id = operation.task_id
         if kind is TuiOperationKind.CREATE_TASK:
@@ -260,6 +306,53 @@ class TuiOperationExecutor:
                 self._require_task(task_id, "read artifact"),
                 operation.artifact_name,
             )
+        if kind is TuiOperationKind.DIFF:
+            try:
+                scope = DiffScope(operation.diff_scope or DiffScope.TASK.value)
+            except ValueError:
+                raise HanCodeError(
+                    _invalid_operation("Diff scope must be 'task' or 'latest'.")
+                ) from None
+            return self._services.changes.get_diff(
+                self._project_root,
+                self._require_task(task_id, "read diff"),
+                scope=scope,
+                path=operation.diff_path,
+            )
+        if kind is TuiOperationKind.TEST_REPORT:
+            return self._services.test_reports.read_test_report(
+                self._project_root,
+                self._require_task(task_id, "read test report"),
+            )
+        if kind is TuiOperationKind.CHECKPOINTS:
+            return self._services.checkpoints.list_checkpoints(
+                self._project_root,
+                self._require_task(task_id, "list checkpoints"),
+            )
+        if kind is TuiOperationKind.DELIVERY:
+            # get_evidence is intentionally read-only.  Do not use
+            # DeliveryService.get_result(), which finalizes the task.
+            return self._services.delivery.get_evidence(
+                self._project_root,
+                self._require_task(task_id, "read delivery evidence"),
+            )
+        if kind is TuiOperationKind.EXPORT:
+            if operation.export_output_dir is None:
+                raise HanCodeError(_invalid_operation("An export directory is required."))
+            return self._services.delivery.export(
+                self._project_root,
+                self._require_task(task_id, "export delivery artifacts"),
+                operation.export_output_dir,
+            )
+        if kind is TuiOperationKind.BUILD:
+            if self._services.build is None:
+                raise HanCodeError(_invalid_operation("Build service is not configured."))
+            return self._services.build.run(
+                self._project_root,
+                self._require_task(task_id, "run build"),
+            )
+        if kind is TuiOperationKind.TRACE:
+            return self._read_trace(self._require_task(task_id, "read trace"))
         raise HanCodeError(
             StructuredError(
                 error_code="tui_operation_not_implemented",
@@ -293,6 +386,21 @@ class TuiOperationExecutor:
             events = []
         return TaskSelectionResult(summary=summary, trace_events=tuple(events[-500:]))
 
+    def _read_trace(self, task_id: str) -> TracePage:
+        events: list[TraceEvent] = []
+        after_seq = 0
+        while True:
+            page = self._services.inspection.read_trace(
+                self._project_root,
+                task_id,
+                after_seq=after_seq,
+                limit=500,
+            )
+            events.extend(page.events)
+            if not page.has_more or page.next_seq is None:
+                return TracePage(events=tuple(events[-500:]), next_seq=None, has_more=False)
+            after_seq = page.next_seq
+
     @staticmethod
     def _require_task(task_id: str | None, operation: str) -> str:
         if task_id and task_id.strip():
@@ -317,6 +425,7 @@ __all__ = [
     "TuiOperation",
     "TaskSelectionResult",
     "TuiOperationResult",
+    "TuiOperationValue",
     "TuiOperationError",
     "TuiServices",
     "TuiOperationExecutor",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
+from typing import Any, cast
 
 from hancode.core.config import HanCodeConfig
 from hancode.core.tool_specs import ALL_TOOL_SPECS
@@ -18,6 +20,27 @@ from hancode.providers.base import ToolDescriptor
 
 
 RunTestsTool = Callable[[], ToolResult]
+
+
+def _resolve_test_command(
+    fallback_command: str | None, **kwargs: object
+) -> tuple[str | None, dict[str, object]]:
+    """Extract ``command`` from tool kwargs, falling back to the configured
+    test command.  This lets the LLM supply a dynamic test command (e.g.
+    ``gcc hello.c && ./a.out``) instead of being locked into the project's
+    static ``test_command``."""
+    raw_command = kwargs.pop("command", fallback_command)
+    command = raw_command if isinstance(raw_command, str) or raw_command is None else fallback_command
+    return command, kwargs
+
+
+def _run_tests_dispatch(
+    project_root: Path,
+    fallback_command: str | None,
+    **kwargs: object,
+) -> ToolResult:
+    command, remaining = _resolve_test_command(fallback_command, **kwargs)
+    return run_tests(project_root, command, **cast(dict[str, Any], remaining))
 
 
 def build_default_tool_registry(
@@ -37,7 +60,7 @@ def build_default_tool_registry(
     registry.register(
         "run_tests",
         run_tests_tool
-        or partial(run_tests, project_root, config.test_command),
+        or partial(_run_tests_dispatch, project_root, config.test_command),
     )
 
     # S4 tools

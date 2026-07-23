@@ -19,11 +19,20 @@ from hancode.interfaces.tui.widgets.phase_bar import PhaseBar
 
 
 COMPACT_WIDTH_THRESHOLD = 100
+NARROW_WIDTH_THRESHOLD = 70
 
 
 def is_compact_width(width: int) -> bool:
     """Whether the terminal is narrow enough to use a stacked compact layout."""
     return width < COMPACT_WIDTH_THRESHOLD
+
+
+def layout_mode(width: int) -> str:
+    if width < NARROW_WIDTH_THRESHOLD:
+        return "narrow"
+    if width < COMPACT_WIDTH_THRESHOLD:
+        return "medium"
+    return "wide"
 
 
 class MainScreen(Screen[None]):
@@ -40,9 +49,35 @@ class MainScreen(Screen[None]):
             yield ListView(id="tui-task-list")
             with Vertical(id="tui-center"):
                 yield ActivityLog(id="tui-activity-log")
-            yield Static("", id="tui-detail-panel")
+            yield Static("", markup=False, id="tui-detail-panel")
         yield Input(
             placeholder="描述你的课程项目任务，或输入 /help",
             id="tui-composer",
         )
         yield Footer()
+
+    def on_resize(self, event: object) -> None:
+        size = getattr(event, "size", None)
+        width = getattr(size, "width", None)
+        if not isinstance(width, int):
+            return
+        mode = layout_mode(width)
+        body = self.query_one("#tui-body", Horizontal)
+        task_list = self.query_one("#tui-task-list", ListView)
+        center = self.query_one("#tui-center", Vertical)
+        detail = self.query_one("#tui-detail-panel", Static)
+        if mode == "narrow":
+            body.styles.layout = "vertical"
+            task_list.styles.height = 8
+            task_list.styles.width = "1fr"
+            center.styles.height = "1fr"
+            detail.styles.height = "1fr"
+            detail.styles.width = "1fr"
+        else:
+            body.styles.layout = "horizontal"
+            task_list.styles.height = "1fr"
+            task_list.styles.width = 24 if mode == "wide" else 20
+            center.styles.height = "1fr"
+            center.styles.width = "2fr"
+            detail.styles.height = "1fr"
+            detail.styles.width = "2fr" if mode == "wide" else "1fr"

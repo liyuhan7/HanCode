@@ -98,13 +98,6 @@ class Action:
         ):
             return _parse_error("missing_reason", "Write actions require a reason.", action_phase.value)
 
-        if tool_name == "run_tests" and args:
-            return _parse_error(
-                "invalid_action_args",
-                "The test command is selected by configuration.",
-                action_phase.value,
-            )
-
         if not _has_valid_schema(
             action_type,
             tool_name if isinstance(tool_name, str) else None,

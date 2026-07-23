@@ -10,6 +10,7 @@ from textual.message import Message
 
 from hancode.app.task_models import TaskSummary
 from hancode.core.errors import StructuredError
+from hancode.interfaces.tui.operations import TuiOperationError, TuiOperationResult
 from hancode.runtime.agent_loop import AgentRunResult
 from hancode.storage.trace import TraceEvent
 
@@ -38,4 +39,27 @@ class TaskSummaryChanged(Message):
         self.summary = summary
 
 
-__all__ = ["TraceArrived", "RunFinished", "RunFailed", "TaskSummaryChanged"]
+class OperationFinished(Message):
+    """A query or other non-run operation completed in a Worker."""
+
+    def __init__(self, result: TuiOperationResult) -> None:
+        super().__init__()
+        self.result = result
+
+
+class OperationFailed(Message):
+    """A Worker operation failed with a request-scoped structured error."""
+
+    def __init__(self, error: TuiOperationError) -> None:
+        super().__init__()
+        self.error = error
+
+
+__all__ = [
+    "TraceArrived",
+    "RunFinished",
+    "RunFailed",
+    "TaskSummaryChanged",
+    "OperationFinished",
+    "OperationFailed",
+]

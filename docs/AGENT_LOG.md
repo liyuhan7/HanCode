@@ -18,6 +18,91 @@
 
 ---
 
+### 2026-07-23 — S5-R2 — 通用异步 Operation 查询路由与过期结果防护
+
+- 使用的技能：按用户要求不使用 TDD；使用代码库探索、验证前置和最小范围实现流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R0/R1 已在当前未提交工作区完成；本轮只执行 `docs/PLAN.md` 的 S5-R2，不实现 R3 Inspection View 或新命令。
+- 实现摘要：
+  - `TuiOperationExecutor` 增加 Diff、Test Report、Checkpoint、Delivery evidence 和 Trace 只读路由，统一使用注入的 Application Service。
+  - Trace 通过 `InspectionService.read_trace()` 分页读取并保留有界 `TracePage`；Delivery 查询使用 `get_evidence()`，明确不调用会触发 finalize 的 `get_result()`。
+  - `/trace`、`/artifacts` 和 Artifact 预览均进入 `task-query` Worker；Controller 统一校验 request ID、operation task ID 和当前 active task，拒绝过期结果及错误。
+  - 同步既有源码契约测试以覆盖统一 `_run_operation_worker()`，补充查询路由和 active task 切换回归。
+- 验证：R2 聚焦测试 `20 passed`；TUI/TaskService 回归 `118 passed`；全量 Pytest `1266 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `96 source files` 无错误；`git diff --check` 通过。
+- 提交：未提交；工作区继续保留 S5-R0/R1 与 S5-R2 的合并改动，等待 R2-R6 完成后统一提交。
+- 人工干预：用户明确要求本轮直接开发，不采用 TDD。
+- 剩余风险：R3 尚未接入 Diff/Test/Checkpoint/Delivery/Artifact 的产品化 Detail View 和完整命令参数；本轮未运行 Build/Demo 质量门。
+
+---
+
+### 2026-07-23 — S5-R3 — Inspection Views、命令契约与 Detail 路由
+
+- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R2 已完成；本轮只执行 `docs/PLAN.md` 的 S5-R3，不修改 S4 Inspection 算法，不进入 R4 HITL Modal。
+- 实现摘要：
+  - 扩展 `/diff`、`/test`、`/checkpoints`、`/delivery`、`/trace [event-id]` 等命令，并对 Diff scope 和 Artifact allow-list 做结构化参数校验。
+  - 增加 Diff、Test Report、Checkpoint、Delivery、Export 纯 ViewModel 和 Presenter；统一脱敏、截断、数量上限、绝对路径隐藏和 Plain Text 渲染。
+  - Controller 将 Inspection 结果路由到 `DetailKind`，Trace 支持按 event ID 查看安全事件摘要；Delivery evidence 缺失显示 blocked 只读状态。
+  - Detail Static 明确关闭 Rich markup，Inspection 查询继续通过既有 Application Service，不读取 Git、Manifest 或 Artifact Path。
+- 验证：R3 聚焦测试 `50 passed`；TUI/TaskService 回归 `124 passed`；全量 Pytest `1272 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `96 source files` 无错误。
+- 提交：未提交；工作区继续保留 S5-R0~R3 合并改动。
+- 人工干预：用户要求继续执行 R3-R6，并明确不使用 TDD；按依赖顺序先完成 R3 再进入 R4。
+- 剩余风险：R4 尚未实现 ASK_USER/Approval/Rollback Modal；R5 Export/恢复/响应式布局与 R6 E2E/Build/Demo 仍未完成。
+
+---
+
+### 2026-07-23 — S5-R4 — Human-in-the-Loop Modal 与安全决策
+
+- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R3 已完成；本轮只执行 R4，不修改 Approval/Recovery 状态机和服务算法。
+- 实现摘要：
+  - 新增 Textual `ApprovalDialog`、`RollbackDialog`，分别提供显式 Approve/Reject/Cancel 和 Confirm/Cancel；键盘快捷键只在 Modal 屏幕内生效。
+  - ASK_USER 使用 `InteractionView` 渲染有界安全文本；Approval Modal 校验 approval ID，过期请求不会调用 ApprovalService。
+  - 保留既有 `/approve`、`/reject`、`/rollback confirm` 命令，决策成功后自动 resume，取消和失败不产生写操作或 resume。
+  - 发现并最小修正工作区已有 `tooling/factory.py` 的 Path/dynamic kwargs 类型错误，使全仓 MyPy 恢复可验证；未改变其运行行为。
+- 验证：R4 Modal/HITL 专项 `18 passed`；TUI/TaskService 回归 `128 passed`；全量 Pytest `1277 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误。
+- 提交：未提交；工作区继续保留 S5-R0~R4 合并改动。
+- 人工干预：用户要求继续执行 R3-R6，并明确不使用 TDD；按依赖顺序进入 R5。
+- 剩余风险：R5 尚未实现 Export 命令、启动恢复和响应式布局；R6 E2E/Build/Demo 仍未完成。
+
+---
+
+### 2026-07-23 — S5-R5 — Export、恢复与响应式布局
+
+- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R4 已完成；本轮只执行 R5，不引入 IDE/Shell/多项目工作区，也不修改 Delivery export 算法。
+- 实现摘要：
+  - 增加 `/export <directory>` 命令和 Export Mutation Worker 路由，结果通过 `ExportResultView` 显示；实际 artifact allow-list、目录覆盖和 workspace 边界仍由 DeliveryService 保证。
+  - 保留启动同步任务列表初始化以避免立即退出留下可取消 Worker；任务选择继续通过 Query Worker 恢复 Trace、Interaction 和 Approval 状态。
+  - `MainScreen` 根据终端宽度提供 wide/medium/narrow 三档布局，窄终端使用纵向布局，核心 Composer/Task/Activity/Detail 仍可访问。
+  - 最小修正工作区已有 `tooling/factory.py` 类型问题，恢复全仓静态质量门。
+- 验证：R5 相关回归与 TUI/TaskService 测试通过；全量 Pytest `1279 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误。
+- 提交：未提交；工作区继续保留 S5-R0~R5 合并改动。
+- 人工干预：首次异步启动 Query 导致立即 `/quit` 的 WorkerCancelled 回归，已恢复启动阶段同步刷新；运行中查询仍为后台 Worker。
+- 剩余风险：R6 尚未补齐完整产品路径 E2E、Build 命令/Demo 和最终 Build 质量门。
+
+---
+
+### 2026-07-23 — S5-R6 — 完整 TUI E2E、Build、Demo 与最终质量门
+
+- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最终质量门流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R5 已完成；本轮完成 `docs/PLAN.md` 的 S5-R6，不使用真实网络、凭据或真实 LLM。
+- 实现摘要：
+  - 新增 `/build` 命令、BuildService 注入和 Mutation Worker 展示，配置 Build 结果只显示安全摘要并刷新 Task 状态。
+  - 新增基本任务和 Delivery Inspection/Export Textual `run_test` 路径；与既有 ASK_USER、Approval MockLLM E2E 共同覆盖 S5 产品闭环。
+  - 更新 README 与系统架构文档，记录完整 Inspection、HITL、Export、Build 命令和响应式布局能力。
+  - 修正 Windows 命令解析中 `/export` 路径反斜杠被 shlex 吞掉的问题；保留普通命令的既有解析行为。
+- 验证：全量 Pytest `1283 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误；`git diff --check` 通过；R6 Build/E2E 专项通过；`uv build --offline` 成功生成 sdist/wheel；`uv run hancode demo --provider mock` 返回 completed。
+- 提交：未提交；等待用户统一审阅 S5-R0~R6 后提交。
+- 人工干预：联网 `uv build` 因 TLS handshake eof 失败，改用同一环境缓存依赖的 `uv build --offline`，源码构建过程和 wheel/sdist 生成均成功。
+- 剩余风险：GitHub Actions 尚无本轮独立 run 证据；17 个既有平台相关 skip 保留；工作区仍包含用户在本轮之前的未提交改动。
+
+---
+
 ### 2026-07-22 — S4-R7 — 评审阻断修复与正式交付闭环
 
 - 使用的技能：未使用 `using-superpowers`；按 S4-R7 任务卡执行 TDD、回归验证和文档同步。
@@ -1827,3 +1912,24 @@
 - 变更：保留现有 S4 命令和 Message 行为；同步补充 `docs/PLAN.md` 的 S5-R0 任务卡与边界说明。
 - 提交：未提交，等待用户后续集成决定。
 - 剩余边界：S5-R2 的异步 Query Worker、S5-R1 Presenter、S5-R3~R6 功能仍未实现。
+
+### 2026-07-22 — S5-R1 — ViewState、Presenter 与事件展示契约
+
+- 使用技能：`karpathy-guidelines`、`brainstorming`、`test-driven-development`、`verification-before-completion`。
+- 范围：在 `main` 上实现 S5-R1；不提交 Git，由用户在 R1-R6 全部完成后统一提交。
+- Red：Presenter 测试首次因 `interfaces.tui.presenters` 尚不存在而无法导入；Build 传递测试首次因夹具缺少完整 Artifact 键集合失败，修正夹具后继续验证。
+- 变更：新增纯 `presenters.py`，冻结 `DetailKind` 和 Task/Activity/Event/Interaction/Approval/Artifact ViewModel；统一执行脱敏、控制字符清理、长度/条目上限和绝对路径隐藏。
+- 变更：`TaskSummary` 增加 `latest_build_status`、`builds_run` 并从 `TaskState`/`to_dict()` 贯通；ViewState 增加 Detail 类型和纯 Task ViewModel；ActivityLog/App 使用 Presenter 生成事件展示。
+- Green：R1 Presenter 测试 `8 passed`；TUI/TaskSummary 回归 `54 passed`；目标文件 Ruff 通过；MyPy `5` 个源文件无错误；`git diff --check` 通过。
+- 剩余边界：S5-R2 查询 Worker，S5-R3 Inspection Views，S5-R4 HITL 产品化，S5-R5 Export/恢复/响应式布局，S5-R6 E2E 和全量质量门禁尚未实现。
+
+### 2026-07-22 — S5-R0 返工 — 异步 Operation Result 闭环与契约收口
+
+- 使用技能：`karpathy-guidelines`、`receiving-code-review`、`systematic-debugging`、`test-driven-development`、`verification-before-completion`。
+- 范围：依据用户提供的 S5-R0 评审，在 `main` 上修复异步 Worker 结果协议、同步生命周期重复和冻结契约缺口；不提交 Git commit。
+- Red：评审确认 RUN_TASK 原链路将 `TuiOperationResult` 降级为旧 `RunFinished`，丢失 `request_id/kind/task_id`；返工测试复现非运行态消息处理启动 Worker 的 `RuntimeError: no running event loop` 和缺少预留参数时的 `TypeError`。
+- 修复：新增并启用 `OperationFinished` / `OperationFailed`；RUN_TASK 与 Query Worker 均发布完整 request-scoped 结果，App 统一经 `Controller.apply_result()` / `apply_error()`；删除 App `_execute_sync()`，同步生命周期集中到 `Controller.execute_sync()`；补齐 `diff_scope`、`diff_path`、`export_output_dir` 与 `TuiOperationValue` 联合结果类型；初始任务列表加载避免在退出竞态中遗留可取消的启动 Query Worker。
+- Green：R0 聚焦测试 `15 passed`；TUI 与 TaskService 回归 `113 passed`；全仓 Pytest `1261 passed, 17 skipped`；全仓 Ruff `All checks passed!`；全仓 MyPy `Success: no issues found in 96 source files`；`git diff --check` 通过。
+- CI 边界：最新合并后没有独立 GitHub Actions run/combined status 证据；以上只记录本地 Windows 验证结果。
+- 提交：未提交，等待用户在 R1-R6 全部完成后统一提交。
+- 剩余边界：完整 Query Worker 取消策略、Inspection Views、HITL 产品化、Export/恢复布局、S5-R6 E2E 与后续全量质量门禁仍待继续开发。

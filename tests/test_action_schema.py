@@ -82,17 +82,18 @@ def test_write_action_requires_reason_field() -> None:
     assert result.error_code == "missing_reason"
 
 
-def test_run_tests_rejects_arbitrary_command() -> None:
+def test_run_tests_accepts_optional_command() -> None:
+    """The LLM may supply an explicit command; it is no longer rejected."""
     result = Action.from_values(
         type=ActionType.TOOL_CALL,
         phase=Phase.TEST,
         tool_name="run_tests",
-        args={"command": "pytest -q"},
-        reason=None,
+        args={"command": "gcc hello.c && ./a.out"},
+        reason="compile and run the C hello world",
     )
 
-    assert isinstance(result, ParseError)
-    assert result.error_code == "invalid_action_args"
+    assert isinstance(result, Action)
+    assert result.args["command"] == "gcc hello.c && ./a.out"
 
 
 def test_finish_action_has_no_tool_side_effect() -> None:
@@ -122,6 +123,7 @@ def test_finish_action_has_no_tool_side_effect() -> None:
             "fix implementation",
         ),
         ("run_tests", {}, None),
+        ("run_tests", {"command": "gcc hello.c"}, "test C program"),
         ("rollback_last_checkpoint", {}, None),
     ],
 )
@@ -217,7 +219,7 @@ def test_direct_construction_rejects_invalid_schema() -> None:
             type=ActionType.TOOL_CALL,
             phase=Phase.TEST,
             tool_name="run_tests",
-            args={"command": "pytest -q"},
+            args={"invalid_extra_arg": "garbage"},
             reason=None,
         )
 

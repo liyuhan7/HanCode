@@ -13,6 +13,7 @@ from pathlib import Path
 
 from hancode.app.task_models import TaskSummary
 from hancode.core.errors import StructuredError
+from hancode.interfaces.tui.presenters import DetailKind, present_task
 from hancode.storage.trace import TraceEvent
 
 
@@ -28,11 +29,15 @@ class TuiViewState:
     active_task: TaskSummary | None = None
 
     busy: bool = False
+    active_mutation: str | None = None
+    active_query: str | None = None
     current_request_id: str | None = None
     running_task_id: str | None = None
 
     trace_events: tuple[TraceEvent, ...] = ()
     selected_event_id: str | None = None
+    detail_kind: DetailKind = DetailKind.TASK
+    detail: object | None = None
 
     selected_artifact: str | None = None
     artifact_preview: str | None = None
@@ -62,7 +67,14 @@ def reduce_trace_arrived(state: TuiViewState, event: TraceEvent) -> TuiViewState
 
 
 def reduce_run_finished(state: TuiViewState) -> TuiViewState:
-    return replace(state, busy=False, current_request_id=None, running_task_id=None)
+    return replace(
+        state,
+        busy=False,
+        active_mutation=None,
+        active_query=None,
+        current_request_id=None,
+        running_task_id=None,
+    )
 
 
 def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewState:
@@ -84,6 +96,8 @@ def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewSt
         state,
         active_task_id=summary.task_id,
         active_task=summary,
+        detail_kind=DetailKind.TASK,
+        detail=present_task(summary),
         pending_question=question if isinstance(question, str) else None,
         pending_interaction_id=(interaction_id if isinstance(interaction_id, str) else None),
         pending_approval_id=approval_id,

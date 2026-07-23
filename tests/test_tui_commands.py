@@ -150,3 +150,38 @@ def test_waiting_approval_takes_precedence_over_waiting_input() -> None:
     )
 
     assert intent is PlainTextIntent.APPROVAL_REQUIRES_COMMAND
+
+
+def test_parse_inspection_commands_and_diff_arguments() -> None:
+    assert parse_command("/diff latest src/main.py") == TuiCommand(
+        name="diff", args=("latest", "src/main.py")
+    )
+    assert parse_command("/test") == TuiCommand(name="test", args=())
+    assert parse_command("/checkpoints") == TuiCommand(name="checkpoints", args=())
+    assert parse_command("/delivery") == TuiCommand(name="delivery", args=())
+    assert parse_command("/trace evt-000001") == TuiCommand(
+        name="trace", args=("evt-000001",)
+    )
+
+
+def test_parse_inspection_commands_reject_invalid_arguments() -> None:
+    diff = parse_command("/diff src/main.py")
+    artifact = parse_command("/open source.py")
+
+    assert isinstance(diff, TuiCommandError)
+    assert diff.error_code == "tui_diff_scope_invalid"
+    assert isinstance(artifact, TuiCommandError)
+    assert artifact.error_code == "tui_artifact_name_invalid"
+
+
+def test_parse_export_requires_one_directory() -> None:
+    result = parse_command("/export C:/tmp/delivery")
+
+    assert result == TuiCommand(name="export", args=("C:/tmp/delivery",))
+    missing = parse_command("/export")
+    assert isinstance(missing, TuiCommandError)
+    assert missing.error_code == "tui_export_directory_required"
+
+
+def test_parse_build_command() -> None:
+    assert parse_command("/build") == TuiCommand(name="build", args=())
