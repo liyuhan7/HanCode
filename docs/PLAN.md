@@ -6817,3 +6817,25 @@ S4-R2 Build       S4-R3 Test Report
 - 所有工具参数禁止额外字段。
 - 写工具说明何时使用、何时避免。
 - 结构化数组定义 `items`。
+
+## 直接修复测试命令审批与状态 Trace（2026-07-27）
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 分支 | main |
+| 提交 | 未提交 |
+
+### 范围
+
+- run_tests 仅允许 TEST 阶段且必须携带显式 command。
+- 所有 Agent run_tests 强制进入审批；非 Agent 内部的 Factory 配置 fallback 保留。
+- TEST Prompt 要求执行测试 runner/测试二进制，编译-only 命令改用 run_build。
+- 测试状态、TEST_REPORT.md 和 test_result_recorded trace 在普通执行与审批恢复路径保持一致；trace 写入失败 fail-closed 为 INCONSISTENT。
+- Mock Demo 在离线驱动层自动批准显式测试命令，仍通过真实审批持久化与恢复路径。
+
+### 边界
+
+- 不修改 Router、DeliveryPipeline 和底层测试命令执行安全机制。
+- 本轮不增加编译器命令黑名单或运行时语义分析。
+- 不新增测试；仅更新既有测试中的旧 run_tests action 契约和审批恢复调用。

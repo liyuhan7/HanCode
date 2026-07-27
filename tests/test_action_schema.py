@@ -135,7 +135,7 @@ def test_finish_action_has_no_tool_side_effect() -> None:
             {"path": "src/main.py", "old_string": "old", "new_string": "new"},
             "fix implementation",
         ),
-        ("run_tests", {}, None),
+        ("run_tests", {"command": "pytest -q"}, None),
         ("run_tests", {"command": "gcc hello.c"}, "test C program"),
         ("rollback_last_checkpoint", {}, None),
     ],

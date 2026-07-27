@@ -2035,3 +2035,13 @@
 - `pytest tests/test_provider_factory.py`
 - `pytest tests/test_config.py`
 - 完整测试、lint、type check
+
+### 2026-07-27 — 直接修复测试命令审批与状态 Trace
+
+- 范围：在当前 main 工作区修复显式测试命令审批、TEST-only 工具权限、审批恢复后的状态回灌和测试结果 Trace；不创建 worktree、不提交 commit、不新增测试、不做 TDD。
+- 修复：run_tests.command 改为必填；ApprovalPolicy 对所有 run_tests 强制使用测试命令审批；Mock Demo action 携带显式命令并在离线 stage 之间自动批准；TEST Prompt 明确编译-only 使用 run_build。
+- 修复：AgentLoop 在测试状态与 TEST_REPORT.md 持久化后追加 test_result_recorded，记录命令、测试状态、报告状态和前后状态转换；普通工具执行与审批恢复执行均覆盖，trace 写入失败进入 INCONSISTENT。
+- 兼容：保留 Factory 的配置命令 fallback；未修改 Router、DeliveryPipeline 和底层测试命令执行安全机制；仅调整既有测试中的旧 action 数据、审批恢复步骤和事件断言。
+- 验证：全量 pytest 1336 passed, 17 skipped；Ruff All checks passed；MyPy Success: no issues found in 98 source files；uv build 成功；相关回归测试 106 passed，工具/TUI 回归 83 passed。
+- 清理：删除本轮 pytest、Ruff、MyPy、uv build 产生的仓库内缓存和 build/dist/egg-info 构建产物。
+- 剩余风险：本轮按计划未增加编译器命令黑名单或运行时语义分析，因此用户批准的编译-only 命令仍由 Prompt 规范约束，不由 Runtime 语义判定。

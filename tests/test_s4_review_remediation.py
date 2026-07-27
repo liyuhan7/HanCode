@@ -202,7 +202,7 @@ def test_formal_agent_run_tests_generates_test_report(tmp_path: Path) -> None:
                     "type": "tool_call",
                     "phase": "test",
                     "tool_name": "run_tests",
-                    "args": {},
+                    "args": {"command": "pytest -q"},
                     "reason": None,
                 }
             ]
@@ -212,6 +212,9 @@ def test_formal_agent_run_tests_generates_test_report(tmp_path: Path) -> None:
     )
 
     result = loop.run("task-001")
+    if result.status.value == "waiting_approval":
+        ApprovalService(project_root).approve("task-001")
+        result = loop.run("task-001", resume=True)
 
     assert (task_root / "TEST_REPORT.md").is_file(), (
         result.status,
@@ -942,7 +945,7 @@ def test_provider_to_agent_to_delivery_path_completes_offline(tmp_path: Path) ->
                 "type": "tool_call",
                 "phase": "test",
                 "tool_name": "run_tests",
-                "args": {},
+                "args": {"command": "pytest -q"},
                 "reason": None,
             },
             {"type": "finish_phase", "phase": "test", "tool_name": None, "args": {}, "reason": None},
@@ -985,13 +988,17 @@ def test_provider_to_agent_to_delivery_path_completes_offline(tmp_path: Path) ->
         ]
     )
 
-    result = create_agent_loop(
+    loop = create_agent_loop(
         project_root,
         "task-001",
         provider=provider,
         tool_registry=registry,
         max_steps=6,
-    ).run("task-001")
+    )
+    result = loop.run("task-001")
+    if result.status.value == "waiting_approval":
+        ApprovalService(project_root).approve("task-001")
+        result = loop.run("task-001", resume=True)
 
     assert result.status.value == "completed", (result.error, result.final_state)
     assert load_state(task_root).status.value == "completed"

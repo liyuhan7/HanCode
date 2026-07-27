@@ -152,6 +152,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
                     ),
                 },
             },
+            "required": ["command"],
             "additionalProperties": False,
         },
         allowed_phases=frozenset({Phase.TEST}),

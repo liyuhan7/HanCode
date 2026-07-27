@@ -127,12 +127,12 @@ def _finish(phase: Phase) -> dict[str, object]:
     }
 
 
-def _run_tests() -> dict[str, object]:
+def _run_tests(command: str = "python -m unittest discover -s tests -q") -> dict[str, object]:
     return {
         "type": "tool_call",
         "phase": Phase.TEST.value,
         "tool_name": "run_tests",
-        "args": {},
+        "args": {"command": command},
         "reason": None,
     }
 

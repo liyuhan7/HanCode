@@ -1890,6 +1890,28 @@ class AgentLoop:
                         state,
                         risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
                     )
+                trace_error = self._record_test_result_trace(
+                    task_id,
+                    trace_events,
+                    phase=routing.phase,
+                    action=action,
+                    decision=decision,
+                    tool_result=tool_result,
+                    previous_state=previous_state,
+                    state=state,
+                )
+                if trace_error is not None:
+                    state, state_error = self._mark_inconsistent(
+                        task_id, state, trace_error
+                    )
+                    return _result(
+                        TaskStatus.INCONSISTENT,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        state_error,
+                        state,
+                    )
                 if action.tool_name == "run_tests" and self._delivery_pipeline is not None:
                     report = _feedback_report_for_test_result(tool_result)
                     trace_error = self._append_trace(
@@ -3385,6 +3407,54 @@ class AgentLoop:
             return state, _state_persistence_error(phase)
         return state, None
 
+    def _record_test_result_trace(
+        self,
+        task_id: str,
+        trace_events: list[TraceEvent],
+        *,
+        phase: Phase,
+        action: Action,
+        decision: PolicyDecisionLike,
+        tool_result: ToolResult,
+        previous_state: TaskState,
+        state: TaskState,
+    ) -> StructuredError | None:
+        if action.tool_name != "run_tests":
+            return None
+
+        return self._append_trace(
+            task_id,
+            trace_events,
+            event_type="test_result_recorded",
+            phase=phase,
+            status="succeeded",
+            action=_trace_action(action, decision, include_path=False),
+            observation={
+                "command": (
+                    None
+                    if tool_result.command is None
+                    else redact_text(tool_result.command)
+                ),
+                "test_status": state.latest_test_status,
+                "test_report_written": state.artifacts.get("TEST_REPORT.md", False),
+            },
+            state_transition={
+                "status": [previous_state.status.value, state.status.value],
+                "latest_test_status": [
+                    previous_state.latest_test_status,
+                    state.latest_test_status,
+                ],
+                "phase_completed.test": [
+                    previous_state.phase_completed.get(Phase.TEST.value, False),
+                    state.phase_completed.get(Phase.TEST.value, False),
+                ],
+                "artifacts.TEST_REPORT.md": [
+                    previous_state.artifacts.get("TEST_REPORT.md", False),
+                    state.artifacts.get("TEST_REPORT.md", False),
+                ],
+            },
+        )
+
     def _execute_approved_action(
         self,
         task_id: str,
@@ -3530,6 +3600,7 @@ class AgentLoop:
             # cannot be replayed, then surface feedback to the loop.
             if checkpoint is not None:
                 self._abort_checkpoint_quietly(task_id, checkpoint)
+            previous_state = state
             state, post_error = self._post_tool_execution(
                 task_id,
                 state,
@@ -3545,6 +3616,28 @@ class AgentLoop:
                     state,
                     post_error,
                     rollback_required=requires_checkpoint,
+                )
+                return _make_result(
+                    TaskStatus.INCONSISTENT,
+                    1,
+                    tuple(tool_calls),
+                    None,
+                    state_error,
+                    state,
+                )
+            trace_error = self._record_test_result_trace(
+                task_id,
+                trace_events,
+                phase=phase,
+                action=action,
+                decision=decision,
+                tool_result=tool_result,
+                previous_state=previous_state,
+                state=state,
+            )
+            if trace_error is not None:
+                state, state_error = self._mark_inconsistent(
+                    task_id, state, trace_error
                 )
                 return _make_result(
                     TaskStatus.INCONSISTENT,
@@ -3591,6 +3684,7 @@ class AgentLoop:
                 task_path(self._project_root, task_id), trace_events
             )
 
+        previous_state = state
         state, post_error = self._post_tool_execution(
             task_id,
             state,
@@ -3606,6 +3700,28 @@ class AgentLoop:
                 state,
                 post_error,
                 rollback_required=requires_checkpoint,
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                1,
+                tuple(tool_calls),
+                None,
+                state_error,
+                state,
+            )
+        trace_error = self._record_test_result_trace(
+            task_id,
+            trace_events,
+            phase=phase,
+            action=action,
+            decision=decision,
+            tool_result=tool_result,
+            previous_state=previous_state,
+            state=state,
+        )
+        if trace_error is not None:
+            state, state_error = self._mark_inconsistent(
+                task_id, state, trace_error
             )
             return _make_result(
                 TaskStatus.INCONSISTENT,

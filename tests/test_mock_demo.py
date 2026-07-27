@@ -85,8 +85,7 @@ def test_mock_demo_trace_proves_the_required_control_flow(tmp_path: Path) -> Non
         "task_started",
         "policy_denied",
         "checkpoint_created",
-        "test_completed",
-        "feedback_generated",
+        "test_result_recorded",
         "retry_budget_consumed",
         "rollback_performed",
         "deliverable_created",
@@ -98,8 +97,8 @@ def test_mock_demo_trace_proves_the_required_control_flow(tmp_path: Path) -> Non
         for event in events
     )
     assert any(
-        event["event_type"] == "feedback_generated"
-        and event["observation"]["failure_category"] == "assertion_failure"
+        event["event_type"] == "test_result_recorded"
+        and event["observation"]["test_status"] == "failed"
         for event in events
     )
     assert events[-1]["event_type"] == "run_completed"

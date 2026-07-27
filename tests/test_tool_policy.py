@@ -102,7 +102,7 @@ def test_allows_code_source_write_and_requires_checkpoint(tmp_path: Path) -> Non
     ("tool_name", "phase", "args", "reason"),
     [
         ("edit_file", Phase.SPEC, {"path": "src/main.py", "old_string": "a", "new_string": "b"}, "Update code."),
-        ("run_tests", Phase.PLAN, {}, None),
+        ("run_tests", Phase.PLAN, {"command": "pytest -q"}, None),
         ("rollback_last_checkpoint", Phase.CODE, {}, None),
     ],
 )

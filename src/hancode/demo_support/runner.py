@@ -20,6 +20,7 @@ from hancode.core.models import Phase, TaskStatus
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.factory import build_default_tool_registry
 from hancode.core.state import load_state, save_state
+from hancode.storage.approvals import ApprovalStore
 from hancode.tooling.registry import ToolRegistry, ToolResult
 from hancode.storage.trace import TraceEvent, append_trace
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
@@ -153,6 +154,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
         )
         runs.append(first)
         timeline.extend(first.trace_events)
+        _approve_pending_demo_action(root, task_root, first)
 
         second = _run_stage(
             root,
@@ -164,6 +166,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
         )
         runs.append(second)
         timeline.extend(second.trace_events)
+        _approve_pending_demo_action(root, task_root, second)
 
         third = _run_stage(
             root,
@@ -175,8 +178,21 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
         )
         runs.append(third)
         timeline.extend(third.trace_events)
+        _approve_pending_demo_action(root, task_root, third)
 
         fourth = _run_stage(
+            root,
+            config,
+            ports,
+            registry,
+            build_recovery_actions(),
+            resume=True,
+        )
+        runs.append(fourth)
+        timeline.extend(fourth.trace_events)
+        _approve_pending_demo_action(root, task_root, fourth)
+
+        fifth = _run_stage(
             root,
             config,
             ports,
@@ -184,10 +200,9 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
             build_finish_actions(),
             resume=True,
         )
-        runs.append(fourth)
-        timeline.extend(fourth.trace_events)
-
-        fifth = _run_stage(
+        runs.append(fifth)
+        timeline.extend(fifth.trace_events)
+        sixth = _run_stage(
             root,
             config,
             ports,
@@ -195,9 +210,9 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
             build_delivery_actions(),
             resume=True,
         )
-        runs.append(fifth)
-        timeline.extend(fifth.trace_events)
-        return _aggregate_result(task_root, fifth, runs)
+        runs.append(sixth)
+        timeline.extend(sixth.trace_events)
+        return _aggregate_result(task_root, sixth, runs)
     except HanCodeError as exc:
         return _failed_demo_result(task_root, runs, timeline, exc.structured_error)
     except Exception:
@@ -226,9 +241,46 @@ def _run_stage(
         provider=MockLLM(list(actions)),
         tool_registry=registry,
         trace_appender=_DemoTraceAppender(ports.trace_appender),
-        max_steps=max(1, len(actions)),
+        max_steps=max(1, len(actions) + _demo_stage_step_reserve(actions)),
     )
     return loop.run(TASK_ID, resume=resume)
+
+
+def _demo_stage_step_reserve(actions: Sequence[dict[str, object]]) -> int:
+    if any(action.get("tool_name") == "run_tests" for action in actions):
+        return 2
+    if actions and actions[0].get("phase") == Phase.TEST.value:
+        return 1
+    return 0
+
+
+def _approve_pending_demo_action(
+    project_root: Path,
+    task_root: Path,
+    result: AgentRunResult,
+) -> None:
+    if result.status is not TaskStatus.WAITING_APPROVAL:
+        return
+    approval_id = result.final_state.pending_approval_id
+    if approval_id is None:
+        raise _demo_error(
+            "mock_demo_approval_state_invalid",
+            "Mock demo returned WAITING_APPROVAL without a pending approval.",
+        )
+    project_data = json.loads(
+        (project_root / ".hancode" / "project.json").read_text(encoding="utf-8")
+    )
+    project_id = project_data.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        raise _demo_error(
+            "mock_demo_project_metadata_invalid",
+            "Mock demo project metadata has no valid project ID.",
+        )
+    ApprovalStore(project_root, project_id).decide(
+        TASK_ID,
+        True,
+        approval_id=approval_id,
+    )
 
 
 def _tool_registry(config: HanCodeConfig, test_runner: _DemoTestRunner) -> ToolRegistry:

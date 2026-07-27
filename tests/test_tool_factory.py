@@ -45,7 +45,9 @@ def test_default_registry_registers_file_edit_and_configured_test_tools(tmp_path
             {"path": "notes.txt", "old_string": "notes", "new_string": "updated"},
         )
     )
-    test_result = registry.dispatch(_action("run_tests", {}))
+    test_result = registry.dispatch(
+        _action("run_tests", {"command": "pytest -q"})
+    )
 
     assert read_result.success is True
     assert list_result.success is True

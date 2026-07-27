@@ -100,7 +100,7 @@ class ApprovalPolicy:
         if tool_name == "run_build":
             return self._evaluate_build()
 
-        if tool_name == "run_tests" and "command" in action.args:
+        if tool_name == "run_tests":
             return self._evaluate_test_command()
 
         if self._mode == "disabled":

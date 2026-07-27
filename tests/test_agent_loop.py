@@ -615,18 +615,31 @@ def test_resume_canonicalizes_inconsistent_blocked_state() -> None:
 
 
 def test_real_feedback_observation_is_json_safe_for_mock_llm_context() -> None:
+    state = _task_state()
+    state = replace(
+        state,
+        current_phase=Phase.TEST,
+        phase_completed={**state.phase_completed, Phase.CODE.value: True},
+    )
     loop, llm, _, _, _, _ = _build_loop(
         [
             {
                 "type": "tool_call",
-                "phase": "code",
+                "phase": "test",
                 "tool_name": "run_tests",
+                "args": {"command": "pytest -q"},
+                "reason": None,
+            },
+            {
+                "type": "finish_phase",
+                "phase": "review",
+                "tool_name": None,
                 "args": {},
                 "reason": None,
             },
-            _finish_action(),
         ],
         max_steps=2,
+        state=state,
     )
     loop._feedback_builder = FeedbackBuilder()  # type: ignore[attr-defined]
 
@@ -634,7 +647,7 @@ def test_real_feedback_observation_is_json_safe_for_mock_llm_context() -> None:
 
     assert result.status is TaskStatus.BLOCKED
     assert result.error is not None
-    assert result.error.error_code == "max_steps_exceeded"
+    assert result.error.error_code == "phase_mismatch"
     assert isinstance(llm.contexts[1]["observation"], dict)
     assert llm.contexts[1]["observation"]["kind"] == "test_feedback"
 

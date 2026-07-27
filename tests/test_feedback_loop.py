@@ -1043,6 +1043,7 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
         "phase_started",
         "tool_called",
         "tool_failed",
+        "test_result_recorded",
         "test_failed",
         "phase_started",
         "phase_completed",
@@ -1764,7 +1765,7 @@ def _run_tests_action() -> dict[str, object]:
         "type": "tool_call",
         "phase": Phase.TEST.value,
         "tool_name": "run_tests",
-        "args": {},
+        "args": {"command": "pytest -q"},
         "reason": None,
     }
 

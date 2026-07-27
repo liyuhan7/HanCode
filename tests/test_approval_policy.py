@@ -184,15 +184,16 @@ def test_explicit_test_command_requires_approval_when_disabled() -> None:
     assert result.category is ApprovalCategory.RUN_TESTS
 
 
-def test_configured_test_command_does_not_require_approval_when_disabled() -> None:
+def test_run_tests_always_requires_approval_when_disabled() -> None:
     policy = ApprovalPolicy(_make_config(approval_mode="disabled"))
-    action = _make_run_tests_action({})
+    action = _make_run_tests_action({"command": "pytest -q"})
     state = _valid_state(current_phase=Phase.TEST)
     decision = _allowed_decision(Phase.TEST)
 
     result = policy.evaluate(action=action, policy_decision=decision, state=state)
 
-    assert result.required is False
+    assert result.required is True
+    assert result.category is ApprovalCategory.RUN_TESTS
 
 
 # --- first_source_write mode ---
