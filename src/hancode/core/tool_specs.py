@@ -51,14 +51,25 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="list_files",
         description=(
             "List project files visible to the current workspace policy. "
-            "Use it to discover file names before read_file or search_text. "
-            "Do not infer file contents from the listing."
+            "Use it to discover project structure before reading relevant files."
         ),
         args_schema={
             "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": (
+                        "Optional project-relative directory. "
+                        "Omit it to list from the project root."
+                    ),
+                },
+            },
             "additionalProperties": False,
         },
-        allowed_phases=frozenset({Phase.SPEC, Phase.PLAN, Phase.CODE, Phase.REVIEW}),
+        allowed_phases=frozenset(
+            {Phase.SPEC, Phase.PLAN, Phase.CODE, Phase.TEST, Phase.REVIEW}
+        ),
         read_only=True,
     ),
     ToolSpec(
@@ -75,7 +86,9 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
             "required": ["query"],
             "additionalProperties": False,
         },
-        allowed_phases=frozenset({Phase.SPEC, Phase.PLAN, Phase.CODE, Phase.REVIEW}),
+        allowed_phases=frozenset(
+            {Phase.SPEC, Phase.PLAN, Phase.CODE, Phase.TEST, Phase.REVIEW}
+        ),
         read_only=True,
     ),
     ToolSpec(
@@ -121,19 +134,27 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="run_tests",
-        description="Run one test command. If command is omitted, the project's configured test command is used. Shell syntax is not supported.",
+        description=(
+            "Run one explicit project validation command selected by the Agent. "
+            "The command must actually execute behavioral tests rather than only "
+            "compile source code. Shell syntax is not supported."
+        ),
         args_schema={
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Explicit single-command argv input (e.g. 'gcc hello.c'). "
-                                   "When omitted the project-level test_command is used; shell operators are rejected.",
+                    "minLength": 1,
+                    "description": (
+                        "Explicit single-command argv input, such as "
+                        "'python -m pytest -q', 'npm test', or 'make test'. "
+                        "Shell operators and chained commands are not supported."
+                    ),
                 },
             },
             "additionalProperties": False,
         },
-        allowed_phases=frozenset({Phase.CODE, Phase.TEST, Phase.REVIEW}),
+        allowed_phases=frozenset({Phase.TEST}),
         read_only=False,
     ),
     ToolSpec(

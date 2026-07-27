@@ -67,10 +67,30 @@ def _tool_call_branch(
             "phase": {"const": phase.value},
             "reason": reason_schema,
             "tool_name": {"const": tool.name},
-            "args": dict(tool.args_schema),
+            "args": _provider_args_schema(phase, tool),
         },
         "additionalProperties": False,
     }
+
+
+def _provider_args_schema(
+    phase: Phase,
+    tool: ToolDescriptor,
+) -> dict[str, object]:
+    schema = dict(tool.args_schema)
+
+    # Real Agents must show the exact TEST command that will be approved.
+    if phase is Phase.TEST and tool.name == "run_tests":
+        raw_required = schema.get("required", ())
+        if isinstance(raw_required, (list, tuple)):
+            required = [item for item in raw_required if isinstance(item, str)]
+        else:
+            required = []
+        if "command" not in required:
+            required.append("command")
+        schema["required"] = required
+
+    return schema
 
 
 _REASON_ONE_OF = {

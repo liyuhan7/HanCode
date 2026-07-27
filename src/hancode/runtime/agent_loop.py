@@ -527,6 +527,9 @@ class AgentLoop:
         last_recoverable_error: StructuredError | None = None
         trace_events: list[TraceEvent] = []
         pending_risks: list[Risk] = []
+        steps_completed = 0
+        consecutive_provider_failures = 0
+        max_provider_response_retries = 2
 
         def _result(
             status: TaskStatus,
@@ -720,7 +723,31 @@ class AgentLoop:
                             routing.phase,
                             trace_events,
                         )
-                        return exec_result
+                        # Preserve the existing approval contract for source
+                        # writes and other approved mutations.  TEST actions
+                        # are the exception: after the approved command runs,
+                        # the same resume must feed its result back to the
+                        # Agent so it can finish TEST or enter REVIEW.
+                        if approved_action.tool_name != "run_tests":
+                            return exec_result
+                        tool_calls.extend(exec_result.tool_calls)
+                        pending_risks.extend(exec_result.risks)
+                        steps_completed += exec_result.steps
+                        state = exec_result.final_state
+                        observation = exec_result.final_observation
+
+                        if (
+                            exec_result.error is not None
+                            or exec_result.status is not TaskStatus.RUNNING
+                        ):
+                            return _result(
+                                exec_result.status,
+                                steps_completed,
+                                tuple(tool_calls),
+                                observation,
+                                exec_result.error,
+                                state,
+                            )
                     else:
                         # AgentRunResult returned (pending, rejected, error)
                         return approval_result
@@ -729,8 +756,10 @@ class AgentLoop:
                 if not _is_valid_task_state(state, task_id):
                     raise HanCodeError(_state_adapter_error(Phase.SPEC))
 
-        traced_phase: Phase | None = None
-        for step in range(1, self._max_steps + 1):
+        traced_phase: Phase | None = (
+            state.current_phase if steps_completed > 0 else None
+        )
+        for step in range(steps_completed + 1, self._max_steps + 1):
             routing = select_next_phase(state, build_required=self._build_required)
             if routing.rollback_required:
                 state = self._enter_phase(task_id, state, routing.phase)
@@ -849,6 +878,7 @@ class AgentLoop:
                 )
             try:
                 raw_action = self._llm.next_action(context)
+                consecutive_provider_failures = 0
             except MockLLMExhausted as exc:
                 state = self._block(task_id, state)
                 error = last_recoverable_error or StructuredError(
@@ -878,6 +908,26 @@ class AgentLoop:
                     },
                     error_summary=redact_text(exc.structured_error.message),
                 )
+                retryable = exc.structured_error.error_code in {
+                    "provider_invalid_response",
+                    "provider_empty_response",
+                }
+                if (
+                    trace_error is None
+                    and retryable
+                    and consecutive_provider_failures < max_provider_response_retries
+                ):
+                    consecutive_provider_failures += 1
+                    last_recoverable_error = exc.structured_error
+                    observation = {
+                        "kind": "provider_error",
+                        "error_code": exc.structured_error.error_code,
+                        "message": redact_text(exc.structured_error.message),
+                        "retryable": True,
+                        "attempt": consecutive_provider_failures,
+                    }
+                    continue
+
                 state = self._block(task_id, state)
                 if trace_error is not None:
                     return _result(
@@ -3575,9 +3625,26 @@ class AgentLoop:
             phase=phase, status="succeeded",
             observation={"tool_name": action.tool_name},
         )
+        observation, feedback_error = self._build_feedback(
+            lambda: self._feedback_builder.from_tool_result(
+                tool_result,
+                phase=phase,
+            ),
+            phase,
+        )
+        if feedback_error is not None:
+            state = self._block(task_id, state)
+            return _make_result(
+                TaskStatus.BLOCKED,
+                1,
+                tuple(tool_calls),
+                observation,
+                feedback_error,
+                state,
+            )
         return _make_result(
             state.status, 1, tuple(tool_calls),
-            {"tool_result": "executed", "tool_name": action.tool_name},
+            observation,
             None, state,
         )
 
@@ -3594,20 +3661,65 @@ class AgentLoop:
                 self._approval_store.mark_consumed(
                     task_id, approval_id, execution_checkpoint_id=commit_id
                 )
-            except Exception:
-                pass
+            except HanCodeError:
+                raise
+            except Exception as exc:
+                raise HanCodeError(
+                    StructuredError(
+                        error_code="approval_state_sync_failed",
+                        message=(
+                            "The approved action executed, but the approval "
+                            "manifest could not be marked consumed."
+                        ),
+                        phase=state.current_phase.value,
+                        denied_rule="approval_state_sync_required",
+                        suggested_fix=(
+                            "Reconcile the approval manifest before resuming."
+                        ),
+                    )
+                ) from exc
         try:
             latest = self._state_store.load(task_id)
-        except Exception:
-            latest = state
+        except HanCodeError:
+            raise
+        except Exception as exc:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="approval_state_sync_failed",
+                    message=(
+                        "The approved action executed, but the task approval "
+                        "state could not be loaded for synchronization."
+                    ),
+                    phase=state.current_phase.value,
+                    denied_rule="approval_state_sync_required",
+                    suggested_fix=(
+                        "Reconcile state.json and the approval manifest before resuming."
+                    ),
+                )
+            ) from exc
         cleared = replace(
             latest, status=TaskStatus.RUNNING, pending_approval_id=None
         )
         try:
             self._state_store.save(task_id, cleared)
-            return cleared
-        except Exception:
-            return latest
+        except HanCodeError:
+            raise
+        except Exception as exc:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="approval_state_sync_failed",
+                    message=(
+                        "The approved action executed, but the task approval state "
+                        "could not be synchronized."
+                    ),
+                    phase=state.current_phase.value,
+                    denied_rule="approval_state_sync_required",
+                    suggested_fix=(
+                        "Reconcile state.json and the approval manifest before resuming."
+                    ),
+                )
+            ) from exc
+        return cleared
 
     def _abort_checkpoint_quietly(
         self, task_id: str, checkpoint: CheckpointManifest

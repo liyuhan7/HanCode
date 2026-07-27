@@ -56,6 +56,24 @@ class _SuccessLLM:
         }
 
 
+class _RetryThenFinishLLM:
+    def __init__(self, error: ProviderError) -> None:
+        self.error = error
+        self.calls = 0
+
+    def next_action(self, context: dict[str, object]) -> dict[str, object]:
+        self.calls += 1
+        if self.calls <= 2:
+            raise self.error
+        return {
+            "type": "finish_phase",
+            "phase": context.get("phase", "spec"),
+            "tool_name": None,
+            "args": {},
+            "reason": "Phase complete.",
+        }
+
+
 class _ContextBuilder:
     def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]:
         return {"task_id": task_id, "phase": phase.value, "goal": state.goal or ""}
@@ -204,6 +222,7 @@ def _make_loop(
     llm: object,
     state: TaskState | None = None,
     trace: _RecordingTraceAppender | None = None,
+    max_steps: int = 5,
 ) -> AgentLoop:
     state_store = _MemoryStateStore(state or _state())
     return AgentLoop(
@@ -216,7 +235,7 @@ def _make_loop(
         trace_appender=trace or _RecordingTraceAppender(),  # type: ignore[arg-type]
         checkpoint_manager=cast(CheckpointManager, _NoopCheckpointManager()),
         rollback_manager=_NoopRollbackManager(),  # type: ignore[arg-type]
-        max_steps=5,
+        max_steps=max_steps,
         mutation_guard=_AllowMutationGuard(),  # type: ignore[arg-type]
     )
 
@@ -312,3 +331,24 @@ def test_valid_provider_action_reaches_parse_action() -> None:
     loop = _make_loop(_SuccessLLM())
     result = loop.run("task-001")
     assert result.status is not TaskStatus.INCONSISTENT
+
+
+def test_retryable_empty_provider_response_is_retried_before_blocking() -> None:
+    error = ProviderError(
+        StructuredError(
+            error_code="provider_empty_response",
+            message="Provider response message.content is empty.",
+            phase="spec",
+            denied_rule="provider_response_valid",
+            suggested_fix="Retry the provider request.",
+        ),
+        retryable=False,
+    )
+    provider = _RetryThenFinishLLM(error)
+    loop = _make_loop(provider, max_steps=3)
+
+    result = loop.run("task-001")
+
+    assert provider.calls == 3
+    assert result.status is TaskStatus.BLOCKED
+    assert result.final_state.status is TaskStatus.BLOCKED

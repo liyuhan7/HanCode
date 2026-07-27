@@ -227,17 +227,16 @@ def test_test_phase_includes_plan_changed_files_checkpoint_and_test_command(
     assert json.loads(context["sections"]["checkpoint"])["checkpoint_id"] == "ckpt-001"
 
 
-def test_test_phase_requires_a_configured_test_command(tmp_path: Path) -> None:
+def test_test_phase_allows_agent_generated_command_without_config(tmp_path: Path) -> None:
     project_root, task_root = _workspace(tmp_path)
     (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
     config = load_config(project_root, "task-001")
     state = _state(task_root, goal="Implement the assignment.", artifact_names=("PLAN.md",))
 
-    with pytest.raises(HanCodeError) as error:
-        build_context(project_root, "task-001", Phase.TEST, config, state=state)
+    context = build_context(project_root, "task-001", Phase.TEST, config, state=state)
 
-    assert error.value.structured_error.error_code == "context_required_artifact_missing"
-    assert error.value.structured_error.denied_rule == "test_command_required"
+    assert context["phase"] == "test"
+    assert "test_command" not in context["sections"]
 
 
 def test_deliver_phase_includes_required_artifacts_and_trace_summary(tmp_path: Path) -> None:

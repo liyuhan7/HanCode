@@ -161,15 +161,10 @@ def build_context(
         )
         _add_checkpoint_summary(sections, risks, task_root, current_state, config, phase)
     if phase is Phase.TEST:
-        if config.test_command is None:
-            raise _context_error(
-                "context_required_artifact_missing",
-                "Test context requires a configured test command.",
-                phase,
-                "test_command_required",
-                "Configure test_command before entering the test phase.",
-            )
-        sections["test_command"] = config.test_command
+        # A configured command is an optional candidate.  When it is absent,
+        # the Agent must inspect the project and select an explicit command.
+        if config.test_command is not None:
+            sections["test_command"] = config.test_command
     if phase is Phase.DELIVER:
         sections["trace_summary"] = _read_trace_summary(
             task_root,

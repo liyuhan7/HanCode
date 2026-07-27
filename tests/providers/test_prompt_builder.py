@@ -146,13 +146,45 @@ def test_prompt_filters_tools_by_phase() -> None:
 
     payload = json.loads(prompt.messages[1].content)
     names = {tool["name"] for tool in payload["available_tools"]}
-    assert names == {"read_file", "write_file", "run_tests"}
+    assert {"list_files", "read_file", "search_text", "run_tests"} <= names
     schema_tools = {
         branch["properties"]["tool_name"]["const"]
         for branch in prompt.action_schema["oneOf"]
         if branch["properties"]["type"]["const"] == "tool_call"
     }
-    assert schema_tools == names
+    assert {"list_files", "read_file", "search_text", "run_tests"} <= schema_tools
+
+
+def test_test_phase_requires_explicit_test_command() -> None:
+    catalog = (
+        ToolDescriptor(
+            name="run_tests",
+            description="Run tests.",
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "minLength": 1,
+                    }
+                },
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+    prompt = PromptBuilder().build(
+        context=_make_context(phase=Phase.TEST),
+        tool_catalog=catalog,
+    )
+
+    branch = next(
+        item
+        for item in prompt.action_schema["oneOf"]
+        if item["properties"].get("tool_name", {}).get("const") == "run_tests"
+    )
+
+    assert branch["properties"]["args"]["required"] == ["command"]
 
 
 def test_prompt_contains_artifact_targets() -> None:

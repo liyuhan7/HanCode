@@ -7,9 +7,13 @@ from typing import Mapping
 
 import pytest
 
+from hancode.app.approval_service import ApprovalService
 from hancode.core.actions import Action
+from hancode.core.state import TaskState, load_state, save_state
 from hancode.runtime.agent_loop import AgentLoop, InMemoryMutationGuard
+from hancode.runtime.engine import create_agent_loop
 from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.core.config import HanCodeConfig
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.interactions import InteractionRecord, InteractionStatus
@@ -17,8 +21,8 @@ from hancode.runtime.feedback import FeedbackBuilder
 from hancode.providers.mock import MockLLM
 from hancode.core.models import Phase, TaskStatus
 from hancode.policy.path_policy import PathZone
-from hancode.core.state import TaskState
 from hancode.policy.tool_policy import PolicyDecision, ToolPolicy
+from hancode.tooling.factory import build_default_tool_registry
 from hancode.tooling.registry import ToolResult
 from hancode.storage.trace import TraceEvent
 
@@ -1037,3 +1041,162 @@ def _ask_user_action() -> dict[str, object]:
         "args": {"question": "Continue?"},
         "reason": None,
     }
+
+
+def _prepare_explicit_test_loop(
+    tmp_path: Path,
+    *,
+    passed: bool,
+) -> tuple[Path, Path, MockLLM, list[str | None], AgentLoop]:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    task_root = init_task_workspace(project_root, "task-001", goal="Run the tests.")
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+
+    state = load_state(task_root)
+    save_state(
+        task_root,
+        replace(
+            state,
+            current_phase=Phase.TEST,
+            phase_completed={
+                **state.phase_completed,
+                Phase.SPEC.value: True,
+                Phase.PLAN.value: True,
+                Phase.CODE.value: True,
+            },
+            artifacts={
+                **state.artifacts,
+                "SPEC.md": True,
+                "PLAN.md": True,
+            },
+        ),
+    )
+
+    calls: list[str | None] = []
+
+    def run_tests_tool(command: str | None) -> ToolResult:
+        calls.append(command)
+        return ToolResult(
+            success=passed,
+            action_name="run_tests",
+            exit_code=0 if passed else 1,
+            stdout="1 passed" if passed else "E   AssertionError: expected 1\n1 failed",
+            command=command,
+        )
+
+    provider_actions: list[dict[str, object]] = [
+        {
+            "type": "tool_call",
+            "phase": "test",
+            "tool_name": "run_tests",
+            "args": {"command": "python -m pytest -q"},
+            "reason": "Run the project behavioral tests.",
+        }
+    ]
+    if passed:
+        provider_actions.append(
+            {
+                "type": "finish_phase",
+                "phase": "test",
+                "tool_name": None,
+                "args": {},
+                "reason": "The approved test command passed.",
+            }
+        )
+    provider = MockLLM(provider_actions)
+    from hancode.core.config import load_config
+
+    config = load_config(project_root, "task-001")
+    registry = build_default_tool_registry(config, run_tests_tool=run_tests_tool)
+    loop = create_agent_loop(
+        project_root,
+        "task-001",
+        provider=provider,
+        tool_registry=registry,
+        max_steps=2,
+    )
+    return project_root, task_root, provider, calls, loop
+
+
+def test_approved_run_tests_resumes_provider_and_persists_passed_state(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root, provider, calls, loop = _prepare_explicit_test_loop(
+        tmp_path,
+        passed=True,
+    )
+
+    waiting = loop.run("task-001")
+    assert waiting.status is TaskStatus.WAITING_APPROVAL
+
+    ApprovalService(project_root).approve("task-001")
+    result = loop.run("task-001", resume=True)
+    state = load_state(task_root)
+
+    assert len(provider.contexts) >= 2
+    assert result.final_state.pending_approval_id is None
+    assert state.tests_run == ("python -m pytest -q",)
+    assert state.latest_test_status == "passed"
+    assert state.artifacts["TEST_REPORT.md"] is True
+    assert state.phase_completed[Phase.TEST.value] is True
+    second_observation = provider.contexts[1].get("observation")
+    assert isinstance(second_observation, dict)
+    assert second_observation["kind"] == "test_feedback"
+    assert result.final_observation is not None
+    observation = result.final_observation.to_dict()
+    assert observation["kind"] == "test_feedback"
+    assert observation["success"] is True
+    assert observation["details"]["exit_code"] == 0
+    assert calls == ["python -m pytest -q"]
+
+
+def test_approved_failed_run_tests_routes_to_review_in_same_resume(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root, provider, calls, loop = _prepare_explicit_test_loop(
+        tmp_path,
+        passed=False,
+    )
+
+    waiting = loop.run("task-001")
+    assert waiting.status is TaskStatus.WAITING_APPROVAL
+
+    ApprovalService(project_root).approve("task-001")
+    result = loop.run("task-001", resume=True)
+    state = load_state(task_root)
+
+    assert len(provider.contexts) >= 2
+    assert result.final_state.pending_approval_id is None
+    assert state.tests_run == ("python -m pytest -q",)
+    assert state.latest_test_status == "failed"
+    assert state.artifacts["TEST_REPORT.md"] is True
+    assert state.current_phase is Phase.REVIEW
+    assert calls == ["python -m pytest -q"]
+
+
+def test_approval_manifest_sync_failure_is_reported() -> None:
+    class FailingApprovalStore:
+        def mark_consumed(
+            self,
+            task_id: str,
+            approval_id: str,
+            *,
+            execution_checkpoint_id: str | None,
+        ) -> None:
+            raise RuntimeError("approval manifest unavailable")
+
+    loop, *_ = _build_loop([])
+    loop._approval_store = FailingApprovalStore()
+
+    with pytest.raises(HanCodeError) as error:
+        loop._consume_and_clear(
+            "task-001",
+            _task_state(),
+            "apr-000001",
+            None,
+        )
+
+    assert error.value.structured_error.error_code == "approval_state_sync_failed"

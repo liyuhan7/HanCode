@@ -29,6 +29,19 @@ from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools
                 "list_checkpoints",
                 "list_files",
                 "read_file",
+                "search_text",
+                "write_file",
+            ),
+        ),
+        (
+            Phase.TEST,
+            (
+                "get_diff",
+                "list_checkpoints",
+                "list_files",
+                "read_file",
+                "read_test_report",
+                "run_build",
                 "run_tests",
                 "search_text",
                 "write_file",
@@ -45,7 +58,6 @@ from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools
                 "record_review",
                 "rollback_last_checkpoint",
                 "run_build",
-                "run_tests",
                 "search_text",
                 "write_file",
             ),
@@ -110,6 +122,18 @@ def test_denies_tool_not_allowed_in_phase(
     assert decision.allowed is False
     assert decision.denied_rule == "tool_not_allowed_in_phase"
     assert decision.to_dict()["error_code"] == "policy_denied"
+
+
+def test_run_tests_is_only_available_in_test_phase() -> None:
+    assert "run_tests" not in allowed_tools_for_phase(Phase.CODE)
+    assert "run_tests" in allowed_tools_for_phase(Phase.TEST)
+    assert "run_tests" not in allowed_tools_for_phase(Phase.REVIEW)
+
+
+def test_test_phase_can_discover_project_files() -> None:
+    tools = set(allowed_tools_for_phase(Phase.TEST))
+
+    assert {"list_files", "read_file", "search_text", "run_tests"} <= tools
 
 
 def test_defensively_denies_write_without_reason(tmp_path: Path) -> None:

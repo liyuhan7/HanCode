@@ -2547,6 +2547,32 @@ def reconcile_pending_checkpoint(
 * 不引入通用 `run_shell`，不启用 shell，不支持 pipeline、重定向或多命令组合。
 * 不修改无关 TUI 文件，不增加配置字段，不接真实 LLM、网络或依赖自动安装。
 
+### T21-R1 Task 9：Agent 自生成测试命令与审批后续闭环
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现，专项与全量验证通过 |
+| 依赖 | T21-R1 Task 8、现有 Router / Approval / DeliveryPipeline |
+| 分支 | `main`（按用户要求直接开发） |
+| 范围 | TEST 阶段探索、显式命令审批、审批后 AgentLoop 续跑、Provider 空响应有限重试 |
+| 非目标 | 不重写 `test_tools.py`、`factory.py`、`approval_policy.py`、`delivery_pipeline.py` 或 `core/router.py` |
+
+#### 行为契约
+
+* TEST 阶段不再要求 `config.test_command`；若配置存在，只作为可选候选注入上下文。
+* `run_tests` 仅允许在 TEST 阶段；`list_files`、`read_file`、`search_text` 可在 TEST 阶段用于项目结构探索，`list_files` 的 `path` 参数在 ToolSpec 中显式声明。
+* Provider-facing schema 在 TEST 的 `run_tests` 分支强制 `args.command`，Prompt 要求单条、非编译-only 的行为测试命令，并由运行时自动请求审批。
+* 批准的 `run_tests` 执行后回灌结构化测试反馈；同一次 `resume` 继续调用 Provider，成功完成 TEST，失败按现有 Router 进入 REVIEW，不改变 `latest_test_status`、`test_status_consumed` 与 retry/rollback 语义。
+* `provider_invalid_response` 与 `provider_empty_response` 只做有限两次连续重试；审批 manifest/state 同步失败返回结构化 `approval_state_sync_failed`，不静默吞错。
+
+#### 验收证据
+
+* TDD Red：新增阶段、Schema、审批续跑和 Provider 重试测试在实现前复现原有失败行为。
+* 全量 pytest：`1336 passed, 17 skipped`。
+* Ruff：`uv run --no-sync ruff check src tests` → `All checks passed!`。
+* MyPy：`uv run --no-sync mypy src/hancode` → `Success: no issues found in 98 source files`。
+* 构建：`uv build` → 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`；首次无提升权限运行仅受 Windows `WinError 5` 临时目录权限阻断，提升权限后复验通过。
+
 ---
 
 # M6：Delivery 与 Demo

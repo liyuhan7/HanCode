@@ -94,15 +94,37 @@ PHASE_CONTRACTS: dict[Phase, str] = {
     ),
     Phase.CODE: (
         "Implement only the scope approved by SPEC.md and PLAN.md. "
-        "Source writes must use the normal tool and policy path."
+        "Create any necessary test source files, test runners, or project-native "
+        "test targets during this phase. "
+        "Do not execute build or test commands in the CODE phase. "
+        "After the required source changes are complete and the phase gate is "
+        "satisfied, return finish_phase."
     ),
     Phase.TEST: (
-        "Run the configured tests. "
-        "Do not modify protected tests to manufacture a pass."
+        "Determine how to validate the implementation from project evidence. "
+        "Inspect the project structure and relevant files using list_files, "
+        "read_file, and search_text when necessary. "
+        "Prefer an existing project-native command that performs complete "
+        "validation, such as 'python -m pytest', 'npm test', 'ctest', or "
+        "'make test'. "
+        "The run_tests command must execute behavioral tests; a compilation-only "
+        "command is not sufficient evidence of correctness. "
+        "Provide exactly one explicit command in args.command. "
+        "Do not use shell pipelines, redirects, command substitution, semicolons, "
+        "or chained commands. "
+        "Do not ask the user for permission through ask_user. "
+        "The deterministic runtime will automatically request approval for the "
+        "command. "
+        "After observing a passing result, return finish_phase. "
+        "A failed result will be routed to REVIEW for diagnosis and remediation."
     ),
     Phase.REVIEW: (
-        "Review requirement coverage, test evidence, diff evidence, "
-        "and rollback risk."
+        "Review requirement coverage, test evidence, diff evidence, and rollback "
+        "risk. "
+        "When the latest test failed, inspect TEST_REPORT.md and source evidence, "
+        "record the failure cause and required remediation, then finish the review "
+        "phase. "
+        "Do not rerun tests in REVIEW; fixes must return through CODE and TEST."
     ),
     Phase.DELIVER: (
         "Produce the required review, knowledge, and delivery evidence."
