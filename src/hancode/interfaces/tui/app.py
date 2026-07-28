@@ -41,6 +41,7 @@ from hancode.interfaces.tui.messages import (
     OperationFinished,
     RunFailed,
     RunFinished,
+    TaskSummaryChanged,
     TraceArrived,
 )
 from hancode.interfaces.tui.operations import (
@@ -54,6 +55,7 @@ from hancode.interfaces.tui.operations import (
 from hancode.interfaces.tui.presenters import (
     CheckpointListView,
     DeliveryView,
+    DetailKind,
     DiffView,
     EventDetailView,
     TestReportView,
@@ -72,13 +74,20 @@ from hancode.storage.trace import TraceEvent
 
 
 class _WorkerTraceObserver:
-    """Posts each persisted trace event to the app as a Textual message."""
+    """Posts persisted trace and summary messages without touching widgets."""
 
-    def __init__(self, app: "HanCodeTuiApp") -> None:
+    def __init__(self, app: "HanCodeTuiApp", request_id: str) -> None:
         self._app = app
+        self._request_id = request_id
 
     def on_trace(self, event: TraceEvent) -> None:
         self._app.call_from_thread(self._app.post_message, TraceArrived(event))
+
+    def on_task_summary(self, summary: TaskSummary) -> None:
+        self._app.call_from_thread(
+            self._app.post_message,
+            TaskSummaryChanged(self._request_id, summary),
+        )
 
 
 class HanCodeTuiApp(App[None]):
@@ -631,7 +640,7 @@ class HanCodeTuiApp(App[None]):
             operation,
             group="task-mutation",
             exclusive=True,
-            trace_observer=_WorkerTraceObserver(self),
+            trace_observer=_WorkerTraceObserver(self, operation.request_id),
         )
 
     def _run_query_worker(self, operation: TuiOperation) -> None:
@@ -690,6 +699,16 @@ class HanCodeTuiApp(App[None]):
     def on_trace_arrived(self, message: TraceArrived) -> None:
         self.controller.on_trace(message.event)
         self._refresh_activity()
+
+    def on_task_summary_changed(self, message: TaskSummaryChanged) -> None:
+        """Render a current mutation snapshot without changing interaction focus."""
+
+        if not self.controller.apply_live_summary(message.request_id, message.summary):
+            return
+        self._refresh_phase_bar()
+        self._refresh_task_list()
+        if self.controller.state.detail_kind is DetailKind.TASK:
+            self._render_active_task_detail()
 
     def on_operation_finished(self, message: OperationFinished) -> None:
         """Apply every Worker result through the request-scoped Controller gate."""

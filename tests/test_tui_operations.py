@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ from hancode.interfaces.tui.operations import (
     TuiOperationKind,
     TuiServices,
 )
+from hancode.storage.trace import TraceEvent
 
 
 def _summary() -> TaskSummary:
@@ -105,6 +107,100 @@ def test_executor_converts_service_error_to_structured_operation_error(
 
     assert caught.value.request_id == "req-002"
     assert caught.value.structured_error == error
+
+
+def test_run_keeps_trace_and_result_when_live_summary_projection_fails(tmp_path: Path) -> None:
+    event = TraceEvent(
+        event_id="evt-000001",
+        seq=1,
+        event_type="phase_started",
+        task_id="task-001",
+        phase=Phase.SPEC,
+        timestamp=datetime(2026, 7, 28, tzinfo=UTC),
+        status="running",
+    )
+    run_result = object()
+
+    class _Task:
+        def get(self, project_root: Path, task_id: str) -> TaskSummary:
+            raise RuntimeError("summary read failed")
+
+        def run(self, project_root, task_id, *, resume, trace_observer):  # type: ignore[no-untyped-def]
+            assert trace_observer is not None
+            trace_observer.on_trace(event)
+            return run_result
+
+    class _Observer:
+        def __init__(self) -> None:
+            self.events: list[TraceEvent] = []
+
+        def on_trace(self, received: TraceEvent) -> None:
+            self.events.append(received)
+
+        def on_task_summary(self, summary: TaskSummary) -> None:
+            raise AssertionError("summary should not be delivered when its read failed")
+
+    observer = _Observer()
+    executor = TuiOperationExecutor(tmp_path, _services(_Task()))
+
+    result = executor.execute(
+        TuiOperation(
+            request_id="req-run-001",
+            kind=TuiOperationKind.RUN_TASK,
+            task_id="task-001",
+        ),
+        trace_observer=observer,
+    )
+
+    assert result.value is run_result
+    assert observer.events == [event]
+
+
+def test_run_ignores_ui_summary_observer_failure(tmp_path: Path) -> None:
+    event = TraceEvent(
+        event_id="evt-000002",
+        seq=2,
+        event_type="phase_started",
+        task_id="task-001",
+        phase=Phase.PLAN,
+        timestamp=datetime(2026, 7, 28, tzinfo=UTC),
+        status="running",
+    )
+    run_result = object()
+
+    class _Task:
+        def get(self, project_root: Path, task_id: str) -> TaskSummary:
+            return _summary()
+
+        def run(self, project_root, task_id, *, resume, trace_observer):  # type: ignore[no-untyped-def]
+            assert trace_observer is not None
+            trace_observer.on_trace(event)
+            return run_result
+
+    class _Observer:
+        def __init__(self) -> None:
+            self.events: list[TraceEvent] = []
+
+        def on_trace(self, received: TraceEvent) -> None:
+            self.events.append(received)
+
+        def on_task_summary(self, summary: TaskSummary) -> None:
+            raise RuntimeError("Textual queue unavailable")
+
+    observer = _Observer()
+    executor = TuiOperationExecutor(tmp_path, _services(_Task()))
+
+    result = executor.execute(
+        TuiOperation(
+            request_id="req-run-002",
+            kind=TuiOperationKind.RUN_TASK,
+            task_id="task-001",
+        ),
+        trace_observer=observer,
+    )
+
+    assert result.value is run_result
+    assert observer.events == [event]
 
 
 def test_operation_carries_reserved_diff_and_export_parameters(tmp_path: Path) -> None:

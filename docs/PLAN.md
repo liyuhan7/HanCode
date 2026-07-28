@@ -6716,6 +6716,43 @@ S4-R2 Build       S4-R3 Test Report
 
 ---
 
+## S5-TUI-R7：实时 TaskSummary 状态投影
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R2（异步 Mutation Worker 与 request-scoped Controller） |
+| 分支 | `codex/tui-live-status` |
+| 提交 | 不提交、不推送（除非用户另行要求） |
+
+### 范围与边界
+
+- 每条 Trace 成功持久化后，由同一 Mutation Worker 读取最新 `TaskSummary` 并向 Textual 主线程投递快照；ActivityLog 仍逐事件追加。
+- 只更新既有 TaskList、PhaseBar、Task Overview；不新增运行面板、不轮询，且 TUI 不根据 TraceEvent 推演业务状态。
+- Controller 仅接受当前 Mutation request、当前 `running_task_id` 和当前 active task 的实时摘要；旧 request、错误 task 和 Worker 结束后的迟到消息必须丢弃。
+- ViewState reducer 同步 status、phase、test/build、checkpoint、artifact、retry 和 HITL 摘要；用户正在查看 Diff/Event/Artifact 等 Inspection Detail 时不得抢占该面板。
+- 保留 `OperationFinished` 的终态刷新与 WAITING_INPUT/WAITING_APPROVAL 聚焦流程，实时快照失败只能漏过单次刷新，不能影响 Trace 展示或 AgentLoop 结果。
+- 允许修改：`src/hancode/interfaces/tui/` 的 operation、message、controller、view-state、app 接线及对应 TUI 测试，`docs/PLAN.md`、`docs/SPEC.md`、`docs/AGENT_LOG.md`。
+- 不修改：AgentLoop 状态机、`TraceObserver` 核心协议、TaskState/state.json schema、路由和 Delivery 算法。
+
+### 验收与验证
+
+1. 使用真实 App、TaskService 和阻塞式 Fake Provider，在 Worker 未结束时断言 `created` 已投影为 `running`，TaskList、PhaseBar 和 ActivityLog 均已更新。
+2. 下一 phase 开始后、Worker 结束前，PhaseBar 与完整 TaskSummary 字段（test/build/checkpoint/artifact/retry/HITL）同步到 ViewState 与 Task Detail。
+3. 旧 request、错误 task、Worker 结束后的摘要以及 Inspection Detail 抢占均由公开 App/Controller 行为回归覆盖。
+4. 摘要读取或 UI observer 失败时，Trace 仍实时显示，AgentLoop 不转为失败或 inconsistent；`OperationFinished` 仍能纠正遗漏刷新。
+5. 覆盖 WAITING_INPUT、WAITING_APPROVAL、completed、blocked、unexpected Worker error；运行聚焦 TUI 测试及全量 pytest、Ruff、MyPy、`uv build --offline`、Mock Demo、`git diff --check`，并清理缓存/构建产物。
+
+### 实施记录
+
+- Red：新增 reducer/Controller 测试后执行 `uv run --no-sync pytest tests/test_tui_controller.py -q -p no:cacheprovider`，收集期因缺少 `reduce_task_summary_changed` 失败，确认实时摘要投影尚未实现。
+- Green：新增 `TuiRunObserver` 与运行期摘要转发器；每条已持久化 Trace 后在同一 Mutation Worker 调用 `TaskService.get()`，把 `request_id + TaskSummary` 投递为 `TaskSummaryChanged`。Controller 以 active mutation、`running_task_id`、active task 三重门控；ViewState 纯 reducer 仅在 TASK Detail 刷新 Overview，Inspection Detail 保持原样。
+- 回归：真实 `HanCodeTuiApp + TaskService +` 阻塞 Fake Provider 在 Worker 仍运行、已进入 PLAN 时断言 `running` 摘要、TaskList、PhaseBar 与 ActivityLog 已更新；另覆盖完整摘要/HITL、旧 request、错误 task、Worker 结束后迟到消息、摘要读取失败与 UI observer 失败。最终聚焦新增测试为 `21 passed`，TUI 范围回归为 `44 passed`。
+- 完整门禁（2026-07-28）：全量 pytest `1340 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 98 source files`；`uv build --offline` 成功；`uv run --no-sync hancode demo --provider mock` 返回 `status=completed`；`git diff --check` 通过。首次使用空隔离 uv cache 的离线 build 因缺少缓存内 `setuptools>=68` 未进入构建，改用既有用户级缓存后成功。
+- 清理：删除本轮 `dist/`、`src/hancode.egg-info/`、`.pytest_cache/`、`.mypy_cache/`、`.ruff_cache/`；不提交、不推送。
+
+---
+
 ## S5-R1：统一阶段完成门禁
 
 | 元信息 | 值 |

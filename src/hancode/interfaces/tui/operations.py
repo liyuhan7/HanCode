@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 from hancode.app.approval_service import ApprovalService
 from hancode.app.build_service import BuildSummary
@@ -31,7 +32,6 @@ from hancode.app.task_service import TaskService
 from hancode.core.change_models import CheckpointSummary, DiffScope, TaskDiff
 from hancode.core.delivery_evidence import DeliveryEvidence, DeliveryResult
 from hancode.core.errors import HanCodeError, StructuredError
-from hancode.runtime.observation import TraceObserver
 from hancode.runtime.agent_loop import AgentRunResult
 from hancode.storage.export import ExportResult
 from hancode.storage.trace import TraceEvent
@@ -67,6 +67,42 @@ class TuiOperationKind(str, Enum):
 
 
 TuiIntentKind = TuiOperationKind
+
+
+class TuiRunObserver(Protocol):
+    """TUI-only observer receiving a trace and its persisted TaskSummary."""
+
+    def on_trace(self, event: TraceEvent) -> None: ...
+
+    def on_task_summary(self, summary: TaskSummary) -> None: ...
+
+
+class _TaskSummaryForwardingObserver:
+    """Read a fresh persisted summary after each trace without affecting the run."""
+
+    def __init__(
+        self,
+        project_root: Path,
+        task_service: TaskService,
+        observer: TuiRunObserver,
+    ) -> None:
+        self._project_root = project_root
+        self._task_service = task_service
+        self._observer = observer
+
+    def on_trace(self, event: TraceEvent) -> None:
+        try:
+            self._observer.on_trace(event)
+        except Exception:
+            pass
+        try:
+            summary = self._task_service.get(self._project_root, event.task_id)
+        except Exception:
+            return
+        try:
+            self._observer.on_task_summary(summary)
+        except Exception:
+            pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +246,7 @@ class TuiOperationExecutor:
     def execute(
         self,
         operation: TuiOperation,
-        trace_observer: TraceObserver | None = None,
+        trace_observer: TuiRunObserver | None = None,
     ) -> TuiOperationResult:
         try:
             value = self._execute(operation, trace_observer=trace_observer)
@@ -247,7 +283,7 @@ class TuiOperationExecutor:
         self,
         operation: TuiOperation,
         *,
-        trace_observer: TraceObserver | None,
+        trace_observer: TuiRunObserver | None,
     ) -> TuiOperationValue:
         kind = operation.kind
         task_id = operation.task_id
@@ -261,11 +297,20 @@ class TuiOperationExecutor:
             return self._select_task(task_id)
         if kind is TuiOperationKind.RUN_TASK:
             selected = self._require_task(task_id, "run")
+            observer = (
+                _TaskSummaryForwardingObserver(
+                    self._project_root,
+                    self._services.task,
+                    trace_observer,
+                )
+                if trace_observer is not None
+                else None
+            )
             return self._services.task.run(
                 self._project_root,
                 selected,
                 resume=operation.resume,
-                trace_observer=trace_observer,
+                trace_observer=observer,
             )
         if kind is TuiOperationKind.ANSWER_INTERACTION:
             return self._services.interaction.answer(
@@ -432,6 +477,7 @@ __all__ = [
     "TuiOperationResult",
     "TuiOperationValue",
     "TuiOperationError",
+    "TuiRunObserver",
     "TuiServices",
     "TuiOperationExecutor",
 ]

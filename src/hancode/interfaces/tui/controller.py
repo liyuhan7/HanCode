@@ -34,6 +34,7 @@ from hancode.interfaces.tui.operations import (
     TuiOperationKind,
     TuiOperationResult,
     TuiOperationValue,
+    TuiRunObserver,
     TuiServices,
 )
 from hancode.interfaces.tui.presenters import (
@@ -50,10 +51,10 @@ from hancode.interfaces.tui.view_state import (
     TuiViewState,
     reduce_run_finished,
     reduce_task_selected,
+    reduce_task_summary_changed,
     reduce_trace_arrived,
 )
 from hancode.runtime.agent_loop import AgentRunResult
-from hancode.runtime.observation import TraceObserver
 from hancode.storage.trace import TraceEvent
 
 
@@ -220,11 +221,24 @@ class TuiSessionController:
         self,
         operation: TuiOperation,
         *,
-        trace_observer: TraceObserver | None = None,
+        trace_observer: TuiRunObserver | None = None,
     ) -> TuiOperationResult:
         """Delegate the operation to the Textual-independent executor."""
 
         return self._executor.execute(operation, trace_observer=trace_observer)
+
+    def apply_live_summary(self, request_id: str, summary: TaskSummary) -> bool:
+        """Apply a running-task snapshot only while its mutation is current."""
+
+        if (
+            self._active_request_id != request_id
+            or not self._state.busy
+            or self._state.running_task_id != summary.task_id
+            or self._state.active_task_id != summary.task_id
+        ):
+            return False
+        self._state = reduce_task_summary_changed(self._state, summary)
+        return True
 
     def apply_result(self, result: TuiOperationResult) -> bool:
         """Apply only the result belonging to the active request/task."""

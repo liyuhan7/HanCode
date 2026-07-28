@@ -8,11 +8,15 @@ compact layout) are pure functions tested here without mounting Textual.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from hancode.core.models import Phase, TaskStatus
 from hancode.interfaces.tui.controller import TuiSessionController
+from hancode.interfaces.tui.operations import TuiIntent, TuiOperationKind
+from hancode.interfaces.tui.presenters import DetailKind
+from hancode.interfaces.tui.view_state import reduce_task_summary_changed
 from hancode.storage.trace import TraceEvent
 
 
@@ -104,6 +108,73 @@ def test_trace_message_updates_activity_log() -> None:
     controller.on_trace(_event(2))
 
     assert [e.seq for e in controller.state.trace_events] == [1, 2]
+
+
+def test_live_summary_updates_active_task_list_and_preserves_inspection_detail() -> None:
+    initial = _summary("task-001", status=TaskStatus.CREATED, phase=Phase.SPEC)
+    updated = replace(
+        initial,
+        status=TaskStatus.RUNNING,
+        current_phase=Phase.PLAN,
+        latest_test_status="passed",
+        latest_build_status="passed",
+        builds_run=("uv build --offline",),
+        latest_checkpoint="ckpt-001",
+        artifacts={"SPEC.md": True},
+        retry_budget_remaining=1,
+    )
+    controller = _controller({"task-001": initial})
+    controller.select_task("task-001")
+    operation = controller.dispatch(
+        TuiIntent(kind=TuiOperationKind.RUN_TASK, task_id="task-001")
+    )
+    assert operation is not None
+    controller.begin_operation(operation)
+
+    assert controller.apply_live_summary(operation.request_id, updated) is True
+    assert controller.state.active_task is updated
+    assert controller.state.tasks == (updated,)
+    assert controller.state.detail_kind is DetailKind.TASK
+    assert controller.apply_live_summary("stale-request", updated) is False
+    wrong_task = replace(updated, task_id="task-002")
+    assert controller.apply_live_summary(operation.request_id, wrong_task) is False
+    controller.on_run_finished(refresh_status=False)
+    assert controller.apply_live_summary(operation.request_id, updated) is False
+
+
+def test_live_summary_reducer_refreshes_task_overview_and_hitl_fields() -> None:
+    initial = _summary("task-001", status=TaskStatus.CREATED, phase=Phase.SPEC)
+    waiting = replace(
+        initial,
+        status=TaskStatus.WAITING_INPUT,
+        current_phase=Phase.PLAN,
+        requires_input=True,
+        pending_interaction={"interaction_id": "int-001", "question": "Continue?"},
+    )
+    state = reduce_task_summary_changed(
+        reduce_task_summary_changed(
+            TuiSessionController(Path("/tmp/project")).state,
+            initial,
+        ),
+        waiting,
+    )
+
+    assert state.active_task is waiting
+    assert state.detail_kind is DetailKind.TASK
+    assert state.pending_interaction_id == "int-001"
+    assert state.pending_question == "Continue?"
+
+    inspection_detail = object()
+    inspection_state = replace(
+        state,
+        detail_kind=DetailKind.EVENT,
+        detail=inspection_detail,
+    )
+    projected = reduce_task_summary_changed(inspection_state, initial)
+
+    assert projected.active_task is initial
+    assert projected.detail_kind is DetailKind.EVENT
+    assert projected.detail is inspection_detail
 
 
 def test_run_finished_refreshes_task_state() -> None:
@@ -270,5 +341,94 @@ def test_app_run_streams_trace_events_before_completion(tmp_path: Path) -> None:
             await pilot.pause()
             assert app.controller.state.trace_events, "no trace events streamed"
             assert app.controller.state.busy is False
+
+    asyncio.run(_run())
+
+
+def test_app_projects_persisted_summary_while_worker_is_running(tmp_path: Path) -> None:
+    """A running Worker updates the existing TUI views before it finishes."""
+    import asyncio
+    from threading import Event
+
+    from textual.widgets import Label, ListView
+
+    from hancode.app.task_service import TaskService
+    from hancode.interfaces.tui.app import HanCodeTuiApp
+    from hancode.interfaces.tui.widgets.activity_log import ActivityLog
+    from hancode.interfaces.tui.widgets.phase_bar import PhaseBar
+    from hancode.providers.mock import MockLLM
+    from hancode.storage.workspace import init_project_workspace
+
+    init_project_workspace(tmp_path, "project-001", "Course", "Assignment")
+    actions: list[dict[str, object]] = [
+        {
+            "type": "tool_call",
+            "phase": Phase.SPEC.value,
+            "tool_name": "write_file",
+            "args": {
+                "path": ".hancode/tasks/task-001/SPEC.md",
+                "content": "# SPEC\n\nDocument the target.\n",
+            },
+            "reason": "Persist the specification artifact.",
+        },
+        {
+            "type": "finish_phase",
+            "phase": Phase.SPEC.value,
+            "tool_name": None,
+            "args": {},
+            "reason": None,
+        },
+    ]
+
+    class _BlockingMockLLM:
+        def __init__(self) -> None:
+            self.entered = Event()
+            self.release = Event()
+            self._delegate = MockLLM(actions)
+            self._calls = 0
+
+        def next_action(self, context: dict[str, object]) -> dict[str, object]:
+            self._calls += 1
+            if self._calls == 3:
+                self.entered.set()
+                assert self.release.wait(timeout=5), "test did not release the Worker"
+            return self._delegate.next_action(context)
+
+    provider = _BlockingMockLLM()
+
+    class _Factory:
+        def __call__(self, config: object, *, credential: object = None) -> object:
+            return provider
+
+    service = TaskService(provider_factory=_Factory())
+
+    async def _run() -> None:
+        app = HanCodeTuiApp(project_root=tmp_path, task_service=service)
+        async with app.run_test() as pilot:
+            app.submit_input("Write the spec.")
+            assert await asyncio.to_thread(provider.entered.wait, 5)
+            await pilot.pause()
+
+            summary = app.controller.state.active_task
+            assert summary is not None
+            assert summary.status is TaskStatus.RUNNING
+            assert summary.current_phase is Phase.PLAN
+            assert app.controller.state.busy is True
+            assert app.controller.state.trace_events
+
+            phase_bar = app.screen.query_one("#tui-phase-bar", PhaseBar)
+            assert "▶ plan" in str(phase_bar.render())
+            activity = app.screen.query_one("#tui-activity-log", ActivityLog)
+            assert activity.lines
+            task_list = app.screen.query_one("#tui-task-list", ListView)
+            labels = [
+                str(label.render())
+                for item in task_list.children
+                for label in item.query(Label)
+            ]
+            assert "task-001 · running" in labels
+
+            provider.release.set()
+            await app.workers.wait_for_complete()
 
     asyncio.run(_run())
