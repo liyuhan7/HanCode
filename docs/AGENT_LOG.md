@@ -2045,3 +2045,13 @@
 - 验证：全量 pytest 1336 passed, 17 skipped；Ruff All checks passed；MyPy Success: no issues found in 98 source files；uv build 成功；相关回归测试 106 passed，工具/TUI 回归 83 passed。
 - 清理：删除本轮 pytest、Ruff、MyPy、uv build 产生的仓库内缓存和 build/dist/egg-info 构建产物。
 - 剩余风险：本轮按计划未增加编译器命令黑名单或运行时语义分析，因此用户批准的编译-only 命令仍由 Prompt 规范约束，不由 Runtime 语义判定。
+
+### 2026-07-28 — S5-TUI-R7 — 实时 TaskSummary 状态投影修复
+
+- 使用技能：`tdd`、`karpathy-guidelines`。
+- 范围：在隔离分支 `codex/tui-live-status` 修复 TUI 运行期间只追加 Trace、却不更新 TaskList/PhaseBar/Task Detail 的问题；不修改 AgentLoop、核心 TraceObserver 协议、TaskState/state.json schema、路由或 Delivery 算法；不提交、不推送。
+- Red：新增实时摘要 reducer/Controller 测试后，`uv run --no-sync pytest tests/test_tui_controller.py -q -p no:cacheprovider` 收集期报 `ImportError: cannot import name 'reduce_task_summary_changed'`，确认链路缺失。
+- 修复：Operation 层新增内部 `TuiRunObserver` 与摘要转发器。每条由核心层成功持久化的 Trace 到达 TUI observer 后，仍先投递 `TraceArrived`，再由同一 Mutation Worker 调用 `TaskService.get()` 并投递携带 `request_id + TaskSummary` 的 `TaskSummaryChanged`；读取或 observer 异常只跳过该次快照。Controller 只接受当前 mutation request、`running_task_id`、active task 三者一致的摘要；ViewState reducer 更新任务列表/摘要/HITL 字段，只有 TASK Detail 重绘 Overview，Inspection Detail 不被抢占；`OperationFinished` 终态刷新和 WAITING 聚焦流程保留。
+- Green：真实 `HanCodeTuiApp + TaskService +` 阻塞 Fake Provider 的端到端测试在 Worker 未结束、已进入 PLAN 时确认 Task 为 `running`、TaskList 标签、PhaseBar 和 ActivityLog 都已更新；另覆盖 test/build/checkpoint/artifact/retry/HITL 摘要、旧 request、错误 task、Worker 结束后迟到消息、摘要读取失败和 UI observer 失败。最终新增相关测试 `21 passed`；TUI 范围回归 `44 passed`。
+- 完整验证：全量 pytest `1340 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 98 source files`；`uv build --offline` 成功；`uv run --no-sync hancode demo --provider mock` 返回 `status=completed`；`git diff --check` 通过。首次使用空隔离 uv cache 的 `uv build --offline` 因缓存无 `setuptools>=68` 失败，改用既有用户级缓存后构建成功。
+- 清理：删除本轮 `dist/`、`src/hancode.egg-info/`、`.pytest_cache/`、`.mypy_cache/`、`.ruff_cache/`；无临时源码文件，无 commit。

@@ -34,8 +34,9 @@ class RunFailed(Message):
 
 
 class TaskSummaryChanged(Message):
-    def __init__(self, summary: TaskSummary) -> None:
+    def __init__(self, request_id: str, summary: TaskSummary) -> None:
         super().__init__()
+        self.request_id = request_id
         self.summary = summary
 
 

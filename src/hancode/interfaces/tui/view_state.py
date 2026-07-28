@@ -78,6 +78,43 @@ def reduce_run_finished(state: TuiViewState) -> TuiViewState:
 
 
 def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewState:
+    question, interaction_id, approval_id, approval_summary = _pending_fields(summary)
+    return replace(
+        state,
+        active_task_id=summary.task_id,
+        active_task=summary,
+        detail_kind=DetailKind.TASK,
+        detail=present_task(summary),
+        pending_question=question,
+        pending_interaction_id=interaction_id,
+        pending_approval_id=approval_id,
+        pending_approval_summary=approval_summary,
+    )
+
+
+def reduce_task_summary_changed(state: TuiViewState, summary: TaskSummary) -> TuiViewState:
+    """Project one persisted summary without changing the user's inspection view."""
+
+    question, interaction_id, approval_id, approval_summary = _pending_fields(summary)
+    tasks = tuple(
+        summary if item.task_id == summary.task_id else item for item in state.tasks
+    )
+    if not any(item.task_id == summary.task_id for item in tasks):
+        tasks = (*tasks, summary)
+    is_task_detail = state.detail_kind is DetailKind.TASK
+    return replace(
+        state,
+        tasks=tasks,
+        active_task=summary,
+        detail=present_task(summary) if is_task_detail else state.detail,
+        pending_question=question,
+        pending_interaction_id=interaction_id,
+        pending_approval_id=approval_id,
+        pending_approval_summary=approval_summary,
+    )
+
+
+def _pending_fields(summary: TaskSummary) -> tuple[str | None, str | None, str | None, str | None]:
     pending = summary.pending_interaction
     question = None
     interaction_id = None
@@ -92,16 +129,11 @@ def reduce_task_selected(state: TuiViewState, summary: TaskSummary) -> TuiViewSt
         approval_id = raw_id if isinstance(raw_id, str) else None
         raw_summary = approval.get("summary") or approval.get("tool_name")
         approval_summary = raw_summary if isinstance(raw_summary, str) else None
-    return replace(
-        state,
-        active_task_id=summary.task_id,
-        active_task=summary,
-        detail_kind=DetailKind.TASK,
-        detail=present_task(summary),
-        pending_question=question if isinstance(question, str) else None,
-        pending_interaction_id=(interaction_id if isinstance(interaction_id, str) else None),
-        pending_approval_id=approval_id,
-        pending_approval_summary=approval_summary,
+    return (
+        question if isinstance(question, str) else None,
+        interaction_id if isinstance(interaction_id, str) else None,
+        approval_id,
+        approval_summary,
     )
 
 
@@ -111,4 +143,5 @@ __all__ = [
     "reduce_trace_arrived",
     "reduce_run_finished",
     "reduce_task_selected",
+    "reduce_task_summary_changed",
 ]

@@ -1256,6 +1256,14 @@ Command Palette
 - TUI 渲染失败不得破坏 workspace 状态。
 - Headless CLI 必须能在无 Textual 环境下驱动 MockLLM 测试和 Demo。
 
+实时状态投影要求：
+
+- 每条 Trace 成功写入后，运行该任务的同一后台 Worker 可读取持久化 `TaskSummary`，并把完整摘要异步投递到 Textual 主线程。
+- TaskList、PhaseBar 和当前 Task Overview 只从该持久化摘要投影 status、phase、test/build、checkpoint、artifact、retry 与 HITL 摘要；ActivityLog 继续按 TraceEvent 逐条追加，TUI 不从事件自行推演业务状态。
+- 实时摘要必须受当前 Mutation request、`running_task_id` 与 active task 三重约束；旧 request、错误 task 或 Worker 终止后的迟到快照不得覆盖界面。
+- 用户正在查看 Diff/Event/Artifact 等 Inspection Detail 时，实时摘要不得抢占该 Detail；WAITING_INPUT/WAITING_APPROVAL 的聚焦与 Modal 仍由 Worker 终态流程触发。
+- 单次摘要读取或 UI observer 失败只能跳过该次状态刷新，不得改变 Trace 展示、AgentLoop 结果、TaskState/state.json schema 或 workspace；`OperationFinished` 的最终摘要仍负责恢复终态一致性。
+
 ### 9.5 测试框架：pytest
 
 HanCode 选择 pytest 作为测试框架。
