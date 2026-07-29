@@ -18,6 +18,9 @@ from typing import cast
 import pytest
 
 from hancode.core.models import Phase
+from hancode.providers.base import ProviderEvent
+from hancode.runtime.agent_loop import TraceAppender
+from hancode.runtime.engine import _TraceProviderEventSink
 from hancode.runtime.observation import ObservedTraceAppender, TraceObserver
 from hancode.storage.trace import TraceEvent
 
@@ -93,6 +96,59 @@ def _make_event(
         timestamp=datetime(2026, 7, 21, tzinfo=UTC),
         status=status,
     )
+
+
+def test_provider_event_sink_records_only_safe_mode_diagnostics() -> None:
+    class _ProviderRecordingAppender(_RecordingAppender):
+        def append(
+            self,
+            task_id: str,
+            *,
+            event_type: str,
+            phase: Phase,
+            status: str,
+            action: object | None = None,
+            observation: object | None = None,
+            error_summary: str | None = None,
+            state_transition: object | None = None,
+        ) -> TraceEvent:
+            event = super().append(
+                task_id,
+                event_type=event_type,
+                phase=phase,
+                status=status,
+                action=action,
+                observation=observation,
+                error_summary=error_summary,
+                state_transition=state_transition,
+            )
+            self.calls[-1]["observation"] = observation
+            return event
+
+    appender = _ProviderRecordingAppender()
+    sink = _TraceProviderEventSink(cast(TraceAppender, appender), "task-001")
+
+    sink.emit(
+        ProviderEvent(
+            kind="mode_fallback",
+            phase=Phase.SPEC,
+            from_mode="native_tools_strict",
+            to_mode="native_tools",
+            reason_code="unsupported_parameter",
+        )
+    )
+
+    assert appender.calls == [
+        {
+            "task_id": "task-001",
+            "event_type": "provider_mode_fallback",
+            "observation": {
+                "from_mode": "native_tools_strict",
+                "to_mode": "native_tools",
+                "reason_code": "unsupported_parameter",
+            },
+        }
+    ]
 
 
 def test_observer_receives_event_after_trace_persistence() -> None:

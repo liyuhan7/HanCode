@@ -6855,6 +6855,213 @@ S4-R2 Build       S4-R3 Test Report
 - 写工具说明何时使用、何时避免。
 - 结构化数组定义 `items`。
 
+---
+
+## S6：多模式 Structured Action Provider
+
+### 目标
+
+在不改变 AgentLoop、ActionParser、ToolRegistry 与 ToolPolicy 既有语义的前提下，扩展 OpenAI-compatible Provider 的输出协议：支持文本 JSON、JSON Schema 与原生 tool calling；严格模式必须由纯投影器将现有 Action Schema 转为 provider 可接受的子集；自动降级必须由可审计的确定性规则控制。
+
+### 全局约束
+
+- `ProviderError.protocol_retryable` 只描述协议层重试资格；HTTP/网络重试使用 provider 内部异常模型，二者不得混用。
+- AgentLoop 仅在 `parse_action()` 成功后清零连续协议失败计数；任何 provider 返回但未被解析为 Action 的响应仍计入协议失败。
+- `ToolSpec` 是 Action、JSON Schema 与原生工具定义的唯一业务真源；所有 schema 校验使用同一 Draft 2020-12 语义。
+- Strict projection 是无副作用的纯函数；只允许删除投影器新增的可空 `null`，不得删除模型原始提交的 `null`。
+- R0--R4 的默认模式保持 `json_object`；R5 完成后默认切换为 `auto`。
+- 不记录模型原文、API key、Authorization header 或 tool arguments 的敏感内容到 trace。
+
+### 依赖图
+
+`S6-R0 -> S6-R1 -> S6-R2 -> S6-R3 -> S6-R4 -> S6-R5`
+
+### S6-R0：任务契约与基线
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S5-R4 |
+| 可并行 | 不并行 |
+| 提交 | 不提交，等待用户统一审阅 |
+
+#### 范围
+
+- `docs/PLAN.md`
+- `docs/AGENT_LOG.md`
+
+#### 验收
+
+1. 为 R1--R5 写明依赖顺序、修改边界、行为验收与验证矩阵。
+2. 在未改代码的 `main@9be2e78470d74de00fbacb45f0af266f70daa549` 上取得可复核全量基线。
+3. 记录 S6 不改变的核心边界与风险分类。
+
+### S6-R1：统一 Action Schema 校验与 ToolSpec 审计
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S6-R0 |
+| 可并行 | 不并行 |
+
+#### 范围
+
+- `pyproject.toml`、锁文件
+- `src/hancode/core/actions.py`
+- `src/hancode/core/tool_specs.py`
+- `tests/test_actions.py`、`tests/test_tool_specs.py`（及新增专属测试）
+
+#### 验收
+
+1. 运行时 `ActionParser` 与 provider 入口使用同一 Draft 2020-12 validator，支持嵌套 object、array `items`、`enum`、`oneOf`、`additionalProperties` 与 nullable union。
+2. 非 provider schema 违规保持现有 `action_*` 错误语义；provider 响应 schema 违规统一映射为 `provider_invalid_response`。
+3. 审计并补齐 ToolSpec 中会阻碍统一校验的约束；不得放宽既有工具策略或把 prompt 当作校验。
+
+#### 实施记录
+
+- Red：新增 `record_review.requirements[].status="unknown-status"` 的公开 Action 测试，旧顶层校验错误接受该 Action。
+- Green：加入 `jsonschema` 运行时依赖，以 `Draft202012Validator` 统一校验工具与控制 Action 参数；删除旧的浅层手写匹配逻辑。
+- 审计：将原先隐含于手写代码的非空白约束显式写入 `path`、`query`、`run_tests.command`、`run_build.command` 与 `edit_file.old_string` 的 ToolSpec schema，避免统一校验放宽既有行为。
+- 验证（2026-07-29）：`tests/test_action_schema.py tests/test_action_parser.py tests/providers/test_action_schema.py tests/test_s4_review_remediation.py` 为 `87 passed`；目标 Ruff 通过；目标 MyPy 为 `Success: no issues found in 2 source files`；`git diff --check` 通过。
+
+### S6-R2：文本响应解析、协议重试与计数
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S6-R1 |
+| 可并行 | 不并行 |
+
+#### 范围
+
+- `src/hancode/providers/errors.py`
+- `src/hancode/providers/openai_compatible.py`
+- `src/hancode/runtime/agent_loop.py`
+- `tests/providers/test_openai_compatible.py`、`tests/test_provider_failure_loop.py`
+
+#### 验收
+
+1. `ProviderError` 显式提供默认 `False` 的 `protocol_retryable`；transport retry 由私有 transport 异常决定，不暴露为协议重试。
+2. 空内容、非法 JSON、非 object 与 Action schema 失败均为 `provider_invalid_response` 或 `provider_empty_response`，且可按协议预算回灌重试。
+3. 成功取得 provider 响应不清零计数；仅 `parse_action()` 成功清零。transport exhausted、refusal、content filter、length 等终态错误不重试。
+
+#### 实施记录
+
+- Red：`ProviderError(..., protocol_retryable=True)` 在旧模型中不被支持；旧 AgentLoop 在 `next_action()` 返回后即清零连续协议失败计数。
+- Green：`ProviderError` 改为默认关闭的 `protocol_retryable`；OpenAI-compatible adapter 用私有 `_TransportFailure` 管理 HTTP/网络的指数重试，耗尽后转换为不可协议重试的边界错误。
+- 解析：空 content 现在为 `provider_empty_response` 且可协议重试；非法 JSON、非 object 及其他不合规响应为可协议重试的 `provider_invalid_response`；响应大小限制与 transport 终态保持不可协议重试。
+- 计数：AgentLoop 改为只在 `parse_action()` 成功后清零，并直接消费 `ProviderError.protocol_retryable`，不再维护硬编码错误码白名单。
+- 验证（2026-07-29）：Provider failure loop 与 OpenAI-compatible adapter 测试 `38 passed`；目标 Ruff 通过；目标 MyPy 为 `Success: no issues found in 3 source files`；`git diff --check` 通过。
+
+### S6-R3：Strict JSON Schema 投影与配置迁移
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S6-R2 |
+| 可并行 | 不并行 |
+
+#### 范围
+
+- `src/hancode/core/config.py`
+- `src/hancode/providers/action_schema.py`
+- `src/hancode/providers/prompt_builder.py`
+- `src/hancode/providers/openai_compatible.py`
+- `tests/test_config.py`、`tests/providers/test_prompt_builder.py`、`tests/providers/test_openai_compatible.py`
+
+#### 验收
+
+1. 新配置 `provider_action_mode` 支持 `auto`、`native_tools_strict`、`native_tools`、`json_schema`、`json_object`；旧 `provider_response_mode` 仅作读取兼容别名，两者并存时 fail-closed。
+2. `StrictSchemaProjection` 对每个 object 设置 `additionalProperties: false` 与完整 required；原 optional 字段用可空 union 表达，并精确记录 `promoted_optional_paths` 与 `synthetic_nullable_paths`。
+3. 从 strict 响应恢复 canonical Action 时只删除“投影新增且值为 null”的字段，保留原生 null；无参工具在 reason 注入后不与 `maxProperties: 0` 冲突。
+4. 投影前后分别校验 canonical / strict schema，且 projection-normalization round trip 可复现。
+
+#### 实施记录
+
+- Red：`provider_action_mode` 被旧配置白名单拒绝。
+- Green：新增纯 `StrictSchemaProjection`，递归投影 object、array 和组合分支；投影前后执行 Draft 2020-12 schema 检查。归一化仅删除路径元数据标记为“投影新增可空”的 `null`，原 schema 自身允许的 `null` 保留。
+- 配置：新增 `provider_action_mode`（五种模式）；旧 `provider_response_mode` 仅单键读取兼容，双键并存返回 `config_invalid`；R3 默认仍为 `json_object`。
+- 集成：`json_schema` 请求发送 strict projection，响应先按 strict schema 校验、归一化，再验证 canonical schema；失败映射为可协议重试的 `provider_invalid_response`。
+- 验证（2026-07-29）：配置、Factory、Prompt、Action Schema、Provider 与 projection 回归 `152 passed`；目标 Ruff 通过；目标 MyPy 为 `Success: no issues found in 5 source files`；`git diff --check` 通过。
+
+### S6-R4：原生 Tool Calling 执行路径
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S6-R3 |
+| 可并行 | 不并行 |
+
+#### 范围
+
+- `src/hancode/providers/base.py`
+- `src/hancode/providers/openai_compatible.py`
+- `src/hancode/providers/factory.py`
+- `tests/providers/test_openai_compatible.py`、`tests/test_provider_factory.py`
+
+#### 验收
+
+1. Provider 接收由 ToolSpec 生成的 `ProviderToolDefinition`；原生 strict 请求发 `tools`、`tool_choice=required`、`parallel_tool_calls=false` 与 `strict=true`。
+2. non-strict 模式省略 `strict` 字段，不能发送 `false`；原生路径忽略 message content，只接受恰好一个 function tool call。
+3. refusal、`content_filter`、`length`、零或多个 tool calls、未知工具、非法 JSON arguments 均返回结构化且不可协议重试的 provider 错误。
+
+#### 实施记录
+
+- Red：`native_tools_strict` 仍走文本 content 解析，无法读取 `message.tool_calls`。
+- Green：从 ToolSpec-derived catalog 构造 `ProviderToolDefinition`；将 `reason` 注入 function parameters 并在 response 中拆回 Action 字段，无参数工具同步移除旧 `maxProperties: 0` 限制。
+- 请求：strict native 发送 `tools`、`tool_choice="required"`、`parallel_tool_calls=false` 和 `function.strict=true`；non-strict 显式省略 `strict` 与 `response_format`。
+- 响应：忽略 message content，严格接受一个 function call；refusal、content filter、length、零/多个调用、未知工具、非法 JSON 与参数校验失败都映射为不可协议重试的 ProviderError。
+- 验证（2026-07-29）：OpenAI-compatible Provider 回归 `33 passed`；目标 Ruff 通过；目标 MyPy 为 `Success: no issues found in 2 source files`；`git diff --check` 通过。
+
+### S6-R5：Auto 降级与 Provider Trace 事件
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依赖 | S6-R4 |
+| 可并行 | 不并行 |
+
+#### 范围
+
+- `src/hancode/providers/base.py`
+- `src/hancode/providers/openai_compatible.py`
+- `src/hancode/runtime/engine.py`
+- `src/hancode/core/config.py`
+- `tests/providers/test_openai_compatible.py`、`tests/test_provider_factory.py`（及新增 trace 测试）
+
+#### 验收
+
+1. `auto` 只依据精确的 `unsupported_parameter` / `unsupported_value` 及参数名执行一次同请求降级：strict → native、tools/tool_choice/parallel → json_schema、`response_format.type=json_schema` → json_object；未知响应 fail-closed。
+2. 自动降级不消耗 AgentLoop 协议预算或步骤预算；非能力错误不触发降级。
+3. Provider 层通过 `ProviderEventSink` 发出无敏感参数的 `provider_mode_selected`、`provider_mode_downgraded`、`provider_request_failed`；Engine 在构造 Provider 前完成 trace bridge 组装。
+4. R5 完成后把默认 `provider_action_mode` 切换到 `auto`，并覆盖从 strict 到 json_object 的完整降级链。
+
+#### 实现与验证（2026-07-29）
+
+- `auto` 从 `native_tools_strict` 开始，仅对精确的 capability 400 错误在一次 `next_action()` 内依次降级；未识别的参数、非 400 响应和 transport/protocol 错误均保持 fail-closed。
+- 新增 `ProviderEvent` / `ProviderEventSink`；Provider 只发出模式和错误码，Engine 在构造 adapter 前装配 best-effort trace bridge，不传递请求体、arguments 或凭据。
+- 默认 `provider_action_mode` 已切换到 `auto`；覆盖 strict→native、native→json_schema、json_schema→json_object、未知错误拒绝及 trace 安全字段。
+- 验证：相邻模块与 Trace 回归 `181 passed`；目标 Ruff `All checks passed!`；目标 MyPy `Success: no issues found in 13 source files`；最终全量 pytest `1364 passed, 17 skipped`；全仓 Ruff 通过、MyPy `99 source files` 无错误；`uv build --offline` 和 `hancode demo --provider mock` 成功；`git diff --check` 通过。验证后的 build、cache、临时目录与仓库内字节码已清理。
+
+### S6 验证矩阵
+
+- 每个 R 先新增一个公开行为测试并确认 RED，再做最小 GREEN；相邻 R 的回归测试必须保留。
+- R1--R5 分别运行相关 provider、Action、config、AgentLoop 测试；R5 运行全量 `uv run --no-sync pytest -q -p no:cacheprovider`、Ruff、MyPy、`uv build --offline`、Mock Demo 与 `git diff --check`。
+- 每个 R 完成后更新本计划和 `docs/AGENT_LOG.md`，清理 `.pytest_cache`、`.mypy_cache`、`.ruff_cache`、构建产物和临时目录。
+
+### S6 正式计划整改（2026-07-29，已完成）
+
+本段以《HanCode S6 结构化 Action 与原生 Tool Calling 正式实施计划》为验收优先级，覆盖上文 S6-R1--R5 中与正式契约冲突的叙述。当前工作直接在恢复后的未提交 `main` 工作区进行；用户已明确批准“不创建分支/worktree、不提交”的 Git 流程豁免，因此不生成提交 hash，且该豁免不降低技术验收要求。
+
+- R1/R2：新增 `provider_protocol_retries: int = 2`，只接受非负整数并由 Engine 注入 AgentLoop；decode、normalize、Schema 及 `parse_action()` 失败使用同一连续协议计数，只有完整合法 Action 才清零，transport 重试耗尽保持不可协议重试。
+- R1/R3：统一 Draft 2020-12 validator 输出稳定、脱敏的 `SchemaViolation(path, validator, message)`；文本模式 Schema 失败固定为 `provider_action_schema_invalid`，不得进入 Policy 或 Registry。
+- R3/R4：`StrictSchemaProjection` 的公开 provider schema 为 `provider_schema`，保留 optional promotion 与 synthetic-null 路径；`ProviderToolDefinition` 同时保留 `request_schema`、`original_args_schema` 与 projection。原生 Prompt 为 `hancode-tool-v1`，用户 payload 只含版本、request 与 task context；文本 Prompt 保持 `hancode-action-v2`。
+- R4：原生 Decoder 依序校验响应外壳、终止原因、refusal、tool-call 数量/type/name/arguments/schema，使用 `provider_tool_call_missing`、`provider_tool_call_count_invalid`、`provider_tool_name_invalid`、`provider_tool_arguments_invalid`、`provider_tool_schema_invalid`、`provider_refusal`、`provider_content_filtered`、`provider_output_truncated`；畸形或缺失调用可协议重试，未知工具/拒绝/过滤/截断终止且零 dispatch。
+- R5：Provider 缓存 effective mode，只向更宽松模式移动；fallback 仅依据精确 code/parameter，并在成功 emit `ProviderEvent(kind="mode_fallback", phase, from_mode, to_mode, reason_code)` 后缓存。Engine 写入无敏感值的 `provider_mode_fallback` Trace；sink 失败不吞掉，由 AgentLoop 既有运行边界转为 `inconsistent`。
+- 非目标不变：Responses API、其他 Provider、Streaming、parallel/multi tool call 均不在 S6 范围；原 ToolSpec 保持不可变。
+
+完成状态：S6 MVP 与 Enhanced 的正式计划验收项均已实现；Git 仅保留用户批准的“不提交”豁免。最终门禁：全量 pytest `1376 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 102 source files`；`uv build --offline` 与 `uv run --no-sync hancode demo --provider mock` 均成功。首次隔离 uv cache 的离线构建因缺少 `setuptools>=68` 失败，随后使用已有用户级离线 cache 成功，未访问网络。
+
 ## 直接修复测试命令审批与状态 Trace（2026-07-27）
 
 | 元信息 | 值 |

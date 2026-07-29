@@ -51,6 +51,7 @@ def test_decoder_rejects_plain_text() -> None:
     with pytest.raises(ProviderError) as exc_info:
         decode_response(response, max_response_bytes=1048576)
     assert exc_info.value.structured_error.error_code == "provider_invalid_response"
+    assert exc_info.value.protocol_retryable
 
 
 def test_decoder_rejects_json_array() -> None:
@@ -73,7 +74,8 @@ def test_decoder_rejects_empty_content() -> None:
     response = _make_response({"choices": [{"message": {"content": ""}}]})
     with pytest.raises(ProviderError) as exc_info:
         decode_response(response, max_response_bytes=1048576)
-    assert exc_info.value.structured_error.error_code == "provider_invalid_response"
+    assert exc_info.value.structured_error.error_code == "provider_empty_response"
+    assert exc_info.value.protocol_retryable
 
 
 def test_decoder_rejects_oversized_response() -> None:

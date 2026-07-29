@@ -19,6 +19,7 @@ from hancode.providers.prompt_contract import (
 __all__ = ["ChatMessage", "PromptBuilder", "ProviderPrompt", "build_prompt"]
 
 _PROMPT_VERSION = "hancode-action-v2"
+_NATIVE_PROMPT_VERSION = "hancode-tool-v1"
 _ACTION_SCHEMA_ID = "hancode.action.v2"
 
 
@@ -50,6 +51,7 @@ class PromptBuilder:
         tool_catalog: tuple[ToolDescriptor, ...],
         interaction_enabled: bool = False,
         embed_action_schema: bool = True,
+        native_tool_calling: bool = False,
     ) -> ProviderPrompt:
         phase = _require_phase(context)
         phase_catalog = _phase_tool_catalog(phase, tool_catalog)
@@ -57,6 +59,7 @@ class PromptBuilder:
         system_content = _build_system_message(
             phase,
             interaction_enabled=interaction_enabled,
+            native_tool_calling=native_tool_calling,
         )
         action_schema = build_action_schema(
             phase=phase,
@@ -70,10 +73,13 @@ class PromptBuilder:
             interaction_enabled=interaction_enabled,
             embed_action_schema=embed_action_schema,
             action_schema=action_schema,
+            native_tool_calling=native_tool_calling,
         )
 
         return ProviderPrompt(
-            prompt_version=_PROMPT_VERSION,
+            prompt_version=(
+                _NATIVE_PROMPT_VERSION if native_tool_calling else _PROMPT_VERSION
+            ),
             messages=(
                 ChatMessage(role="system", content=system_content),
                 ChatMessage(role="user", content=user_content),
@@ -96,7 +102,17 @@ def _build_system_message(
     phase: Phase,
     *,
     interaction_enabled: bool,
+    native_tool_calling: bool,
 ) -> str:
+    if native_tool_calling:
+        parts = [
+            "You are HanCode's next-action selector. Select exactly one Function Tool. "
+            "Do not output an Action JSON object, Markdown, or prose. Never select final.",
+        ]
+        if interaction_enabled:
+            parts.append(INTERACTION_CONTRACT)
+        parts.append(f"CURRENT PHASE\n\nPhase: {phase.value}\n{PHASE_CONTRACTS[phase]}")
+        return "\n\n".join(parts)
     parts = [BASE_SYSTEM_CONTRACT]
 
     if interaction_enabled:
@@ -119,16 +135,30 @@ def _build_user_message(
     interaction_enabled: bool,
     embed_action_schema: bool,
     action_schema: Mapping[str, object],
+    native_tool_calling: bool,
 ) -> str:
     safe_context = _sanitize_context(context)
 
     payload: dict[str, object] = {
-        "prompt_version": _PROMPT_VERSION,
+        "prompt_version": (
+            _NATIVE_PROMPT_VERSION if native_tool_calling else _PROMPT_VERSION
+        ),
         "request": {
             "kind": "select_next_action",
             "phase": phase.value,
         },
         "task_context": safe_context,
+    }
+
+    if native_tool_calling:
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    payload.update({
         "available_tools": [
             {
                 "name": tool.name,
@@ -141,7 +171,7 @@ def _build_user_message(
             "schema_id": _ACTION_SCHEMA_ID,
             "strict": not embed_action_schema,
         },
-    }
+    })
 
     if embed_action_schema:
         payload["output_contract"] = dict(action_schema)

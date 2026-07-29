@@ -91,7 +91,7 @@ def test_config_loads_defaults(tmp_path: Path) -> None:
         provider_max_retries=2,
         provider_max_output_tokens=2048,
         provider_max_response_bytes=1048576,
-        provider_response_mode="json_object",
+        provider_action_mode="auto",
     )
 
 
@@ -934,6 +934,42 @@ def test_config_rejects_negative_provider_retries(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize(("value", "expected"), [(0, 0), (1, 1), (2, 2)])
+def test_config_reads_provider_protocol_retries(
+    tmp_path: Path, value: int, expected: int
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["provider_protocol_retries"] = value
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    assert load_config(tmp_path).provider_protocol_retries == expected
+
+
+def test_config_rejects_negative_provider_protocol_retries(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["provider_protocol_retries"] = -1
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict()["error_code"] == "provider_protocol_retry_config_invalid"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -1087,7 +1123,7 @@ def _link_directory(link_path: Path, target_path: Path) -> None:
         )
 
 
-def test_provider_response_mode_defaults_to_json_object(tmp_path: Path) -> None:
+def test_provider_action_mode_defaults_to_auto(tmp_path: Path) -> None:
     init_project_workspace(
         tmp_path,
         project_id="course-project",
@@ -1097,11 +1133,30 @@ def test_provider_response_mode_defaults_to_json_object(tmp_path: Path) -> None:
 
     config = load_config(tmp_path)
 
-    assert config.provider_response_mode == "json_object"
+    assert config.provider_action_mode == "auto"
+
+
+def test_provider_action_mode_is_loaded_without_legacy_response_mode(
+    tmp_path: Path,
+) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = tmp_path / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["provider_action_mode"] = "json_schema"
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.provider_action_mode == "json_schema"
 
 
 @pytest.mark.parametrize("mode", ["json_object", "json_schema"])
-def test_supported_provider_response_modes_are_loaded(
+def test_legacy_provider_response_mode_is_loaded_as_action_mode(
     tmp_path: Path, mode: str
 ) -> None:
     init_project_workspace(
@@ -1123,10 +1178,10 @@ def test_supported_provider_response_modes_are_loaded(
 
     config = load_config(tmp_path)
 
-    assert config.provider_response_mode == mode
+    assert config.provider_action_mode == mode
 
 
-def test_invalid_provider_response_mode_is_rejected(tmp_path: Path) -> None:
+def test_invalid_legacy_provider_response_mode_is_rejected(tmp_path: Path) -> None:
     init_project_workspace(
         tmp_path,
         project_id="course-project",
@@ -1147,4 +1202,44 @@ def test_invalid_provider_response_mode_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(HanCodeError) as exc_info:
         load_config(tmp_path)
 
-    assert exc_info.value.structured_error.denied_rule == "config_provider_response_mode"
+    assert exc_info.value.structured_error.denied_rule == "config_provider_action_mode"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["auto", "native_tools_strict", "native_tools", "json_schema", "json_object"],
+)
+def test_supported_provider_action_modes_are_loaded(tmp_path: Path, mode: str) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = tmp_path / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["provider_action_mode"] = mode
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.provider_action_mode == mode
+
+
+def test_provider_action_and_legacy_response_mode_cannot_coexist(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = tmp_path / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["provider_action_mode"] = "json_schema"
+    project_data["provider_response_mode"] = "json_object"
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.structured_error.denied_rule == "config_provider_action_mode"

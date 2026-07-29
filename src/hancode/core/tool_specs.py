@@ -36,6 +36,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
                 "path": {
                     "type": "string",
                     "minLength": 1,
+                    "pattern": "\\S",
                     "description": (
                         "Clean project-relative file path without '.' or '..' segments."
                     ),
@@ -59,6 +60,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
                 "path": {
                     "type": "string",
                     "minLength": 1,
+                    "pattern": "\\S",
                     "description": (
                         "Optional project-relative directory. "
                         "Omit it to list from the project root."
@@ -82,7 +84,9 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         args_schema={
             "type": "object",
-            "properties": {"query": {"type": "string", "minLength": 1}},
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "pattern": "\\S"}
+            },
             "required": ["query"],
             "additionalProperties": False,
         },
@@ -102,7 +106,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         args_schema={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "minLength": 1},
+                "path": {"type": "string", "minLength": 1, "pattern": "\\S"},
                 "content": {"type": "string"},
             },
             "required": ["path", "content"],
@@ -122,8 +126,8 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         args_schema={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "minLength": 1},
-                "old_string": {"type": "string"},
+                "path": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "old_string": {"type": "string", "minLength": 1, "pattern": "\\S"},
                 "new_string": {"type": "string"},
             },
             "required": ["path", "old_string", "new_string"],
@@ -145,6 +149,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
                 "command": {
                     "type": "string",
                     "minLength": 1,
+                    "pattern": "\\S",
                     "description": (
                         "Explicit single-command argv input, such as "
                         "'python -m pytest -q', 'npm test', or 'make test'. "
@@ -173,7 +178,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
             "type": "object",
             "properties": {
                 "scope": {"type": "string", "enum": ["task", "latest"]},
-                "path": {"type": "string"},
+                "path": {"type": "string", "pattern": "\\S"},
             },
             "additionalProperties": False,
         },
@@ -188,6 +193,8 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
             "properties": {
                 "command": {
                     "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S",
                     "description": "Explicit build command to run (e.g. 'gcc hello.c -o hello'). "
                                    "When omitted the project-level build_command is used.",
                 },

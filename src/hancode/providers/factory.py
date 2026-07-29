@@ -5,7 +5,7 @@ from typing import cast
 
 from hancode.core.config import HanCodeConfig
 from hancode.core.errors import HanCodeError, StructuredError
-from hancode.providers.base import LLMClient
+from hancode.providers.base import LLMClient, ProviderEventSink
 from hancode.providers.mock import MockLLM
 from hancode.providers.openai_compatible import OpenAICompatibleProvider
 from hancode.providers.prompt_builder import PromptBuilder
@@ -19,6 +19,7 @@ def create_provider_adapter(
     credential: str | None = None,
     transport: ProviderTransport | None = None,
     sleeper: Sleeper | None = None,
+    event_sink: ProviderEventSink | None = None,
 ) -> LLMClient:
     """Create the provider adapter for the configured provider."""
     if config.llm_provider == "mock":
@@ -43,12 +44,13 @@ def create_provider_adapter(
             max_retries=config.provider_max_retries,
             max_output_tokens=config.provider_max_output_tokens,
             max_response_bytes=config.provider_max_response_bytes,
-            response_mode=config.provider_response_mode,
+            response_mode=config.provider_action_mode,
             prompt_builder=PromptBuilder(),
             transport=transport or HttpxProviderTransport(),
             sleeper=sleeper or cast(Sleeper, time.sleep),
             tool_catalog=build_default_tool_catalog(config),
             interaction_enabled=config.interaction_mode == "ask_user",
+            event_sink=event_sink,
         )
 
     raise HanCodeError(

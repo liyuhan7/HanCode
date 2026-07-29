@@ -2136,4 +2136,14 @@ P2 风险可作为后续改进：
 - 更复杂的 HITL 确认流程。
 - 只读 Git diff 展示。
 
+## S6 Provider Structured Action 正式契约（2026-07-29）
+
+真实 Provider 只在 `LLMClient -> ProviderAdapter -> AgentLoop` 边界产生候选 Action。所有候选值先经统一 Draft 2020-12 Schema 校验、再经 `parse_action()`，通过前不得进入 Policy、Approval 或 ToolRegistry。
+
+- 配置 `provider_protocol_retries` 默认 `2`，且只能为非负整数；它仅预算连续协议失败，不扣减业务 `retry_budget`。成功的 decode、normalization、Schema 与 `parse_action()` 全部完成后才清零。
+- 文本协议继续使用 `hancode-action-v2`；原生协议使用 `hancode-tool-v1`，由 API tool definition 承载工具目录与 Schema，用户 payload 只含版本、request 与 task context。
+- strict projection 必须完整记录 provider schema、optional promotion 与 synthetic nullable path；normalizer 只移除由 projection 新增且实际为 `null` 的字段，保留原 Schema 合法的 null。
+- 原生调用始终要求单个 Function Tool；缺失或畸形 tool call 是可重试协议失败，未知工具、refusal、content filter 与输出截断是终止错误。`final` 不属于任何 Provider 输出契约。
+- `auto` 仅接受精确 capability 结构化错误并逐级降级；每次降级只记录 `provider_mode_fallback` 的 phase、from/to mode 与 reason code，绝不记录 provider 原文、arguments 或凭据。Trace sink 失败必须让运行进入 `inconsistent`。
+
 

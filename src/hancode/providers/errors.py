@@ -8,17 +8,17 @@ __all__ = ["ProviderError"]
 
 
 class ProviderError(HanCodeError):
-    """Error raised by a provider adapter, classified by retryability."""
+    """Error raised by a provider adapter at the runtime boundary."""
 
     def __init__(
         self,
         structured_error: StructuredError,
         *,
-        retryable: bool,
+        protocol_retryable: bool = False,
     ) -> None:
         super().__init__(structured_error)
-        self._retryable = retryable
+        self._protocol_retryable = protocol_retryable
 
     @property
-    def retryable(self) -> bool:
-        return self._retryable
+    def protocol_retryable(self) -> bool:
+        return self._protocol_retryable

@@ -303,6 +303,25 @@ def test_user_payload_contains_prompt_version() -> None:
     assert payload["prompt_version"] == "hancode-action-v2"
 
 
+def test_native_tool_prompt_does_not_expose_action_json_contract() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+        native_tool_calling=True,
+    )
+
+    payload = json.loads(prompt.messages[1].content)
+
+    assert prompt.prompt_version == "hancode-tool-v1"
+    assert set(payload) == {"prompt_version", "request", "task_context"}
+    assert payload["prompt_version"] == "hancode-tool-v1"
+    assert "available_tools" not in prompt.messages[1].content
+    assert "args_schema" not in prompt.messages[1].content
+    assert "output_contract" not in prompt.messages[1].content
+    assert "response_contract" not in prompt.messages[1].content
+    assert "Function Tool" in prompt.messages[0].content
+
+
 def test_strict_mode_omits_embedded_output_contract() -> None:
     builder = PromptBuilder()
     prompt = builder.build(

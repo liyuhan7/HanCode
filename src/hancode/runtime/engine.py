@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import cast
 
 from hancode.core.config import load_config
-from hancode.providers.base import LLMClient
+from hancode.providers.base import LLMClient, ProviderEvent, ProviderEventSink
 from hancode.providers.factory import create_provider_adapter
 from hancode.policy.approval_policy import ApprovalPolicy
 from hancode.policy.tool_policy import ToolPolicy
@@ -31,6 +31,28 @@ from hancode.storage.workspace import load_project_metadata
 from hancode.tooling.factory import build_default_tool_registry
 
 
+
+class _TraceProviderEventSink:
+    """Fail-closed bridge from provider fallback diagnostics to the task trace."""
+
+    def __init__(self, trace_appender: TraceAppender, task_id: str) -> None:
+        self._trace_appender = trace_appender
+        self._task_id = task_id
+
+    def emit(self, event: ProviderEvent) -> None:
+        self._trace_appender.append(
+            self._task_id,
+            event_type="provider_mode_fallback",
+            phase=event.phase,
+            status="succeeded",
+            observation={
+                "from_mode": event.from_mode,
+                "to_mode": event.to_mode,
+                "reason_code": event.reason_code,
+            },
+        )
+
+
 def create_agent_loop(
     project_root: Path,
     task_id: str,
@@ -45,7 +67,6 @@ def create_agent_loop(
     """Build the standard filesystem-backed AgentLoop with injectable seams."""
     config = load_config(project_root, task_id)
     ports = FilesystemAgentLoopPorts.from_project_root(project_root)
-    llm = provider if provider is not None else create_provider_adapter(config)
     registry = (
         tool_registry
         if tool_registry is not None
@@ -70,6 +91,13 @@ def create_agent_loop(
         project_id = str(metadata.get("project_id", "unknown"))
     except Exception:
         project_id = "unknown"
+    llm = provider if provider is not None else create_provider_adapter(
+        config,
+        event_sink=cast(
+            ProviderEventSink,
+            _TraceProviderEventSink(selected_trace_appender, task_id),
+        ),
+    )
     approval_policy: ApprovalPolicyPort | None = cast(
         ApprovalPolicyPort, ApprovalPolicy(config)
     )
@@ -94,6 +122,7 @@ def create_agent_loop(
         rollback_manager=ports.rollback_manager,
         mutation_guard=selected_mutation_guard,
         max_steps=selected_max_steps,
+        provider_protocol_retries=config.provider_protocol_retries,
         approval_policy=approval_policy,
         approval_store=approval_store,
         approval_request_builder=approval_request_builder,

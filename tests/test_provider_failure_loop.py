@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Iterator, Mapping, cast
 
+import pytest
+
 from hancode.core.errors import StructuredError
 from hancode.core.models import Phase, TaskStatus
 from hancode.providers.errors import ProviderError
@@ -44,7 +46,7 @@ class _SuccessLLM:
                     denied_rule="provider_response_valid",
                     suggested_fix="Check provider.",
                 ),
-                retryable=False,
+                protocol_retryable=True,
             )
         self.called = True
         return {
@@ -72,6 +74,24 @@ class _RetryThenFinishLLM:
             "args": {},
             "reason": "Phase complete.",
         }
+
+
+class _ProtocolErrorThenParseErrorLLM:
+    def __init__(self, error: ProviderError) -> None:
+        self._error = error
+        self.calls = 0
+
+    def next_action(self, context: dict[str, object]) -> dict[str, object]:
+        self.calls += 1
+        if self.calls == 2:
+            return {
+                "type": "tool_call",
+                "phase": context.get("phase", "spec"),
+                "tool_name": None,
+                "args": {},
+                "reason": None,
+            }
+        raise self._error
 
 
 class _ContextBuilder:
@@ -223,6 +243,7 @@ def _make_loop(
     state: TaskState | None = None,
     trace: _RecordingTraceAppender | None = None,
     max_steps: int = 5,
+    provider_protocol_retries: int = 2,
 ) -> AgentLoop:
     state_store = _MemoryStateStore(state or _state())
     return AgentLoop(
@@ -236,6 +257,7 @@ def _make_loop(
         checkpoint_manager=cast(CheckpointManager, _NoopCheckpointManager()),
         rollback_manager=_NoopRollbackManager(),  # type: ignore[arg-type]
         max_steps=max_steps,
+        provider_protocol_retries=provider_protocol_retries,
         mutation_guard=_AllowMutationGuard(),  # type: ignore[arg-type]
     )
 
@@ -249,8 +271,22 @@ def _network_error() -> ProviderError:
             denied_rule="provider_available",
             suggested_fix="Check provider configuration and retry.",
         ),
-        retryable=True,
     )
+
+
+def test_provider_error_protocol_retry_is_opt_in() -> None:
+    error = ProviderError(
+        StructuredError(
+            error_code="provider_invalid_response",
+            message="Provider response is invalid.",
+            phase="spec",
+            denied_rule="provider_response_valid",
+            suggested_fix="Retry the provider request.",
+        ),
+        protocol_retryable=True,
+    )
+
+    assert error.protocol_retryable is True
 
 
 def test_provider_error_blocks_task() -> None:
@@ -303,7 +339,6 @@ def test_provider_error_trace_does_not_leak_secret() -> None:
             denied_rule="provider_available",
             suggested_fix="Check credential.",
         ),
-        retryable=False,
     )
     trace = _RecordingTraceAppender()
     loop = _make_loop(_ProviderErrorLLM(error), trace=trace)
@@ -342,7 +377,7 @@ def test_retryable_empty_provider_response_is_retried_before_blocking() -> None:
             denied_rule="provider_response_valid",
             suggested_fix="Retry the provider request.",
         ),
-        retryable=False,
+        protocol_retryable=True,
     )
     provider = _RetryThenFinishLLM(error)
     loop = _make_loop(provider, max_steps=3)
@@ -352,3 +387,54 @@ def test_retryable_empty_provider_response_is_retried_before_blocking() -> None:
     assert provider.calls == 3
     assert result.status is TaskStatus.BLOCKED
     assert result.final_state.status is TaskStatus.BLOCKED
+
+
+def test_parse_failure_does_not_reset_protocol_failure_count() -> None:
+    error = ProviderError(
+        StructuredError(
+            error_code="provider_invalid_response",
+            message="Provider response is invalid.",
+            phase="spec",
+            denied_rule="provider_response_valid",
+            suggested_fix="Retry the provider request.",
+        ),
+        protocol_retryable=True,
+    )
+    provider = _ProtocolErrorThenParseErrorLLM(error)
+    loop = _make_loop(provider, max_steps=4)
+
+    result = loop.run("task-001")
+
+    assert provider.calls == 3
+    assert result.error is not None
+    assert result.error.error_code == "provider_invalid_response"
+
+
+@pytest.mark.parametrize(
+    ("provider_protocol_retries", "expected_calls"),
+    [(0, 1), (1, 2), (2, 3)],
+)
+def test_protocol_retries_are_configurable(
+    provider_protocol_retries: int, expected_calls: int
+) -> None:
+    error = ProviderError(
+        StructuredError(
+            error_code="provider_invalid_response",
+            message="Provider response is invalid.",
+            phase="spec",
+            denied_rule="provider_response_valid",
+            suggested_fix="Retry the provider request.",
+        ),
+        protocol_retryable=True,
+    )
+    provider = _ProviderErrorLLM(error)
+    loop = _make_loop(
+        provider,
+        max_steps=5,
+        provider_protocol_retries=provider_protocol_retries,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.steps == expected_calls

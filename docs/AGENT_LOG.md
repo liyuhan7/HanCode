@@ -2018,6 +2018,51 @@
 
 ### 修改内容
 
+### 2026-07-28 — S6-R0 — 多模式 Structured Action Provider 任务契约
+
+- 范围：仅登记 S6-R0--R5 任务卡和验证边界；不修改运行时代码、provider 行为或配置默认值。
+- 决策：把 transport retry 与 protocol retry 分离；Strict JSON Schema 通过带路径元数据的纯投影/归一化处理；自动降级限定为精确 capability 错误且不消耗 AgentLoop 预算。
+- 基线：在未改代码的 `main@9be2e78470d74de00fbacb45f0af266f70daa549` 执行全量 `uv run --no-sync pytest -q -p no:cacheprovider`，结果为 `1341 passed, 17 skipped`（80.52s）。
+- 后续：从 S6-R1 开始，以单个 red→green 切片接入统一 Draft 2020-12 schema 校验，并审计 ToolSpec 约束。
+
+### 2026-07-29 — S6-R1 — 统一 Action Schema 校验与 ToolSpec 审计
+
+- 范围：`pyproject.toml`、`uv.lock`、`core/actions.py`、`core/tool_specs.py` 与 Action schema 回归测试；不修改 provider transport、AgentLoop 重试或配置模式。
+- Red：`record_review.requirements[].status="unknown-status"` 在旧浅层校验下被错误接受。
+- 修复：新增 `jsonschema`，用 `Draft202012Validator` 统一校验 ToolSpec 与控制 Action 参数；保留原有 `invalid_action_args` 外部错误契约。将路径、查询、测试/构建命令和 `edit_file.old_string` 的非空白语义显式写入 ToolSpec，防止迁移放宽既有规则。
+- Green：Action、Provider schema 与 S4 ToolSpec 回归共 `87 passed`；Ruff 通过；MyPy（2 个源文件）`Success: no issues found`；`git diff --check` 通过。
+- 后续：S6-R2 将处理 provider 文本响应的协议错误分类、重试资格与 AgentLoop 连续失败计数；本任务未改动这些行为。
+
+### 2026-07-29 — S6-R2 — 文本响应解析、协议重试与计数
+
+- 范围：`providers/errors.py`、`providers/openai_compatible.py`、`runtime/agent_loop.py` 与 Provider 回归测试；不实现 strict projection、原生 tool calling、auto 降级或 provider trace sink。
+- Red：`ProviderError` 没有默认关闭的协议重试字段；AgentLoop 在 provider 成功返回 raw payload 后立即重置连续协议失败计数，解析失败会错误打断失败序列。
+- 修复：公开边界仅保留 `protocol_retryable`；HTTP/网络重试封装为 adapter 私有 `_TransportFailure`，重试耗尽后统一转换为不可协议重试的 ProviderError。空内容映射为可协议重试的 `provider_empty_response`，非法 JSON/非对象映射为可协议重试的 `provider_invalid_response`。AgentLoop 只在 `parse_action()` 成功后清零，并直接读取该协议字段。
+- Green：Provider failure loop 与 OpenAI-compatible adapter 回归 `38 passed`；Ruff 通过；MyPy（3 个源文件）`Success: no issues found`；`git diff --check` 通过。
+- 后续：S6-R3 将引入 Strict JSON Schema 投影与 `provider_action_mode` 迁移；本任务未改变请求格式或默认 provider 模式。
+
+### 2026-07-29 — S6-R3 — Strict JSON Schema 投影与配置迁移
+
+- 范围：配置迁移、Strict Schema 纯投影、`json_schema` 请求/响应接线与对应测试；不实现原生 tool calls 或 auto 降级。
+- 修复：`provider_action_mode` 支持 `auto`、`native_tools_strict`、`native_tools`、`json_schema`、`json_object`；旧 `provider_response_mode` 只读兼容，双键 fail-closed。新增投影器，以路径元数据区分模型原生 null 与为 strict 约束补入的 null，且不修改 canonical schema。
+- Green：相关回归 `152 passed`；Ruff 通过；MyPy（5 个源文件）`Success: no issues found`；`git diff --check` 通过。
+- 后续：S6-R4 将新增 native tool calling 发送与 response 解析；默认模式仍维持 `json_object`。
+
+### 2026-07-29 — S6-R4 — 原生 Tool Calling 执行路径
+
+- 范围：Provider 工具定义、原生请求与单调用响应解析；不实现 auto 降级或 provider trace sink。
+- 修复：原生 function parameters 由 ToolSpec-derived catalog 构造，并携带可拆回 Action 的 `reason`；strict 请求使用 strict 投影，non-strict 省略 strict 字段。响应仅接受一个 function call，拒绝/refusal/截断/过滤/未知工具/非法参数均为不可协议重试终态。
+- Green：OpenAI-compatible Provider 回归 `33 passed`；Ruff 通过；MyPy（2 个源文件）`Success: no issues found`；`git diff --check` 通过。
+- 后续：S6-R5 将实现保守 auto capability 降级、provider 事件与默认模式切换。
+
+### 2026-07-29 — S6-R5 — Auto 降级与 Provider Trace 事件
+
+- 范围：仅实现 Provider 内一次请求的保守 capability 降级、无敏感参数的 provider 事件以及 Engine trace bridge；不改变 Action/ToolSpec 业务语义，也不接入真实网络或凭据。
+- 修复：默认模式切换为 `auto`，从 `native_tools_strict` 出发；只对精确的 `unsupported_parameter` / `unsupported_value` 和已列出的参数路径按 strict→native→json_schema→json_object 降级。未知参数、非 400、transport 和 protocol 错误均失败关闭，且不会重入 AgentLoop。
+- 可审计性：新增 `ProviderEvent` / `ProviderEventSink`；事件只含当前/下一模式和错误码。Engine 在创建 provider 前装配 best-effort Trace sink，写入失败不改变主执行路径。
+- Green：Provider、配置、Action Schema、prompt、failure-loop 与 trace 回归 `181 passed`；Ruff `All checks passed!`；MyPy（13 个源文件）`Success: no issues found`；`git diff --check` 通过。
+- 最终验证：全量 `uv run --no-sync pytest -q -p no:cacheprovider` 为 `1364 passed, 17 skipped`；全仓 Ruff 通过；MyPy `99 source files` 无错误；`uv build --offline` 成功生成 sdist/wheel；`uv run --no-sync hancode demo --provider mock` 成功完成。验证后的 build、cache、pytest 临时目录与仓库内 `.pyc`/`__pycache__` 已清理。
+
 - 移除 LLM 可见的 `final` Action。
 - 新增统一 PhaseGate。
 - Prompt 增加 Workspace 不可信边界。
@@ -2055,3 +2100,12 @@
 - Green：真实 `HanCodeTuiApp + TaskService +` 阻塞 Fake Provider 的端到端测试在 Worker 未结束、已进入 PLAN 时确认 Task 为 `running`、TaskList 标签、PhaseBar 和 ActivityLog 都已更新；另覆盖 test/build/checkpoint/artifact/retry/HITL 摘要、旧 request、错误 task、Worker 结束后迟到消息、摘要读取失败和 UI observer 失败。最终新增相关测试 `21 passed`；TUI 范围回归 `44 passed`。
 - 完整验证：全量 pytest `1340 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 98 source files`；`uv build --offline` 成功；`uv run --no-sync hancode demo --provider mock` 返回 `status=completed`；`git diff --check` 通过。首次使用空隔离 uv cache 的 `uv build --offline` 因缓存无 `setuptools>=68` 失败，改用既有用户级缓存后构建成功。
 - 清理：删除本轮 `dist/`、`src/hancode.egg-info/`、`.pytest_cache/`、`.mypy_cache/`、`.ruff_cache/`；无临时源码文件，无 commit。
+
+### 2026-07-29 — S6 正式计划契约整改（已完成）
+
+- 审批发现并整改七类缺口：配置化协议重试、统一脱敏 SchemaViolation、投影公开字段、原生 Prompt 分流、原生细分错误码、跨调用 effective mode、fail-closed fallback Trace。
+- Git：用户明确批准在当前恢复后的未提交 main 工作区完成，不建分支/worktree、不提交；这是一项流程豁免，技术验收仍按正式计划执行。
+- Red：新增配置 0/1/2 次重试、解析失败计数、native payload 隔离、SchemaViolation 稳定脱敏、native error retryability、Auto 缓存与 sink 失败测试；先后暴露硬编码协议次数、Prompt 泄露和旧事件模型。
+- Green：Engine 注入 `provider_protocol_retries`；Schema/Action/Provider 共用 Draft 2020-12 validator；Native decoder 使用分级错误码；Provider fallback 事件只持久化模式和 reason code，sink 异常交给 AgentLoop 一致性边界。
+- 验证：聚焦回归为 `172 passed`；全量 pytest `1376 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 102 source files`；离线 build 与 Mock Demo 成功。隔离 uv cache 缺少 `setuptools>=68` 时 build 未进入构建，切回已有用户级离线 cache 后成功；未访问网络。
+- 状态：S6 MVP 与 Enhanced 均已完成；提交 hash 为“用户批准不提交”。

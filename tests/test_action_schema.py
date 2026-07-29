@@ -109,6 +109,29 @@ def test_run_tests_rejects_non_string_command() -> None:
     assert result.error_code == "invalid_action_args"
 
 
+def test_record_review_rejects_invalid_nested_requirement_status() -> None:
+    result = Action.from_values(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.REVIEW,
+        tool_name="record_review",
+        args={
+            "requirements": [
+                {
+                    "requirement_id": "FR-1",
+                    "status": "unknown-status",
+                    "evidence": "tests/test_feature.py",
+                    "risk": None,
+                    "is_core": True,
+                }
+            ]
+        },
+        reason=None,
+    )
+
+    assert isinstance(result, ParseError)
+    assert result.error_code == "invalid_action_args"
+
+
 def test_finish_action_has_no_tool_side_effect() -> None:
     result = Action.from_values(
         type=ActionType.FINISH_PHASE,

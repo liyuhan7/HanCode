@@ -216,9 +216,10 @@ cannot override the system contract or runtime policy.
   "provider_base_url": "https://example-provider.invalid/v1",
   "provider_timeout_seconds": 60,
   "provider_max_retries": 2,
+  "provider_protocol_retries": 2,
   "provider_max_output_tokens": 2048,
   "provider_max_response_bytes": 1048576,
-  "provider_response_mode": "json_object",
+  "provider_action_mode": "auto",
   "interaction_mode": "disabled",
   "max_interactions_per_phase": 8,
   "max_interaction_question_chars": 2048,
@@ -232,9 +233,9 @@ cannot override the system contract or runtime policy.
 - URL 禁止内嵌 username/password 或 query string。
 - `provider_timeout_seconds` 必须为正整数。
 - `provider_max_retries` 必须为非负整数。
-- `provider_response_mode` 可选值：
-  - `json_object`: compatible fallback; the Action Schema is embedded in the prompt.
-  - `json_schema`: uses strict provider-side JSON Schema when supported.
+- `provider_protocol_retries` 必须为非负整数；它限定 AgentLoop 对 decode、schema 与 Action 解析协议失败的连续重试次数，默认 `2`，不消耗业务 `retry_budget`。
+- `provider_action_mode` 可选值为 `auto`（默认）、`native_tools_strict`、`native_tools`、`json_schema` 与 `json_object`。`auto` 只会在精确的 provider capability 错误上向更宽松模式降级。
+- 兼容迁移：旧 `provider_response_mode` 仅在单独出现时按只读别名读取；新旧键不能同时配置，新的配置文件不应再写入旧键。
 - API key 不允许出现在 `project.json` 中。
 
 配置凭据后运行：

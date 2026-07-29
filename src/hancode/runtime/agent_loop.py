@@ -351,6 +351,7 @@ class AgentLoop:
         checkpoint_manager: CheckpointManager,
         rollback_manager: RollbackManager,
         max_steps: int,
+        provider_protocol_retries: int = 2,
         mutation_guard: MutationGuard | None = None,
         approval_policy: ApprovalPolicyPort | None = None,
         approval_store: ApprovalStore | None = None,
@@ -361,6 +362,12 @@ class AgentLoop:
     ) -> None:
         if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps <= 0:
             raise ValueError("max_steps must be positive")
+        if (
+            not isinstance(provider_protocol_retries, int)
+            or isinstance(provider_protocol_retries, bool)
+            or provider_protocol_retries < 0
+        ):
+            raise ValueError("provider_protocol_retries must be a non-negative integer")
         self._llm = llm
         self._context_builder = context_builder
         self._policy = policy
@@ -372,6 +379,7 @@ class AgentLoop:
         self._rollback_manager = rollback_manager
         self._mutation_guard = mutation_guard or _FailClosedMutationGuard()
         self._max_steps = max_steps
+        self._provider_protocol_retries = provider_protocol_retries
         self._approval_policy = approval_policy
         self._approval_store = approval_store
         self._approval_request_builder = approval_request_builder
@@ -529,7 +537,6 @@ class AgentLoop:
         pending_risks: list[Risk] = []
         steps_completed = 0
         consecutive_provider_failures = 0
-        max_provider_response_retries = 2
 
         def _result(
             status: TaskStatus,
@@ -878,7 +885,6 @@ class AgentLoop:
                 )
             try:
                 raw_action = self._llm.next_action(context)
-                consecutive_provider_failures = 0
             except MockLLMExhausted as exc:
                 state = self._block(task_id, state)
                 error = last_recoverable_error or StructuredError(
@@ -908,14 +914,10 @@ class AgentLoop:
                     },
                     error_summary=redact_text(exc.structured_error.message),
                 )
-                retryable = exc.structured_error.error_code in {
-                    "provider_invalid_response",
-                    "provider_empty_response",
-                }
                 if (
                     trace_error is None
-                    and retryable
-                    and consecutive_provider_failures < max_provider_response_retries
+                    and exc.protocol_retryable
+                    and consecutive_provider_failures < self._provider_protocol_retries
                 ):
                     consecutive_provider_failures += 1
                     last_recoverable_error = exc.structured_error
@@ -972,6 +974,17 @@ class AgentLoop:
                         state,
                         risks=(_trace_failure_risk(trace_error),),
                     )
+                if consecutive_provider_failures >= self._provider_protocol_retries:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        parse_error,
+                        state,
+                    )
+                consecutive_provider_failures += 1
                 observation, feedback_error = self._build_feedback(
                     lambda: self._feedback_builder.from_parse_error(action), routing.phase
                 )
@@ -986,6 +999,8 @@ class AgentLoop:
                         state,
                     )
                 continue
+
+            consecutive_provider_failures = 0
 
             decision = self._policy.evaluate(
                 action=action,

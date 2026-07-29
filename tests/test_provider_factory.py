@@ -81,12 +81,12 @@ def test_provider_factory_creates_openai_compatible_with_credential(
     assert isinstance(provider, OpenAICompatibleProvider)
 
 
-def test_factory_passes_provider_response_mode(
+def test_factory_passes_provider_action_mode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     config = _make_config("openai_compatible", tmp_path)
-    config = _make_config_with_response_mode(tmp_path, "json_schema")
+    config = _make_config_with_action_mode(tmp_path, "json_schema")
     captured: dict[str, object] = {}
 
     class StubProvider:
@@ -103,13 +103,13 @@ def test_factory_passes_provider_response_mode(
     assert captured["response_mode"] == "json_schema"
 
 
-def _make_config_with_response_mode(
-    tmp_path: Path, response_mode: str
+def _make_config_with_action_mode(
+    tmp_path: Path, action_mode: str
 ) -> HanCodeConfig:
     config = _make_config("openai_compatible", tmp_path)
     from dataclasses import replace
 
-    return replace(config, provider_response_mode=response_mode)  # type: ignore[arg-type]
+    return replace(config, provider_action_mode=action_mode)  # type: ignore[arg-type]
 
 
 def test_provider_factory_raises_structured_error_for_anthropic(

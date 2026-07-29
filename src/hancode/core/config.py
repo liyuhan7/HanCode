@@ -64,6 +64,7 @@ _OPTIONAL_STRING_FIELDS = (
     "provider_base_url",
     "interaction_mode",
     "approval_mode",
+    "provider_action_mode",
     "provider_response_mode",
 )
 _INTEGER_FIELDS = (
@@ -75,6 +76,7 @@ _INTEGER_FIELDS = (
     "max_trace_events",
     "provider_timeout_seconds",
     "provider_max_retries",
+    "provider_protocol_retries",
     "provider_max_output_tokens",
     "provider_max_response_bytes",
     "max_interactions_per_phase",
@@ -94,6 +96,7 @@ _PROVIDER_INTEGER_FIELDS = frozenset(
     {
         "provider_timeout_seconds",
         "provider_max_retries",
+        "provider_protocol_retries",
         "provider_max_output_tokens",
         "provider_max_response_bytes",
     }
@@ -109,8 +112,14 @@ _SUPPORTED_LLM_PROVIDERS = frozenset(
 )
 _SUPPORTED_CREDENTIAL_SOURCES = frozenset({"keyring", "env", "dotenv"})
 _SUPPORTED_INTERACTION_MODES = frozenset({"disabled", "ask_user"})
-_SUPPORTED_PROVIDER_RESPONSE_MODES = frozenset(
-    {"json_object", "json_schema"}
+_SUPPORTED_PROVIDER_ACTION_MODES = frozenset(
+    {
+        "auto",
+        "native_tools_strict",
+        "native_tools",
+        "json_schema",
+        "json_object",
+    }
 )
 _SUPPORTED_APPROVAL_MODES = frozenset({"disabled", "first_source_write", "all_source_writes"})
 _REMOTE_LLM_PROVIDERS = frozenset({"openai_compatible", "anthropic"})
@@ -150,6 +159,7 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "provider_base_url",
         "provider_timeout_seconds",
         "provider_max_retries",
+        "provider_protocol_retries",
         "provider_max_output_tokens",
         "provider_max_response_bytes",
         "interaction_mode",
@@ -167,6 +177,7 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "max_diff_chars",
         "max_diff_file_bytes",
         "diff_context_lines",
+        "provider_action_mode",
         "provider_response_mode",
     }
 )
@@ -195,6 +206,7 @@ class HanCodeConfig:
     provider_base_url: str | None = None
     provider_timeout_seconds: int = 60
     provider_max_retries: int = 2
+    provider_protocol_retries: int = 2
     provider_max_output_tokens: int = 2048
     provider_max_response_bytes: int = 1048576
     interaction_mode: Literal["disabled", "ask_user"] = "disabled"
@@ -212,10 +224,13 @@ class HanCodeConfig:
     max_diff_chars: int = 30_000
     max_diff_file_bytes: int = 524_288
     diff_context_lines: int = 3
-    provider_response_mode: Literal[
+    provider_action_mode: Literal[
+        "auto",
+        "native_tools_strict",
+        "native_tools",
         "json_object",
         "json_schema",
-    ] = "json_object"
+    ] = "auto"
 
 
 def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig:
@@ -232,6 +247,7 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
             )
         )
     project_data = _read_project_config(project_file)
+    provider_action_mode = _read_provider_action_mode(project_data)
     task_root = task_path(resolved_project_root, task_id) if task_id is not None else None
     writable_root_values = cast(
         list[str], project_data.get("writable_roots", ["src", "tests"])
@@ -273,6 +289,9 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         ),
         provider_max_retries=cast(
             int, project_data.get("provider_max_retries", 2)
+        ),
+        provider_protocol_retries=cast(
+            int, project_data.get("provider_protocol_retries", 2)
         ),
         provider_max_output_tokens=cast(
             int, project_data.get("provider_max_output_tokens", 2048)
@@ -327,9 +346,15 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
         diff_context_lines=cast(
             int, project_data.get("diff_context_lines", 3)
         ),
-        provider_response_mode=cast(
-            Literal["json_object", "json_schema"],
-            project_data.get("provider_response_mode", "json_object"),
+        provider_action_mode=cast(
+            Literal[
+                "auto",
+                "native_tools_strict",
+                "native_tools",
+                "json_object",
+                "json_schema",
+            ],
+            provider_action_mode,
         ),
     )
     _validate_interaction_config(config)
@@ -386,21 +411,46 @@ def _validate_approval_config(config: HanCodeConfig) -> None:
 
 
 def _validate_provider_config(config: HanCodeConfig) -> None:
-    if config.provider_response_mode not in _SUPPORTED_PROVIDER_RESPONSE_MODES:
+    if config.provider_action_mode not in _SUPPORTED_PROVIDER_ACTION_MODES:
         raise HanCodeError(
             StructuredError(
                 error_code="config_invalid",
                 message=(
-                    "Unsupported provider_response_mode: "
-                    f"{config.provider_response_mode!r}."
+                    "Unsupported provider_action_mode: "
+                    f"{config.provider_action_mode!r}."
                 ),
                 phase="spec",
-                denied_rule="config_provider_response_mode",
+                denied_rule="config_provider_action_mode",
                 suggested_fix=(
-                    "Use json_object or json_schema."
+                    "Use auto, native_tools_strict, native_tools, json_schema, or json_object."
                 ),
             )
         )
+
+
+def _read_provider_action_mode(project_data: dict[str, object]) -> object:
+    has_action_mode = "provider_action_mode" in project_data
+    has_response_mode = "provider_response_mode" in project_data
+    if has_action_mode and has_response_mode:
+        raise HanCodeError(
+            StructuredError(
+                error_code="config_invalid",
+                message=(
+                    "provider_action_mode and provider_response_mode "
+                    "cannot be configured together."
+                ),
+                phase="spec",
+                denied_rule="config_provider_action_mode",
+                suggested_fix=(
+                    "Remove provider_response_mode and use provider_action_mode only."
+                ),
+            )
+        )
+    if has_action_mode:
+        return project_data["provider_action_mode"]
+    if has_response_mode:
+        return project_data["provider_response_mode"]
+    return "auto"
 
 
 def _read_project_config(project_file: Path) -> dict[str, object]:
@@ -555,6 +605,11 @@ def _validate_provider_connection_fields(
         if retries < 0:
             raise _provider_retry_config_invalid_error()
 
+    if "provider_protocol_retries" in project_data:
+        retries = cast(int, project_data["provider_protocol_retries"])
+        if retries < 0:
+            raise _provider_protocol_retry_config_invalid_error()
+
     if "provider_max_output_tokens" in project_data:
         tokens = cast(int, project_data["provider_max_output_tokens"])
         if tokens <= 0:
@@ -637,6 +692,18 @@ def _provider_retry_config_invalid_error() -> HanCodeError:
             phase="spec",
             denied_rule="valid_provider_config_required",
             suggested_fix="Set provider_max_retries to a non-negative integer.",
+        )
+    )
+
+
+def _provider_protocol_retry_config_invalid_error() -> HanCodeError:
+    return HanCodeError(
+        StructuredError(
+            error_code="provider_protocol_retry_config_invalid",
+            message="Provider protocol retry count must be a non-negative integer.",
+            phase="spec",
+            denied_rule="valid_provider_config_required",
+            suggested_fix="Set provider_protocol_retries to a non-negative integer.",
         )
     )
 
