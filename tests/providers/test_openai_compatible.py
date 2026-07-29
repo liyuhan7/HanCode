@@ -46,7 +46,12 @@ def _make_catalog() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             name="read_file",
             description="Read a file.",
-            args_schema={"type": "object"},
+            args_schema={
+                "type": "object",
+                "required": ["path"],
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            },
         ),
     )
 
@@ -87,6 +92,7 @@ def _make_provider(
     transport: _ScriptedTransport,
     sleeper: object = None,
     max_retries: int = 2,
+    max_response_bytes: int = 1048576,
     interaction_enabled: bool = False,
     response_mode: str = "json_object",
     event_sink: object | None = None,
@@ -98,7 +104,7 @@ def _make_provider(
         timeout_seconds=60,
         max_retries=max_retries,
         max_output_tokens=2048,
-        max_response_bytes=1048576,
+        max_response_bytes=max_response_bytes,
         response_mode=response_mode,  # type: ignore[arg-type]
         prompt_builder=PromptBuilder(),
         transport=transport,
@@ -625,6 +631,68 @@ def test_native_tools_expose_and_decode_finish_phase_control() -> None:
     }
     assert "finish_phase" in names
     assert "final" not in names
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_code"),
+    [
+        ('{"path":"README.md"}', "provider_tool_schema_invalid"),
+        ('{"reason":"done","unexpected":"ignored"}', "provider_tool_schema_invalid"),
+    ],
+    ids=["missing_required_reason", "control_extra_argument"],
+)
+def test_native_non_strict_validates_function_request_schema(
+    arguments: str, expected_code: str
+) -> None:
+    name = "read_file" if "path" in arguments else "finish_phase"
+    response = ProviderResponse(
+        status_code=200,
+        headers={},
+        json_body={"choices": [{"message": {"tool_calls": [{"type": "function", "function": {"name": name, "arguments": arguments}}]}}]},
+        body_size=100,
+    )
+    provider = _make_provider(
+        transport=_ScriptedTransport([response]), response_mode="native_tools"
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.next_action(_make_context())
+
+    assert exc_info.value.structured_error.error_code == expected_code
+    assert exc_info.value.protocol_retryable is True
+
+
+def test_native_tools_require_exactly_one_choice() -> None:
+    response = ProviderResponse(
+        status_code=200,
+        headers={},
+        json_body={"choices": [{"message": {"tool_calls": []}}, {"message": {"tool_calls": []}}]},
+        body_size=100,
+    )
+    provider = _make_provider(
+        transport=_ScriptedTransport([response]), response_mode="native_tools"
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.next_action(_make_context())
+
+    assert exc_info.value.structured_error.error_code == "provider_choice_count_invalid"
+    assert exc_info.value.protocol_retryable is True
+
+
+def test_native_response_too_large_is_not_protocol_retryable() -> None:
+    response = ProviderResponse(status_code=200, headers={}, json_body={}, body_size=101)
+    provider = _make_provider(
+        transport=_ScriptedTransport([response]),
+        response_mode="native_tools",
+        max_response_bytes=100,
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.next_action(_make_context())
+
+    assert exc_info.value.structured_error.error_code == "provider_response_too_large"
+    assert exc_info.value.protocol_retryable is False
 
 
 @pytest.mark.parametrize(

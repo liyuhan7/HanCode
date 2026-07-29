@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Mapping
 
-from hancode.providers.schema_validator import check_schema, require_valid
+from hancode.core.schema_validator import check_schema, require_valid
 
 SchemaPath = tuple[str, ...]
 

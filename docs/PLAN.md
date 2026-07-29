@@ -7062,6 +7062,43 @@ S4-R2 Build       S4-R3 Test Report
 
 完成状态：S6 MVP 与 Enhanced 的正式计划验收项均已实现；Git 仅保留用户批准的“不提交”豁免。最终门禁：全量 pytest `1376 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 102 source files`；`uv build --offline` 与 `uv run --no-sync hancode demo --provider mock` 均成功。首次隔离 uv cache 的离线构建因缺少 `setuptools>=68` 失败，随后使用已有用户级离线 cache 成功，未访问网络。
 
+### S6-R6：审查整改与可复现交付
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 依据 | `main@2bd110e` 的 S6 评审结论 |
+| 依赖 | S6-R5 |
+| 分支 | `codex/s6-review-remediation` |
+
+#### 范围
+
+- `pyproject.toml`、`uv.lock`：锁定 `jsonschema>=4.23` 并验证 locked 同步。
+- `core/schema_validator.py`、`core/actions.py`、Provider 相关模块：消除 Core 对 Provider 的反向依赖。
+- 原生 Decoder：所有 native mode 校验 Function request schema；只接受一个 choice；超限统一为不可协议重试的 `provider_response_too_large`。
+- Prompt：修正 `private_key` 规范化匹配并递归处理 tuple。
+- Normalizer：让 `action_normalizer.py` 承担 native arguments 的 schema/投影归一化职责，避免无职责薄封装。
+
+#### 非目标
+
+- 不新增或配置 GitHub CI；该项需单独的仓库自动化与远端授权。
+- 不修改 Responses API、其他 Provider、Streaming、多 tool call 语义或业务 ToolSpec。
+
+#### 验收
+
+1. `uv.lock` 的根项目依赖与 `pyproject.toml` 同时声明 `jsonschema>=4.23`，`uv sync --locked --extra dev` 成功。
+2. strict 与 non-strict native 均在提取 `reason` 前校验对应 request schema；额外字段、缺失 reason 和嵌套非法参数返回 `provider_tool_schema_invalid` 且零 dispatch。
+3. native 响应严格要求一个 choice、一个 function tool call；响应超限为不可重试 `provider_response_too_large`。
+4. `Action`、strict projection 与 Provider 共同依赖 core validator；`private_key` 和 tuple 内敏感字段不会进入任意 Prompt。
+5. 每个子项先有 RED 测试，再最小 GREEN；最终执行 pytest、Ruff、MyPy、locked sync、offline build、Mock Demo 与 `git diff --check`。
+
+#### 实施与验证
+
+- Red：non-strict native 缺失 `reason`、控制工具额外字段、多个 choice、native 超限和 tuple 内 `private_key` 均先由新增测试暴露。
+- Green：Function request schema 在所有 native mode 下先校验；native 强制单 choice；超限映射为不可重试 `provider_response_too_large`。Schema validator 迁入 Core，Normalizer 承担 strict/non-strict 参数归一化，Prompt 规范化敏感 marker 并递归处理 tuple。
+- 锁定交付：`uv lock` 新增 `jsonschema` 及其解析依赖；`uv sync --locked --extra dev` 成功。
+- 最终验证：pytest `1381 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 102 source files`。
+
 ## 直接修复测试命令审批与状态 Trace（2026-07-27）
 
 | 元信息 | 值 |

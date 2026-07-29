@@ -277,6 +277,15 @@ def test_prompt_does_not_contain_credential() -> None:
         assert "api_key" not in message.content
 
 
+def test_prompt_redacts_private_key_inside_tuple_context() -> None:
+    context = _make_context()
+    context["evidence"] = ({"private_key": "private-secret"},)  # type: ignore[assignment]
+
+    prompt = PromptBuilder().build(context=context, tool_catalog=_make_catalog())
+
+    assert all("private-secret" not in message.content for message in prompt.messages)
+
+
 def test_prompt_user_message_is_valid_json() -> None:
     builder = PromptBuilder()
     prompt = builder.build(

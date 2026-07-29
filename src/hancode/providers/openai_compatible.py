@@ -24,7 +24,8 @@ from hancode.providers.strict_schema import (
     StrictSchemaProjection,
     StrictSchemaValidationError,
 )
-from hancode.providers.schema_validator import validate_instance
+from hancode.core.schema_validator import SchemaValidationError, validate_instance
+from hancode.providers.action_normalizer import normalize_provider_arguments
 from hancode.policy.tool_policy import allowed_tools_for_phase
 from hancode.providers.transport import (
     ProviderRequest,
@@ -570,10 +571,10 @@ def _decode_native_tool_call(
     strict_tool_projections: Mapping[str, StrictSchemaProjection],
 ) -> dict[str, object]:
     if response.body_size > max_response_bytes:
-        raise _native_protocol_error(
-            "provider_tool_call_missing",
+        raise _provider_error(
+            "provider_response_too_large",
             "Provider response exceeded the configured size limit.",
-            phase.value,
+            phase=phase.value,
         )
     body = response.json_body
     if not isinstance(body, dict):
@@ -581,9 +582,9 @@ def _decode_native_tool_call(
             "provider_tool_call_missing", "Provider response body is not an object.", phase.value
         )
     choices = body.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
         raise _native_protocol_error(
-            "provider_tool_call_missing", "Provider response has no valid choice.", phase.value
+            "provider_choice_count_invalid", "Provider response must contain exactly one choice.", phase.value
         )
     choice = choices[0]
     finish_reason = choice.get("finish_reason")
@@ -649,14 +650,17 @@ def _decode_native_tool_call(
         raise _native_protocol_error(
             "provider_tool_arguments_invalid", "Provider tool arguments are not an object.", phase.value
         )
-    projection = strict_tool_projections.get(name)
-    if projection is not None:
-        try:
-            decoded_arguments = projection.normalize(decoded_arguments)
-        except StrictSchemaValidationError:
-            raise _native_protocol_error(
-                "provider_tool_schema_invalid", "Provider tool arguments do not match the strict schema.", phase.value
-            ) from None
+    definition = next(item for item in tool_definitions if item.name == name)
+    try:
+        decoded_arguments = normalize_provider_arguments(
+            decoded_arguments,
+            definition.request_schema,
+            strict_tool_projections.get(name),
+        )
+    except (SchemaValidationError, StrictSchemaValidationError):
+        raise _native_protocol_error(
+            "provider_tool_schema_invalid", "Provider tool arguments do not match the function schema.", phase.value
+        ) from None
     reason = decoded_arguments.pop("reason", None)
     if reason is not None and not isinstance(reason, str):
         raise _native_protocol_error(

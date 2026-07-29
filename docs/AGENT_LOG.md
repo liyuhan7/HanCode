@@ -2109,3 +2109,13 @@
 - Green：Engine 注入 `provider_protocol_retries`；Schema/Action/Provider 共用 Draft 2020-12 validator；Native decoder 使用分级错误码；Provider fallback 事件只持久化模式和 reason code，sink 异常交给 AgentLoop 一致性边界。
 - 验证：聚焦回归为 `172 passed`；全量 pytest `1376 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 102 source files`；离线 build 与 Mock Demo 成功。隔离 uv cache 缺少 `setuptools>=68` 时 build 未进入构建，切回已有用户级离线 cache 后成功；未访问网络。
 - 状态：S6 MVP 与 Enhanced 均已完成；提交 hash 为“用户批准不提交”。
+
+### 2026-07-29 — S6-R6 审查整改（进行中）
+
+- 依据：针对 `main@2bd110e` 的复审结论，当前阻断项为未锁定的 `jsonschema` 运行时依赖；协议整改覆盖 non-strict native schema、单 choice 与响应超限，遗留整改覆盖依赖方向、Prompt 脱敏和 Normalizer 职责。
+- 边界：不处理 GitHub CI、Responses API、其他 Provider、Streaming 或多 tool call；CI 需单独授权和任务卡。
+- Red：non-strict native 缺失 reason、控制工具额外字段、多 choice、native 超限与 tuple 内 private_key 全部先由测试暴露。
+- Green：统一 native Function request schema 校验；single-choice 与超限错误分类收口；Schema Validator 迁至 Core；Normalizer 负责 strict/non-strict 参数归一化；Prompt 支持 private_key/tuple 脱敏。
+- 锁定交付：`uv lock` 更新 `uv.lock`，`uv sync --locked --extra dev` 成功。
+- 最终验证：pytest `1381 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 102 source files`。
+- 状态：S6-R6 已完成；GitHub CI 证明仍为明确非目标，需另行授权与任务卡。

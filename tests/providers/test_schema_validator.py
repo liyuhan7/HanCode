@@ -1,4 +1,4 @@
-from hancode.providers.schema_validator import validate_instance
+from hancode.core.schema_validator import validate_instance
 
 
 def test_schema_violations_are_stable_and_do_not_echo_untrusted_values() -> None:

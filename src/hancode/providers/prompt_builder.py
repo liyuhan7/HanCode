@@ -201,7 +201,7 @@ _SENSITIVE_CONTEXT_KEYS = frozenset(
         "password",
         "authorization",
         "credential",
-        "private_key",
+        "privatekey",
     }
 )
 
@@ -221,7 +221,7 @@ def _sanitize_value(value: object) -> object:
             for key, nested in value.items()
             if not _is_sensitive_key(str(key))
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_sanitize_value(item) for item in value]
     return value
 

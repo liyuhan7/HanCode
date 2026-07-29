@@ -5,7 +5,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Mapping
 
-from hancode.providers.schema_validator import validate_instance
+from hancode.core.schema_validator import validate_instance
 
 from hancode.core.models import Phase
 from hancode.core.tool_specs import ALL_TOOL_NAMES as _TOOL_NAMES

@@ -1,4 +1,4 @@
-"""Shared, deterministic JSON Schema validation at the provider boundary."""
+"""Shared, deterministic JSON Schema validation for core and provider boundaries."""
 
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ SchemaPath = tuple[str | int, ...]
 
 @dataclass(frozen=True, slots=True)
 class SchemaViolation:
-    """A redacted JSON Schema violation safe to retain in traces or feedback."""
-
     path: SchemaPath
     validator: str
     message: str
@@ -29,7 +27,6 @@ class SchemaValidationError(ValueError):
 def validate_instance(
     instance: object, schema: Mapping[str, object]
 ) -> tuple[SchemaViolation, ...]:
-    """Return stably ordered, non-sensitive validation metadata."""
     try:
         validator = Draft202012Validator(dict(schema))
     except SchemaError as exc:
@@ -57,16 +54,8 @@ def _violation(error: object) -> SchemaViolation:
     )
     validator = getattr(error, "validator", None)
     safe_validator = validator if isinstance(validator, str) else "schema"
-    return SchemaViolation(
-        path=path,
-        validator=safe_validator,
-        message=f"{safe_validator} validation failed.",
-    )
+    return SchemaViolation(path, safe_validator, f"{safe_validator} validation failed.")
 
 
 def _violation_sort_key(violation: SchemaViolation) -> tuple[tuple[str, ...], str, str]:
-    return (
-        tuple(str(part) for part in violation.path),
-        violation.validator,
-        violation.message,
-    )
+    return tuple(str(part) for part in violation.path), violation.validator, violation.message
