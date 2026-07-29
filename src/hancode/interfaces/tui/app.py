@@ -20,6 +20,7 @@ from textual.worker import Worker, get_current_worker
 
 from hancode.app.approval_service import ApprovalService
 from hancode.app.build_service import BuildSummary
+from hancode.app.config_service import ConfigService, ConfigUpdateResult
 from hancode.app.inspection_service import ArtifactPreview, InspectionService
 from hancode.app.interaction_service import InteractionService
 from hancode.app.recovery_service import RecoveryService, RecoverySummary, RollbackPreview
@@ -70,6 +71,7 @@ from hancode.interfaces.tui.presenters import (
     present_trace_event,
 )
 from hancode.interfaces.tui.screens.main import MainScreen
+from hancode.interfaces.tui.screens.config import ConfigScreen
 from hancode.interfaces.tui.palette import CommandPalette
 from hancode.interfaces.tui.task_drawer import TaskDrawer
 from hancode.interfaces.tui.semantic_presenters import present_activity_groups
@@ -130,6 +132,7 @@ class HanCodeTuiApp(App[None]):
         inspection_service: InspectionService | None = None,
         recovery_service: RecoveryService | None = None,
         approval_service: ApprovalService | None = None,
+        config_service: ConfigService | None = None,
         services: TuiServices | None = None,
     ) -> None:
         super().__init__()
@@ -140,6 +143,7 @@ class HanCodeTuiApp(App[None]):
         self._approval_modal_open = False
         self._rollback_modal_open = False
         self._drawer_requested = False
+        self._config_service = config_service or ConfigService()
         self.controller = TuiSessionController(
             project_root,
             services=services,
@@ -262,6 +266,8 @@ class HanCodeTuiApp(App[None]):
             self._focus_trace(command.args[0] if command.args else None)
         elif command.name == "clear":
             self._clear_activity()
+        elif command.name == "config":
+            self._open_config()
         elif command.name == "view":
             self.controller.set_display_mode(DisplayMode(command.args[0]))
             self._apply_display_mode()
@@ -519,8 +525,28 @@ class HanCodeTuiApp(App[None]):
             "/reject <理由> /status /diff [task|latest] [path] /test "
             "/checkpoints /delivery /trace [event-id] /artifacts /open <name> "
             "/export <directory> /build /rollback [confirm|cancel] /view [focus|inspect] "
-            "/theme [dark|light] /clear /quit"
+            "/theme [dark|light] /config /clear /quit"
         )
+
+    def _open_config(self) -> None:
+        if not self.controller.can_mutate():
+            self._notify("任务正在运行，暂时不能修改项目设置。")
+            return
+        self.push_screen(
+            ConfigScreen(
+                project_root=self._project_root,
+                config_service=self._config_service,
+            ),
+            self._on_config_closed,
+        )
+
+    def _on_config_closed(self, result: ConfigUpdateResult | None) -> None:
+        if result is None:
+            return
+        message = f"项目设置已保存，共修改 {len(result.changed_fields)} 项。"
+        if result.next_command is not None:
+            message += f" 下一步：{result.next_command}"
+        self._notify(message)
 
     def _show_tasks(self) -> None:
         self._drawer_requested = True

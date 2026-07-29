@@ -2129,3 +2129,28 @@
 - 环境说明：受限沙箱下 pytest 清理阶段会触发工作区临时目录的 `WinError 5`；最终 pytest 使用任务专属、用户可写的 `TEMP`/`TMP`/`UV_CACHE_DIR` 与 `--basetemp` 完成。空隔离 uv cache 缺少 `setuptools>=68` 时离线 build 未进入构建，切换到已有离线依赖 cache 后构建成功。
 - 评审材料：已生成 Wide 深/浅、Medium 深、Narrow 深的 SVG 截图至 `docs/assets/tui/`；临时截图、pytest 目录与构建产物在交付前清理。
 - 状态：代码实现与自动验证已完成；三轮人工页面评审尚待用户执行，未提交、未推送。
+
+### 2026-07-29 — S8 完整配置模板与全屏配置中心（实施中）
+
+- 用户授权在当前 `codex/tui-ux` 未提交工作区继续开发，不创建 worktree、不提交、不推送；S7 现有修改必须完整保留。
+- 工作流覆盖：不使用 Superpowers，不采用 TDD；先实现共享模板、原子 ConfigService、独立/嵌入式 Textual 配置页与 CLI 路由，再补回归。
+- 初始边界：API Key 由既有 `hancode auth` 安全边界管理；配置中心只保存非敏感 Provider 元数据，不修改 Harness Core 状态机或任务持久化。
+- 验收目标：普通 init 兼容、完整模板、旧配置规范化、失败不落盘、全屏响应式配置页、主 TUI `/config` 与新鲜全量验证。
+- 实现：新增不可变默认配置真源、完整 init 模板、内存候选校验和同目录原子替换；旧最小配置只在显式保存后展开，旧 `provider_response_mode` 保存时迁移。
+- 交互：新增 `hancode config setup`、`init --configure`、独立 `ConfigTuiApp`、六分组响应式 `ConfigScreen`、列表编辑、恢复默认、变更确认、深浅主题，以及主工作台 `/config`/Palette 入口。
+- 安全：初版配置页不接收密钥，远程 Provider 只提示 `hancode auth login`；运行中禁用编辑；页眉和评审截图只显示 `.hancode/project.json`，不暴露用户绝对路径。
+- 聚焦验证：配置、CLI、Textual、Workspace 和 README 范围 `188 passed`。
+- 最终验证：全量 pytest `1401 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 120 source files`；`uv build --offline` 成功；Mock Demo 返回 `status=completed`；`git diff --check` 通过。
+- 评审材料：`config-wide-dark.svg`、`config-wide-light.svg`、`config-medium-provider.svg`、`config-narrow-dark.svg` 已保存至 `docs/assets/tui/` 并通过绝对路径扫描。
+
+### 2026-07-29 — S8 API 凭据配置扩展（等待人工评审）
+
+- 用户批准在配置界面直接管理 API Key，并确认使用既有 OS Keyring 安全方案；继续不使用 Superpowers、不采用 TDD。
+- 边界：隐藏输入只调用 `AuthService`/`CredentialProvider`；密钥不进入 ConfigService、`project.json`、日志、Trace 或页面明文状态。环境变量与 `.env` 来源只读。
+- 实现：Provider 页新增凭据状态、录入/更新和确认清除；状态只显示来源与末四位。保存 Key 后把内存草稿切为 `credential_source=keyring`，项目配置仍需独立 `Ctrl+S` 确认。
+- 兼容：CLI 既有 `auth login/update/clear/status` 保持不变；显式 Keyring 清除不会修改或清除环境变量和 `.env`。
+- 实现后专项验证：凭据、Application Service、配置 Textual 与 README 测试 `50 passed, 1 skipped`；跳过项仍为当前 Windows symlink 权限边界。
+- 最终验证：全量 pytest `1404 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `120 source files` 无错误；`uv build --offline` 成功；Mock Demo 返回 `status=completed`；`git diff --check` 通过。
+- 评审材料：新增 `docs/assets/tui/config-provider-api-key.svg`，只包含 Fake Keyring 的 `****7a2c` 掩码；完整测试值、用户绝对路径均未进入截图。
+- 环境说明：一次为探测异步输出而设置的 1 秒 pytest 超时被主动丢弃，产生输出管道 `OSError 22`；随后使用用户可写专属 TEMP 正常重跑全量测试并通过，最终证据只采用后者。
+- 状态：代码与自动验证完成，等待用户人工页面评审；未提交、未推送。

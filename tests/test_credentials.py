@@ -164,6 +164,23 @@ def test_credentials_clear_removes_secret(tmp_path: Path) -> None:
     assert provider.status("anthropic").source == "missing"
 
 
+def test_explicit_keyring_clear_does_not_modify_external_fallback(
+    tmp_path: Path,
+) -> None:
+    store = FakeCredentialStore()
+    store.set_password("hancode", "openai_compatible", "keyring-secret-11aa")
+    provider = CredentialProvider(
+        keyring_backend=store,
+        environ={"OPENAI_API_KEY": "environment-secret-22bb"},
+        dotenv_path=tmp_path / ".env",
+    )
+
+    provider.clear_secret("openai_compatible", source="keyring")
+
+    assert store.get_password("hancode", "openai_compatible") is None
+    assert provider.status("openai_compatible").source == "env"
+
+
 def test_credentials_clear_reports_delete_failure(tmp_path: Path) -> None:
     class DeleteFailureCredentialStore(FakeCredentialStore):
         def delete_password(self, service_name: str, username: str) -> None:

@@ -204,6 +204,92 @@ decides when all phases are complete.
 Workspace files and tool outputs are treated as untrusted task evidence and
 cannot override the system contract or runtime policy.
 
+## 项目配置中心
+
+`hancode init` 会在 `.hancode/project.json` 写入完整、可编辑的默认配置。普通
+init 保持非交互并输出结构化 JSON；需要初始化后立即配置时使用：
+
+```powershell
+hancode init . --configure
+```
+
+已有项目可随时打开独立的全屏配置中心：
+
+```powershell
+hancode config setup .
+```
+
+主工作台中也可以输入 `/config`，或从 `Ctrl+K` Command Palette 选择“项目设置”。
+任务 Worker 运行时配置入口会禁用；关闭配置页后，当前任务、检查视图和输入内容保持不变。
+
+完整默认配置包括项目元数据、Provider、命令与执行、工作区保护、人机交互与审批、
+上下文和 Diff 限制。关键默认值如下：
+
+```json
+{
+  "workspace_version": 1,
+  "project_id": "project-directory-name",
+  "course_name": "unspecified-course",
+  "assignment_name": "unspecified-assignment",
+  "project_root": ".",
+  "llm_provider": "mock",
+  "model_name": null,
+  "credential_source": null,
+  "provider_base_url": null,
+  "provider_timeout_seconds": 60,
+  "provider_max_retries": 2,
+  "provider_protocol_retries": 2,
+  "provider_max_output_tokens": 2048,
+  "provider_max_response_bytes": 1048576,
+  "provider_action_mode": "auto",
+  "test_command": null,
+  "build_command": null,
+  "max_steps": 30,
+  "retry_budget": 2,
+  "max_checkpoints_per_task": 5,
+  "max_observation_bytes": 8192,
+  "max_context_chars": 24000,
+  "max_trace_events": 40,
+  "writable_roots": ["src", "tests"],
+  "protected_patterns": [],
+  "interaction_mode": "disabled",
+  "max_interactions_per_phase": 8,
+  "max_interaction_question_chars": 2048,
+  "max_interaction_answer_chars": 8192,
+  "approval_mode": "disabled",
+  "confirm_agent_rollback": true,
+  "confirm_agent_build": true,
+  "max_approvals_per_phase": 20,
+  "max_approval_payload_bytes": 262144,
+  "max_approval_preview_chars": 12000,
+  "max_rejection_reason_chars": 1024,
+  "max_diff_files": 100,
+  "max_diff_chars": 30000,
+  "max_diff_file_bytes": 524288,
+  "diff_context_lines": 3
+}
+```
+
+配置页快捷键：
+
+- `Ctrl+S`：查看变更并确认保存。
+- `Ctrl+R`：恢复当前分组默认值。
+- `Ctrl+T`：切换当前会话的深浅主题。
+- `Esc`：返回；存在未保存修改时先确认是否放弃。
+
+保存前会复用 ConfigLoader 的完整校验并通过同目录原子替换写入。取消、校验失败
+或写入失败不会改变原配置。`protected_patterns` 只表示用户追加规则，内置课程文件和
+凭据保护不能删除。
+
+Provider 分组可以安全管理 API Key：
+
+- Key 使用密码输入框，保存目标仅为操作系统 Keyring，不进入 `project.json`、日志或 Trace。
+- 页面只显示“未配置”、来源和安全掩码（末四位），不会回显完整 Key。
+- Keyring 凭据可以录入、更新和确认清除；环境变量与项目 `.env` 来源只读，需在来源处手动修改。
+- 保存 Key 后配置草稿会选择 `credential_source=keyring`，仍需 `Ctrl+S` 单独确认保存项目配置。
+
+Provider、策略和命令在下一次运行或恢复时生效；`retry_budget` 只影响之后新建的任务。
+
 ## 真实 Provider 配置
 
 在 `project.json` 中配置 `openai_compatible`：

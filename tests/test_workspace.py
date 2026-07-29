@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from hancode.core.errors import HanCodeError
+from hancode.core.project_config import build_project_config
 from hancode.storage.workspace import init_project_workspace, init_task_workspace, task_path
 
 
@@ -23,13 +24,13 @@ def test_workspace_initializes_project_files(tmp_path: Path) -> None:
 
     assert workspace == tmp_path / ".hancode"
     assert (workspace / "tasks").is_dir()
-    assert json.loads((workspace / "project.json").read_text(encoding="utf-8")) == {
-        "workspace_version": 1,
-        "project_id": "course-project",
-        "course_name": "AI4SE",
-        "assignment_name": "Coding Agent Harness",
-        "project_root": ".",
-    }
+    assert json.loads(
+        (workspace / "project.json").read_text(encoding="utf-8")
+    ) == build_project_config(
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
     assert (workspace / "project_memory.md").read_text(encoding="utf-8") == (
         "# Project Memory\n"
     )

@@ -7157,3 +7157,33 @@ S4-R2 Build       S4-R3 Test Report
 - 第一轮：R0–R3，评审中文术语、主题、宽中屏信息层级、活动流和 Inspector。
 - 第二轮：R4–R6，评审审批、Rollback、测试、Diff 与 Palette 的决策清晰度。
 - 第三轮：R7–R8，评审 `120×36`、`90×32`、`60×28` 三种终端尺寸、文档与 Demo。
+
+---
+
+## S8：完整项目配置模板与全屏配置中心
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [~] API 凭据配置扩展与自动验证完成，等待配置页面人工评审 |
+| 分支 | `codex/tui-ux` |
+| 范围 | 项目配置默认模板、Application Service、CLI 与 Textual 配置表现层 |
+| 开发方式 | 用户明确不采用 TDD；先实现，再补自动回归与人工评审 |
+
+### 任务边界
+
+- 新项目的 `.hancode/project.json` 展开当前全部配置键；旧最小配置继续兼容，重复 init 不覆盖已有文件。
+- 新增 `hancode config setup`、`hancode init --configure`、主 TUI `/config` 和 Command Palette 入口。
+- 配置写入只能经过统一校验与同目录原子替换；取消、失败和链接目标不得改变原文件。
+- 配置中心通过既有 `AuthService` 收集远程 Provider API Key；隐藏输入只写入 OS Keyring，绝不写入 `project.json`、trace、日志或截图。
+- Keyring 凭据可在配置中心更新和清除；环境变量与 `.env` 来源只显示状态，必须由用户在来源处手动修改。
+- 保存 Key 后只在内存草稿中将 `credential_source` 设为 `keyring`；仍需用户确认保存项目配置，两个写入动作互不冒充成功。
+- 不修改 AgentLoop、ToolPolicy、Approval 状态机、任务持久化格式或 Provider 协议语义。
+
+### 验收
+
+- 默认模板、ConfigLoader 与配置中心共享一份字段顺序和默认值真源。
+- Wide、Medium、Narrow、深浅主题、分组编辑、恢复默认、变更确认和放弃修改均可演示。
+- 普通 init 输出保持兼容；配置 TUI 退出后 stdout 只输出一条结构化结果。
+- 自动回归覆盖模板、旧配置迁移、原子保存、CLI、Textual 键盘路径和主工作台状态保持。
+- Provider 页显示“未配置 / 已配置（末四位）/ 环境变量 / `.env`”状态；Key 输入使用密码模式，更新和清除均需显式确认。
+- Keyring 不可用、空 Key、外部来源清除等失败不得泄露输入值，也不得改变 `project.json`。

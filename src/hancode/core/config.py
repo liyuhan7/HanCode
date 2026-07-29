@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from collections.abc import Mapping
 from typing import Literal, cast
 from urllib.parse import urlparse
 
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.project_config import complete_project_config
 from hancode.storage.workspace import load_project_metadata, task_path
 
 
@@ -247,105 +249,87 @@ def load_config(project_root: Path, task_id: str | None = None) -> HanCodeConfig
             )
         )
     project_data = _read_project_config(project_file)
+    return _build_config(resolved_project_root, project_data, task_id)
+
+
+def validate_project_config_data(
+    project_root: Path,
+    project_data: Mapping[str, object],
+    task_id: str | None = None,
+) -> HanCodeConfig:
+    """Validate an in-memory project.json candidate without writing it."""
+    resolved_project_root = project_root.resolve()
+    validated = _validate_project_data(dict(project_data))
+    return _build_config(resolved_project_root, validated, task_id)
+
+
+def _build_config(
+    resolved_project_root: Path,
+    project_data: dict[str, object],
+    task_id: str | None,
+) -> HanCodeConfig:
     provider_action_mode = _read_provider_action_mode(project_data)
-    task_root = task_path(resolved_project_root, task_id) if task_id is not None else None
-    writable_root_values = cast(
-        list[str], project_data.get("writable_roots", ["src", "tests"])
+    project_data = complete_project_config(
+        project_data,
+        fallback_project_root=resolved_project_root,
     )
+    project_data["provider_action_mode"] = provider_action_mode
+    task_root = task_path(resolved_project_root, task_id) if task_id is not None else None
+    writable_root_values = cast(list[str], project_data["writable_roots"])
     config = HanCodeConfig(
         project_root=resolved_project_root,
         hancode_root=resolved_project_root / ".hancode",
         allowed_workspace_root=resolved_project_root,
         task_root=task_root,
-        llm_provider=cast(str, project_data.get("llm_provider", "mock")),
-        model_name=cast(str | None, project_data.get("model_name")),
-        credential_source=cast(str | None, project_data.get("credential_source")),
-        test_command=cast(str | None, project_data.get("test_command")),
-        build_command=cast(str | None, project_data.get("build_command")),
-        max_steps=cast(int, project_data.get("max_steps", 30)),
-        retry_budget=cast(int, project_data.get("retry_budget", 2)),
-        max_checkpoints_per_task=cast(
-            int, project_data.get("max_checkpoints_per_task", 5)
-        ),
-        max_observation_bytes=cast(
-            int, project_data.get("max_observation_bytes", 8192)
-        ),
-        max_context_chars=cast(int, project_data.get("max_context_chars", 24000)),
-        max_trace_events=cast(int, project_data.get("max_trace_events", 40)),
+        llm_provider=cast(str, project_data["llm_provider"]),
+        model_name=cast(str | None, project_data["model_name"]),
+        credential_source=cast(str | None, project_data["credential_source"]),
+        test_command=cast(str | None, project_data["test_command"]),
+        build_command=cast(str | None, project_data["build_command"]),
+        max_steps=cast(int, project_data["max_steps"]),
+        retry_budget=cast(int, project_data["retry_budget"]),
+        max_checkpoints_per_task=cast(int, project_data["max_checkpoints_per_task"]),
+        max_observation_bytes=cast(int, project_data["max_observation_bytes"]),
+        max_context_chars=cast(int, project_data["max_context_chars"]),
+        max_trace_events=cast(int, project_data["max_trace_events"]),
         protected_patterns=tuple(
-            _merge_protected_patterns(
-                cast(list[str], project_data.get("protected_patterns", []))
-            )
+            _merge_protected_patterns(cast(list[str], project_data["protected_patterns"]))
         ),
         writable_roots=tuple(
             _resolve_writable_root(resolved_project_root, value)
             for value in writable_root_values
         ),
-        provider_base_url=cast(
-            str | None, project_data.get("provider_base_url")
-        ),
-        provider_timeout_seconds=cast(
-            int, project_data.get("provider_timeout_seconds", 60)
-        ),
-        provider_max_retries=cast(
-            int, project_data.get("provider_max_retries", 2)
-        ),
-        provider_protocol_retries=cast(
-            int, project_data.get("provider_protocol_retries", 2)
-        ),
-        provider_max_output_tokens=cast(
-            int, project_data.get("provider_max_output_tokens", 2048)
-        ),
-        provider_max_response_bytes=cast(
-            int, project_data.get("provider_max_response_bytes", 1048576)
-        ),
+        provider_base_url=cast(str | None, project_data["provider_base_url"]),
+        provider_timeout_seconds=cast(int, project_data["provider_timeout_seconds"]),
+        provider_max_retries=cast(int, project_data["provider_max_retries"]),
+        provider_protocol_retries=cast(int, project_data["provider_protocol_retries"]),
+        provider_max_output_tokens=cast(int, project_data["provider_max_output_tokens"]),
+        provider_max_response_bytes=cast(int, project_data["provider_max_response_bytes"]),
         interaction_mode=cast(
             Literal["disabled", "ask_user"],
-            project_data.get("interaction_mode", "disabled"),
+            project_data["interaction_mode"],
         ),
-        max_interactions_per_phase=cast(
-            int, project_data.get("max_interactions_per_phase", 8)
-        ),
+        max_interactions_per_phase=cast(int, project_data["max_interactions_per_phase"]),
         max_interaction_question_chars=cast(
-            int, project_data.get("max_interaction_question_chars", 2048)
+            int, project_data["max_interaction_question_chars"]
         ),
         max_interaction_answer_chars=cast(
-            int, project_data.get("max_interaction_answer_chars", 8192)
+            int, project_data["max_interaction_answer_chars"]
         ),
         approval_mode=cast(
             Literal["disabled", "first_source_write", "all_source_writes"],
-            project_data.get("approval_mode", "disabled"),
+            project_data["approval_mode"],
         ),
-        confirm_agent_rollback=cast(
-            bool, project_data.get("confirm_agent_rollback", True)
-        ),
-        confirm_agent_build=cast(
-            bool, project_data.get("confirm_agent_build", True)
-        ),
-        max_approvals_per_phase=cast(
-            int, project_data.get("max_approvals_per_phase", 20)
-        ),
-        max_approval_payload_bytes=cast(
-            int, project_data.get("max_approval_payload_bytes", 262_144)
-        ),
-        max_approval_preview_chars=cast(
-            int, project_data.get("max_approval_preview_chars", 12_000)
-        ),
-        max_rejection_reason_chars=cast(
-            int, project_data.get("max_rejection_reason_chars", 1_024)
-        ),
-        max_diff_files=cast(
-            int, project_data.get("max_diff_files", 100)
-        ),
-        max_diff_chars=cast(
-            int, project_data.get("max_diff_chars", 30_000)
-        ),
-        max_diff_file_bytes=cast(
-            int, project_data.get("max_diff_file_bytes", 524_288)
-        ),
-        diff_context_lines=cast(
-            int, project_data.get("diff_context_lines", 3)
-        ),
+        confirm_agent_rollback=cast(bool, project_data["confirm_agent_rollback"]),
+        confirm_agent_build=cast(bool, project_data["confirm_agent_build"]),
+        max_approvals_per_phase=cast(int, project_data["max_approvals_per_phase"]),
+        max_approval_payload_bytes=cast(int, project_data["max_approval_payload_bytes"]),
+        max_approval_preview_chars=cast(int, project_data["max_approval_preview_chars"]),
+        max_rejection_reason_chars=cast(int, project_data["max_rejection_reason_chars"]),
+        max_diff_files=cast(int, project_data["max_diff_files"]),
+        max_diff_chars=cast(int, project_data["max_diff_chars"]),
+        max_diff_file_bytes=cast(int, project_data["max_diff_file_bytes"]),
+        diff_context_lines=cast(int, project_data["diff_context_lines"]),
         provider_action_mode=cast(
             Literal[
                 "auto",
@@ -455,7 +439,10 @@ def _read_provider_action_mode(project_data: dict[str, object]) -> object:
 
 def _read_project_config(project_file: Path) -> dict[str, object]:
     project_data = load_project_metadata(project_file)
+    return _validate_project_data(project_data)
 
+
+def _validate_project_data(project_data: dict[str, object]) -> dict[str, object]:
     plaintext_secret_field = _find_plaintext_secret_field(project_data)
     if plaintext_secret_field is not None:
         raise _plaintext_secret_error(plaintext_secret_field)

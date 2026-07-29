@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 import json
 from pathlib import Path
+import sys
 
 import typer
 
 from hancode.app.auth_service import AuthService
+from hancode.app.config_service import ConfigService, ConfigUpdateResult
 from hancode.app.delivery_service import DeliveryService
 from hancode.app.interaction_service import InteractionService
 from hancode.app.project_service import ProjectService
@@ -34,10 +37,17 @@ task_app = typer.Typer(
     no_args_is_help=True,
     help="Create, inspect, run, and resume HanCode tasks.",
 )
+config_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Inspect and edit project configuration in a full-screen terminal UI.",
+)
 app.add_typer(auth_app, name="auth")
 app.add_typer(task_app, name="task")
+app.add_typer(config_app, name="config")
 credential_provider = CredentialProvider()
 project_service = ProjectService()
+config_service = ConfigService()
 task_service = TaskService()
 interaction_service = InteractionService()
 delivery_service = DeliveryService()
@@ -49,6 +59,11 @@ def init(
     project_id: str | None = typer.Option(None, help="Stable project identifier."),
     course_name: str | None = typer.Option(None, help="Course name."),
     assignment_name: str | None = typer.Option(None, help="Assignment name."),
+    configure: bool = typer.Option(
+        False,
+        "--configure",
+        help="Open the full-screen project configuration center after initialization.",
+    ),
 ) -> None:
     """Initialize the project workspace."""
     try:
@@ -59,19 +74,31 @@ def init(
                 "Project root must be an existing directory.",
                 "Use an existing project directory as the CLI argument.",
             )
+        if configure:
+            _require_interactive_terminal()
         workspace = project_service.initialize(
             root,
             _non_empty_or_default(project_id, root.name or "hancode-project"),
             _non_empty_or_default(course_name, "unspecified-course"),
             _non_empty_or_default(assignment_name, "unspecified-assignment"),
         )
-        _emit(
-            {
-                "command": "init",
-                "status": "completed",
-                "workspace": str(workspace),
-            }
-        )
+        payload: dict[str, object] = {
+            "command": "init",
+            "status": "completed",
+            "workspace": str(workspace),
+        }
+        if configure:
+            result = _run_config_tui(root)
+            payload.update(
+                {
+                    "configured": result is not None,
+                    "configuration_status": "completed" if result is not None else "cancelled",
+                    "changed_fields": list(result.changed_fields) if result is not None else [],
+                }
+            )
+            if result is not None:
+                payload["next_command"] = result.next_command
+        _emit(payload)
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
     except OSError:
@@ -81,6 +108,57 @@ def init(
                     "cli_workspace_initialization_failed",
                     "Project workspace could not be initialized.",
                     "Check the project directory permissions and retry.",
+                )
+            )
+        ) from None
+
+
+@config_app.command("setup")
+def config_setup(
+    project_root: Path = typer.Argument(
+        Path("."),
+        help="Project root containing .hancode/project.json.",
+    ),
+) -> None:
+    """Open the full-screen project configuration center."""
+    try:
+        root = project_root.resolve()
+        if not root.is_dir():
+            raise _cli_error(
+                "cli_project_root_invalid",
+                "Project root must be an existing directory.",
+                "Use an existing initialized project directory.",
+            )
+        _require_interactive_terminal()
+        config_service.load(root)
+        result = _run_config_tui(root)
+        if result is None:
+            _emit(
+                {
+                    "command": "config setup",
+                    "config": str(root / ".hancode" / "project.json"),
+                    "status": "cancelled",
+                    "changed_fields": [],
+                    "next_command": None,
+                }
+            )
+            return
+        payload: dict[str, object] = {
+            "command": "config setup",
+            "status": "completed",
+        }
+        payload.update(result.to_dict())
+        _emit(payload)
+    except HanCodeError as exc:
+        raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_config_setup_failed",
+                    "Project configuration UI could not be opened.",
+                    "Check terminal and project directory permissions, then retry.",
+                    denied_rule="interactive_project_config_required",
                 )
             )
         ) from None
@@ -727,6 +805,28 @@ def task_answer(
                 )
             )
         ) from None
+
+
+def _require_interactive_terminal() -> None:
+    if not sys.stdin.isatty() or not sys.stderr.isatty():
+        raise _cli_error(
+            "cli_interactive_terminal_required",
+            "Full-screen project configuration requires an interactive terminal.",
+            "Run the command directly in a terminal without redirecting stdin or stderr.",
+            denied_rule="interactive_terminal_required",
+        )
+
+
+def _run_config_tui(project_root: Path) -> ConfigUpdateResult | None:
+    from hancode.interfaces.tui.config_app import ConfigTuiApp
+
+    # Textual owns the terminal while the screen is active. Route its terminal
+    # stream to stderr so stdout remains a single machine-readable JSON result.
+    with redirect_stdout(sys.stderr):
+        return ConfigTuiApp(
+            project_root=project_root,
+            config_service=config_service,
+        ).run()
 
 
 def _set_auth_credential(command: str, provider: str) -> None:

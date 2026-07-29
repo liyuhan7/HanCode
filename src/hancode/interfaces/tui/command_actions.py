@@ -30,6 +30,7 @@ def available_actions(state: TuiViewState) -> tuple[CommandActionView, ...]:
         _action("rollback", "恢复检查点", "/rollback", None, has_task and not state.busy, "任务运行时不能恢复检查点。"),
         _action("approval", "批准当前请求", "/approve", None, state.pending_approval_id is not None and not state.busy, "当前没有待确认操作。"),
         _action("reject", "拒绝当前请求", "/reject", None, state.pending_approval_id is not None and not state.busy, "当前没有待确认操作。"),
+        _action("config", "项目设置", "/config", None, not state.busy, "任务运行时不能修改项目设置。"),
         _action("inspect", "切换检查视图", "/view inspect", "F2", True, None),
         _action("theme", "切换深浅主题", "/theme light", "Ctrl+T", True, None),
     ]

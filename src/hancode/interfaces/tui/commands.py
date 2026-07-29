@@ -38,6 +38,7 @@ _COMMANDS: dict[str, tuple[int, int | None, str]] = {
     "open": (1, 1, "tui_artifact_name_required"),
     "rollback": (0, 1, ""),
     "clear": (0, 0, ""),
+    "config": (0, 0, ""),
     "view": (1, 1, "tui_view_mode_required"),
     "theme": (1, 1, "tui_theme_required"),
     "quit": (0, 0, ""),

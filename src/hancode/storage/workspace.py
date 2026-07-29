@@ -6,6 +6,7 @@ from pathlib import Path, PureWindowsPath
 import stat
 
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.project_config import build_project_config
 
 
 _PROJECT_MARKDOWN_FILES = {
@@ -33,13 +34,11 @@ def init_project_workspace(
     workspace.mkdir(exist_ok=True)
     (workspace / "tasks").mkdir(exist_ok=True)
 
-    project_data = {
-        "workspace_version": 1,
-        "project_id": project_id,
-        "course_name": course_name,
-        "assignment_name": assignment_name,
-        "project_root": ".",
-    }
+    project_data = build_project_config(
+        project_id=project_id,
+        course_name=course_name,
+        assignment_name=assignment_name,
+    )
     project_file = workspace / "project.json"
     if not project_file.exists():
         project_file.write_text(

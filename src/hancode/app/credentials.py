@@ -158,13 +158,18 @@ class CredentialProvider:
                 denied_rule="secure_credential_store_required",
             ) from None
 
-    def clear_secret(self, provider: str) -> None:
+    def clear_secret(
+        self,
+        provider: str,
+        *,
+        source: CredentialSource | None = None,
+    ) -> None:
         self._validate_provider(provider)
         if provider in _NO_CREDENTIAL_PROVIDERS:
             return
 
         external_secret, external_source = self._resolve_external_secret(provider)
-        if external_secret is not None and external_source is not None:
+        if source != "keyring" and external_secret is not None and external_source is not None:
             raise _credential_error(
                 "credential_external_source_requires_manual_clear",
                 "The active credential is managed outside the secure store.",

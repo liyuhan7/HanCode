@@ -1167,6 +1167,7 @@ def test_legacy_provider_response_mode_is_loaded_as_action_mode(
     )
     project_file = tmp_path / ".hancode" / "project.json"
     project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data.pop("provider_action_mode")
     project_data["provider_response_mode"] = mode
     project_data["llm_provider"] = "openai_compatible"
     project_data["model_name"] = "test-model"

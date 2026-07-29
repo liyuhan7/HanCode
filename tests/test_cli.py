@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from hancode.interfaces import cli
 from hancode.app.credentials import CredentialProvider
+from hancode.app.config_service import ConfigUpdateResult
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.state import load_state, save_state
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
@@ -354,6 +355,101 @@ def test_cli_init_accepts_explicit_project_metadata(tmp_path: Path) -> None:
     assert project_data["project_id"] == "course-001"
     assert project_data["course_name"] == "软件工程"
     assert project_data["assignment_name"] == "作业一"
+
+
+def test_cli_init_configure_runs_fullscreen_editor_and_emits_one_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    monkeypatch.setattr(cli, "_require_interactive_terminal", lambda: None)
+    monkeypatch.setattr(
+        cli,
+        "_run_config_tui",
+        lambda root: ConfigUpdateResult(
+            config_path=root / ".hancode" / "project.json",
+            changed_fields=("llm_provider",),
+            provider="openai_compatible",
+            next_command="hancode auth login --provider openai_compatible",
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["init", str(project_root), "--configure"])
+
+    assert result.exit_code == 0
+    payload = _payload(result)
+    assert payload["configured"] is True
+    assert payload["configuration_status"] == "completed"
+    assert payload["changed_fields"] == ["llm_provider"]
+    assert payload["next_command"] == (
+        "hancode auth login --provider openai_compatible"
+    )
+
+
+def test_cli_config_setup_emits_structured_saved_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli.project_service.initialize(
+        tmp_path,
+        "course-project",
+        "AI4SE",
+        "Harness",
+    )
+    monkeypatch.setattr(cli, "_require_interactive_terminal", lambda: None)
+    monkeypatch.setattr(
+        cli,
+        "_run_config_tui",
+        lambda root: ConfigUpdateResult(
+            config_path=root / ".hancode" / "project.json",
+            changed_fields=("approval_mode",),
+            provider="mock",
+            next_command=None,
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["config", "setup", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert _payload(result) == {
+        "command": "config setup",
+        "config": str(tmp_path / ".hancode" / "project.json"),
+        "status": "completed",
+        "changed_fields": ["approval_mode"],
+        "provider": "mock",
+        "next_command": None,
+    }
+
+
+def test_cli_init_configure_requires_terminal_before_creating_workspace(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    result = runner.invoke(cli.app, ["init", str(project_root), "--configure"])
+
+    assert result.exit_code != 0
+    assert not (project_root / ".hancode").exists()
+    assert "cli_interactive_terminal_required" in result.stdout
+
+
+def test_cli_config_setup_cancel_is_success_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli.project_service.initialize(tmp_path, "course-project", "AI4SE", "Harness")
+    path = tmp_path / ".hancode" / "project.json"
+    before = path.read_bytes()
+    monkeypatch.setattr(cli, "_require_interactive_terminal", lambda: None)
+    monkeypatch.setattr(cli, "_run_config_tui", lambda _root: None)
+
+    result = runner.invoke(cli.app, ["config", "setup", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert _payload(result)["status"] == "cancelled"
+    assert path.read_bytes() == before
 
 
 def test_cli_demo_runs_with_mock_provider_without_credentials(
