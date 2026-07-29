@@ -2414,12 +2414,12 @@ uv run --no-sync mypy src
 
 | 元信息           | 值                                 |
 | ------------- | --------------------------------- |
-| 状态            | [~] 进行中（Task 1-6 已实现；Task 7 门禁、两阶段评审与最终收口中） |
+| 状态            | [x] 已完成（Task 1-9、两阶段评审与全量验证通过） |
 | 依赖            | T21                              |
 | 可并行           | 分组串行；先安全边界，再工具与恢复          |
-| Worktree / PR | `feature/M7`                       |
+| Worktree / PR | `main`（已合并 `feature/M7`）       |
 | 主贡献相关         | 是，T21 收尾修复                     |
-| Commit        | Task 1 `b91ed75`；Task 2 `78acbe7`；T21-R1 收口待提交 |
+| Commit        | Task 1 `b91ed75`；Task 2 `78acbe7`；收尾 `5d9c4ad`；审批/测试闭环 `088739f`、`c0c0906` |
 
 ### 目标
 
@@ -5697,13 +5697,13 @@ runtime.engine → AgentLoop → ObservedTraceAppender
 | FR-14 Checkpoint 与 Rollback              | T17, T18, T21                | [x] |
 | FR-15 测试报告与审查记录                          | T20, T22                     | [x] |
 | FR-16 Knowledge Delivery                 | T22, T23                     | [x] |
-| 凭据与分发设计                                  | T25, T26, T27                | [ ] |
-| 可测试性约定                                   | T1-T30                       | [ ] |
-| 测试失败分类                                   | T20                          | [ ] |
-| 危险动作与治理护栏                                | T13, T14, T15                | [ ] |
-| 记忆与上下文机制                                 | T2, T19                      | [ ] |
-| 主贡献维度                                    | T16, T17, T18, T20, T21, T23 | [ ] |
-| MockLLM 机制演示                             | T9, T21, T23                 | [ ] |
+| 凭据与分发设计                                  | T25, T26, T27                | [x] |
+| 可测试性约定                                   | T1-T30                       | [x] |
+| 测试失败分类                                   | T20                          | [x] |
+| 危险动作与治理护栏                                | T13, T14, T15                | [x] |
+| 记忆与上下文机制                                 | T2, T19                      | [x] |
+| 主贡献维度                                    | T16, T17, T18, T20, T21, T23 | [x] |
+| MockLLM 机制演示                             | T9, T21, T23                 | [x] |
 | P0 分层结构与装配抽取                         | T28                         | [x] |
 | P1 应用服务层拆分                             | T29                         | [x] |
 | P2 Demo 与 Delivery 支持包拆分                 | T30                         | [x] |
@@ -6476,7 +6476,7 @@ S4-R2 Build       S4-R3 Test Report
 ---
 ## S5 总体状态
 
-| 状态 | `[~]` 核心 TUI 产品能力已实现；Approval 查询竞态、Delivery Gate 展示和 Rollback 确认绑定已修复，等待最终集成/远端 CI 证据 |
+| 状态 | `[x]` 核心 TUI 产品能力、Approval 查询竞态、Delivery Gate 展示、Rollback 确认绑定与最终集成验证已完成；无独立远端 CI run 证据 |
 
 本轮审查发现的三个 P0 已分别由 Query 顺序、只读 `DeliverySummary` 和 `expected_checkpoint_id` 绑定修复；P1 的 Mutation Worker 全面化、Detail 滚动、Recent Trace 查询和 App 进一步拆分不纳入本轮修复范围。
 
@@ -6679,7 +6679,7 @@ S4-R2 Build       S4-R3 Test Report
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [~] 核心能力完成，等待最终集成证据 |
+| 状态 | [x] 已完成（E2E、全量质量门与 Mock Demo 验证通过；无独立远端 CI run 证据） |
 | 依赖 | S5-R2~R5 |
 | 分支 | `main`（按用户要求不在阶段中提交） |
 | 边界 | 用 MockLLM 和 Textual `run_test` 验证完整产品路径，不使用真实网络或凭据 |
@@ -7120,3 +7120,40 @@ S4-R2 Build       S4-R3 Test Report
 - 不修改 Router、DeliveryPipeline 和底层测试命令执行安全机制。
 - 本轮不增加编译器命令黑名单或运行时语义分析。
 - 不新增测试；仅更新既有测试中的旧 run_tests action 契约和审批恢复调用。
+
+---
+
+## S7：TUI 中文开发者工作台
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [~] 实施中，等待三轮人工页面评审 |
+| 分支 | `codex/tui-ux` |
+| 范围 | Textual 表现层与只读展示模型；不修改 Harness Core、持久化或 Headless CLI |
+| 开发方式 | 用户明确不采用 TDD；每轮先实现页面，再运行自动回归并进行人工评审 |
+
+### 交互契约
+
+- 默认中文、技术标识保留原文；深浅双主题，默认石墨深色，`Ctrl+T` 或 `/theme dark|light` 仅改变当前会话。
+- `F2` 或 `/view focus|inspect` 只切换中栏语义活动流与 Raw Trace，不能抢占当前 Inspector Detail。
+- Wide `>=100` 三栏；Medium `70-99` 隐藏任务栏；Narrow `<70` 使用进展、改动、状态、任务四个 Tab。
+- 普通输入永远不能批准 Approval；所有操作仍通过既有 Application Service、Approval、Checkpoint 与 Policy。
+- 测试页面只展示已持久化的 TEST_REPORT 字段；不伪造 stdout/stderr 或未记录的失败用例名。
+
+### R0–R8 任务卡
+
+1. **R0 文档契约**：同步 PLAN、架构、README 与 AGENT_LOG，冻结安全、响应式、主题和评审边界。
+2. **R1 中文文案与主题**：集中阶段、状态、工具和事件文案；注册 `hancode-dark`/`hancode-light`。
+3. **R2 工作台与活动流**：任务导航、语义 ActivityFeed、Raw Trace 和 Focus/Inspect 切换。
+4. **R3 Inspector**：将纯文本 DetailPanel 升级为任务、Diff、测试、审批、检查点、交付、产物和错误的结构化展示。
+5. **R4 决策界面**：按 source write、test、build 和 rollback 显示后果、证据和显式操作；拒绝可附原因。
+6. **R5 测试与 Diff**：安全的专用检查页面、文件标记、截断/脱敏和结构化 TEST_REPORT 摘要。
+7. **R6 操作菜单**：`Ctrl+K` 的状态感知 Palette 与现有 Slash Command 共用操作描述。
+8. **R7 响应式与可访问性**：三档布局、键盘操作、颜色外的文字/符号状态和双主题。
+9. **R8 文档与 Demo**：批准截图、README、TUI UX 指南、Mock Demo 与最终质量门。
+
+### 人工评审门禁
+
+- 第一轮：R0–R3，评审中文术语、主题、宽中屏信息层级、活动流和 Inspector。
+- 第二轮：R4–R6，评审审批、Rollback、测试、Diff 与 Palette 的决策清晰度。
+- 第三轮：R7–R8，评审 `120×36`、`90×32`、`60×28` 三种终端尺寸、文档与 Demo。

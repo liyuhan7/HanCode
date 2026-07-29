@@ -78,6 +78,9 @@ def read_test_report(project_root: Path, task_root: Path) -> ToolResult:
     passed_count = _parse_count(content, "passed")
     failed_count = _parse_count(content, "failed")
     command = _parse_command(content)
+    failure_category = _parse_table_value(content, "失败分类")
+    summary = _parse_section(content, "摘要")
+    next_action_hint = _parse_section(content, "下一步")
     truncated = len(content) > _MAX_REPORT_CHARS
     bounded_content = (
         content[:_MAX_REPORT_CHARS] + "\n...[TRUNCATED]"
@@ -91,6 +94,9 @@ def read_test_report(project_root: Path, task_root: Path) -> ToolResult:
         output={
             "status": status,
             "command": command,
+            "failure_category": failure_category,
+            "summary": summary,
+            "next_action_hint": next_action_hint,
             "passed_count": passed_count,
             "failed_count": failed_count,
             "content": bounded_content,
@@ -140,6 +146,18 @@ def _parse_command(content: str) -> str | None:
     if m:
         return m.group(1).strip()
     return None
+
+
+def _parse_table_value(content: str, label: str) -> str | None:
+    pattern = rf"\|\s*{re.escape(label)}\s*\|\s*([^|]+?)\s*\|"
+    match = re.search(pattern, content)
+    return None if match is None else match.group(1).strip()
+
+
+def _parse_section(content: str, title: str) -> str | None:
+    pattern = rf"^##\s+{re.escape(title)}\s*\n+(.+?)(?=^##\s+|\Z)"
+    match = re.search(pattern, content, flags=re.MULTILINE | re.DOTALL)
+    return None if match is None else match.group(1).strip()
 
 
 def record_review(

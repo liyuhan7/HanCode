@@ -29,6 +29,9 @@ class TestReportSummary:
     failed_count: int | None
     content: str
     truncated: bool
+    failure_category: str | None = None
+    summary: str | None = None
+    next_action_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +85,9 @@ class DeliveryInspectionService:
             failed_count=output.get("failed_count") if isinstance(output.get("failed_count"), int) else None,
             content=str(output.get("content", "")),
             truncated=bool(output.get("truncated", False)),
+            failure_category=output.get("failure_category") if isinstance(output.get("failure_category"), str) else None,
+            summary=output.get("summary") if isinstance(output.get("summary"), str) else None,
+            next_action_hint=output.get("next_action_hint") if isinstance(output.get("next_action_hint"), str) else None,
         )
 
     def read_delivery_summary(

@@ -23,6 +23,7 @@ from hancode.core.delivery_evidence import DeliveryEvidence
 from hancode.storage.export import ExportResult
 from hancode.storage.trace import TraceEvent
 from hancode.tooling.file_tools import redact_text
+from hancode.interfaces.tui.copy.zh_cn import EVENT_LABELS, TOOL_LABELS, label_for
 
 
 MAX_VIEW_TEXT_CHARS = 4096
@@ -140,6 +141,9 @@ class TestReportView:
     command: str | None
     passed_count: int | None
     failed_count: int | None
+    failure_category: str | None
+    summary: str | None
+    next_action_hint: str | None
     content: str
     truncated: bool
 
@@ -241,9 +245,9 @@ def present_task(summary: TaskSummary) -> TaskOverviewView:
 
 def present_trace_event(event: TraceEvent) -> ActivityItemView:
     tool_name = _tool_name(event.action)
-    label = _EVENT_LABELS.get(event.event_type, event.event_type)
+    label = label_for(event.event_type, EVENT_LABELS)
     if tool_name:
-        label = f"{label} {tool_name}"
+        label = f"{label}：{label_for(tool_name, TOOL_LABELS)}"
     return ActivityItemView(
         event_id=_text(event.event_id),
         seq=event.seq,
@@ -355,6 +359,9 @@ def present_test_report(report: TestReportSummary) -> TestReportView:
         command=None if report.command is None else _text(report.command),
         passed_count=report.passed_count,
         failed_count=report.failed_count,
+        failure_category=None if report.failure_category is None else _text(report.failure_category),
+        summary=None if report.summary is None else _text(report.summary),
+        next_action_hint=None if report.next_action_hint is None else _text(report.next_action_hint),
         content=_text(report.content),
         truncated=report.truncated,
     )
@@ -519,34 +526,6 @@ def _text(value: object, *, limit: int = MAX_VIEW_TEXT_CHARS) -> str:
     safe = redact_text(raw)
     safe = "".join(char for char in safe if char in "\n\r\t" or ord(char) >= 32)
     return safe[:limit]
-
-
-_EVENT_LABELS: dict[str, str] = {
-    "task_started": "TASK started",
-    "run_started": "RUN started",
-    "provider_called": "PROVIDER called",
-    "phase_started": "PHASE start",
-    "phase_completed": "PHASE done",
-    "interaction_requested": "ASK agent asks",
-    "interaction_answered": "ASK answer submitted",
-    "interaction_resumed": "ASK resumed",
-    "tool_called": "TOOL called",
-    "tool_completed": "TOOL ok",
-    "tool_failed": "TOOL failed",
-    "policy_denied": "POLICY denied",
-    "source_write_authorized": "WRITE authorized",
-    "checkpoint_created": "CKPT created",
-    "approval_requested": "APPROVAL requested",
-    "approval_consumed": "APPROVAL consumed",
-    "test_completed": "TEST completed",
-    "test_failed": "TEST failed",
-    "feedback_generated": "FEEDBACK generated",
-    "retry_budget_consumed": "RETRY consumed",
-    "rollback_performed": "ROLLBACK done",
-    "deliverable_created": "DELIVERABLE created",
-    "run_completed": "RUN completed",
-    "task_blocked": "TASK blocked",
-}
 
 
 __all__ = [

@@ -288,9 +288,9 @@ hancode tui --project-root .
 界面元素与命令：
 
 - 直接输入自然语言目标会创建并运行任务；任务等待输入时，输入内容作为回答并自动 resume。任务等待批准时，明文输入不会决策，必须使用 `/approve` 或 `/reject`。
-- Slash 命令：`/task <goal>`、`/tasks`、`/use <task-id>`、`/run`、`/resume`、`/approve`、`/reject <理由>`、`/status`、`/diff [task|latest] [path]`、`/test`、`/checkpoints`、`/delivery`、`/trace [event-id]`、`/artifacts`、`/open <name>`、`/export <directory>`、`/build`、`/rollback`、`/clear`、`/help`、`/quit`。
-- PhaseBar 展示 `spec → plan → code → test → review → deliver` 六阶段状态，只反映持久化状态，不自行推进。
-- ActivityLog 逐条显示 TraceEvent；DetailPanel 展示事件、Diff、Test Report、Checkpoint、Delivery、Artifact 和 Build 摘要。
+- Slash 命令：`/task <goal>`、`/tasks`、`/use <task-id>`、`/run`、`/resume`、`/approve`、`/reject <理由>`、`/status`、`/diff [task|latest] [path]`、`/test`、`/checkpoints`、`/delivery`、`/trace [event-id]`、`/artifacts`、`/open <name>`、`/export <directory>`、`/build`、`/rollback`、`/view focus|inspect`、`/theme dark|light`、`/clear`、`/help`、`/quit`。
+- 默认工作台使用中文阶段、状态和语义活动流；F2 在聚焦活动流和 Raw Trace 检查视图之间切换，技术标识仍保持原文。
+- `Ctrl+K` 打开状态感知操作菜单，`Ctrl+T` 切换当前会话的深浅主题；Inspector 展示任务、Diff、测试、审批、检查点、交付和产物摘要。
 - Approval 和 Rollback 使用显式 Modal；Y/N/Esc 只在 Modal 获得焦点时生效，窄终端自动切换为纵向布局。
 
 设计边界（TUI 只是展示层，不绕过 Harness 内核）：

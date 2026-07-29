@@ -242,7 +242,7 @@ def test_activity_log_formats_known_and_unknown_events() -> None:
     from hancode.interfaces.tui.widgets.activity_log import format_event
 
     line = format_event(_event(1, "tool_called"))
-    assert "tool_called" in line or "TOOL" in line
+    assert "开始执行工具" in line
 
     unknown = format_event(_event(2, "mystery_event"))
     # Unknown events are shown, not dropped.
@@ -417,7 +417,7 @@ def test_app_projects_persisted_summary_while_worker_is_running(tmp_path: Path) 
             assert app.controller.state.trace_events
 
             phase_bar = app.screen.query_one("#tui-phase-bar", PhaseBar)
-            assert "▶ plan" in str(phase_bar.render())
+            assert "▶ 制定计划" in str(phase_bar.render())
             activity = app.screen.query_one("#tui-activity-log", ActivityLog)
             assert activity.lines
             task_list = app.screen.query_one("#tui-task-list", ListView)
@@ -426,7 +426,7 @@ def test_app_projects_persisted_summary_while_worker_is_running(tmp_path: Path) 
                 for item in task_list.children
                 for label in item.query(Label)
             ]
-            assert "task-001 · running" in labels
+            assert any("task-001 · 正在运行" in label for label in labels)
 
             provider.release.set()
             await app.workers.wait_for_complete()

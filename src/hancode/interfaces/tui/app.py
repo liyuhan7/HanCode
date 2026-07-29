@@ -34,8 +34,9 @@ from hancode.interfaces.tui.commands import (
     classify_plain_text,
     parse_command,
 )
+from hancode.interfaces.tui.command_actions import available_actions
 from hancode.interfaces.tui.controller import TuiSessionController
-from hancode.interfaces.tui.dialogs import ApprovalDialog, RollbackDialog
+from hancode.interfaces.tui.dialogs import ApprovalDialog, RejectionReasonDialog, RollbackDialog
 from hancode.interfaces.tui.messages import (
     OperationFailed,
     OperationFinished,
@@ -69,6 +70,19 @@ from hancode.interfaces.tui.presenters import (
     present_trace_event,
 )
 from hancode.interfaces.tui.screens.main import MainScreen
+from hancode.interfaces.tui.palette import CommandPalette
+from hancode.interfaces.tui.task_drawer import TaskDrawer
+from hancode.interfaces.tui.semantic_presenters import present_activity_groups
+from hancode.interfaces.tui.themes import (
+    DARK_THEME_NAME,
+    LIGHT_THEME_NAME,
+    alternate_theme,
+    register_hancode_themes,
+)
+from hancode.interfaces.tui.view_state import DisplayMode
+from hancode.interfaces.tui.widgets.activity_feed import ActivityFeed
+from hancode.interfaces.tui.widgets.activity_log import ActivityLog
+from hancode.interfaces.tui.widgets.inspector import Inspector
 from hancode.storage.export import ExportResult
 from hancode.storage.trace import TraceEvent
 
@@ -94,6 +108,18 @@ class HanCodeTuiApp(App[None]):
     """Interactive terminal session for the HanCode harness."""
 
     TITLE = "HanCode"
+    CSS = """
+    CommandPalette { align: center middle; }
+    #tui-command-palette { width: 70%; max-width: 84; height: 70%; background: $panel; border: heavy $primary; padding: 1 2; }
+    #tui-command-palette-list { height: 1fr; }
+    ApprovalDialog, RollbackDialog { align: center middle; }
+    #tui-approval-dialog, #tui-rollback-dialog { width: 76%; max-width: 92; background: $panel; border: heavy $primary; padding: 1 2; }
+    """
+    BINDINGS = [
+        ("f2", "toggle_display_mode", "聚焦/检查"),
+        ("ctrl+k", "open_palette", "操作菜单"),
+        ("ctrl+t", "toggle_theme", "切换主题"),
+    ]
 
     def __init__(
         self,
@@ -107,10 +133,13 @@ class HanCodeTuiApp(App[None]):
         services: TuiServices | None = None,
     ) -> None:
         super().__init__()
+        register_hancode_themes(self)
+        self.theme = DARK_THEME_NAME
         self._project_root = project_root
         self._pending_rollback: RollbackPreview | None = None
         self._approval_modal_open = False
         self._rollback_modal_open = False
+        self._drawer_requested = False
         self.controller = TuiSessionController(
             project_root,
             services=services,
@@ -130,6 +159,27 @@ class HanCodeTuiApp(App[None]):
         # Worker pending when the user quits immediately after launch.
         if self._sync_value(TuiIntent(kind=TuiOperationKind.LIST_TASKS)) is not None:
             self._refresh_task_list()
+        self._render_activity_views()
+        self._refresh_header()
+        self._apply_display_mode()
+
+    def action_open_palette(self) -> None:
+        self.push_screen(CommandPalette(available_actions(self.controller.state)), self._on_palette_result)
+
+    def action_toggle_theme(self) -> None:
+        self.theme = alternate_theme(self.theme)
+        self._notify("已切换为浅色主题。" if self.theme == LIGHT_THEME_NAME else "已切换为深色主题。")
+
+    def action_toggle_display_mode(self) -> None:
+        current = self.controller.state.display_mode
+        next_mode = DisplayMode.INSPECT if current is DisplayMode.FOCUS else DisplayMode.FOCUS
+        self.controller.set_display_mode(next_mode)
+        self._apply_display_mode()
+        self._notify("已切换到检查视图。" if next_mode is DisplayMode.INSPECT else "已切换到聚焦视图。")
+
+    def _on_palette_result(self, command: str | None) -> None:
+        if command is not None:
+            self.submit_input(command)
 
     def on_input_submitted(self, event: "Input.Submitted") -> None:
         if event.input.id == "tui-composer":
@@ -212,6 +262,11 @@ class HanCodeTuiApp(App[None]):
             self._focus_trace(command.args[0] if command.args else None)
         elif command.name == "clear":
             self._clear_activity()
+        elif command.name == "view":
+            self.controller.set_display_mode(DisplayMode(command.args[0]))
+            self._apply_display_mode()
+        elif command.name == "theme":
+            self.theme = DARK_THEME_NAME if command.args[0] == "dark" else LIGHT_THEME_NAME
         elif command.name == "quit":
             self.exit()
 
@@ -277,15 +332,7 @@ class HanCodeTuiApp(App[None]):
 
     def _rerender_activity(self) -> None:
         """Re-paint the whole activity feed from the current view state."""
-        try:
-            from hancode.interfaces.tui.widgets.activity_log import ActivityLog
-
-            log = self.screen.query_one("#tui-activity-log", ActivityLog)
-        except Exception:
-            return
-        log.clear()
-        for event in self.controller.state.trace_events:
-            log.append_event(present_trace_event(event))
+        self._render_activity_views()
 
     # -- run lifecycle ---------------------------------------------------
 
@@ -471,11 +518,17 @@ class HanCodeTuiApp(App[None]):
             "命令：/task <goal> /tasks /use <id> /run /resume /approve "
             "/reject <理由> /status /diff [task|latest] [path] /test "
             "/checkpoints /delivery /trace [event-id] /artifacts /open <name> "
-            "/export <directory> /build /rollback [confirm|cancel] /clear /quit"
+            "/export <directory> /build /rollback [confirm|cancel] /view [focus|inspect] "
+            "/theme [dark|light] /clear /quit"
         )
 
     def _show_tasks(self) -> None:
+        self._drawer_requested = True
         self._start_query(TuiIntent(kind=TuiOperationKind.LIST_TASKS))
+
+    def _on_task_drawer_result(self, task_id: str | None) -> None:
+        if task_id is not None:
+            self._select(task_id)
 
     def _show_status(self) -> None:
         task_id = self.controller.state.active_task_id
@@ -574,21 +627,17 @@ class HanCodeTuiApp(App[None]):
 
     def _focus_activity(self) -> None:
         try:
-            from hancode.interfaces.tui.widgets.activity_log import ActivityLog
-
-            self.screen.query_one("#tui-activity-log", ActivityLog).focus()
+            if self.controller.state.display_mode is DisplayMode.FOCUS:
+                self.screen.query_one("#tui-activity-feed", ActivityFeed).focus()
+            else:
+                self.screen.query_one("#tui-activity-log", ActivityLog).focus()
         except Exception:
             pass
 
     def _clear_activity(self) -> None:
         """Clear the on-screen activity feed only; trace.jsonl is untouched."""
         self.controller.clear_activity()
-        try:
-            from hancode.interfaces.tui.widgets.activity_log import ActivityLog
-
-            self.screen.query_one("#tui-activity-log", ActivityLog).clear()
-        except Exception:
-            pass
+        self._render_activity_views()
 
     def _show_artifacts(self) -> None:
         task_id = self.controller.state.active_task_id
@@ -628,12 +677,55 @@ class HanCodeTuiApp(App[None]):
 
     def _render_detail(self, text: str) -> None:
         try:
-            from textual.widgets import Static
-
-            panel = self.screen.query_one("#tui-detail-panel", Static)
+            for panel in self.screen.query(Inspector):
+                panel.update_content(text)
         except Exception:
             return
-        panel.update(text)
+
+    def _render_activity_views(self) -> None:
+        """Synchronise semantic and raw panes from the immutable event buffer."""
+        events = self.controller.state.trace_events
+        groups = present_activity_groups(events)
+        try:
+            for feed in self.screen.query(ActivityFeed):
+                feed.update_groups(groups)
+            for log in self.screen.query(ActivityLog):
+                log.clear()
+                for event in events:
+                    log.append_event(present_trace_event(event))
+        except Exception:
+            return
+        self._apply_display_mode()
+
+    def _apply_display_mode(self) -> None:
+        focus = self.controller.state.display_mode is DisplayMode.FOCUS
+        try:
+            for feed in self.screen.query(ActivityFeed):
+                feed.styles.display = "block" if focus else "none"
+            for log in self.screen.query(ActivityLog):
+                log.styles.display = "none" if focus else "block"
+        except Exception:
+            return
+
+    def _refresh_header(self) -> None:
+        try:
+            from textual.widgets import Static
+            from hancode.interfaces.tui.copy.zh_cn import PHASE_LABELS, STATUS_LABELS
+
+            header = self.screen.query_one("#tui-task-header", Static)
+        except Exception:
+            return
+        summary = self.controller.state.active_task
+        if summary is None:
+            header.update("HanCode  ·  选择或创建任务  ·  Ctrl+K 操作菜单  ·  Ctrl+T 主题")
+            return
+        goal = present_task(summary).goal or "未填写任务目标"
+        goal = goal.replace("\n", " ")[:52]
+        header.update(
+            f"HanCode  ·  {summary.task_id} · {goal}  ·  "
+            f"{STATUS_LABELS.get(summary.status.value, summary.status.value)} · "
+            f"{PHASE_LABELS.get(summary.current_phase.value, summary.current_phase.value)}"
+        )
 
     def _run_worker(self, operation: TuiOperation) -> None:
         self._run_operation_worker(
@@ -698,7 +790,7 @@ class HanCodeTuiApp(App[None]):
 
     def on_trace_arrived(self, message: TraceArrived) -> None:
         self.controller.on_trace(message.event)
-        self._refresh_activity()
+        self._render_activity_views()
 
     def on_task_summary_changed(self, message: TaskSummaryChanged) -> None:
         """Render a current mutation snapshot without changing interaction focus."""
@@ -707,6 +799,7 @@ class HanCodeTuiApp(App[None]):
             return
         self._refresh_phase_bar()
         self._refresh_task_list()
+        self._refresh_header()
         if self.controller.state.detail_kind is DetailKind.TASK:
             self._render_active_task_detail()
 
@@ -719,12 +812,17 @@ class HanCodeTuiApp(App[None]):
         if kind is TuiOperationKind.RUN_TASK:
             self._refresh_phase_bar()
             self._refresh_task_list_data_only()
+            self._refresh_header()
         elif kind is TuiOperationKind.LIST_TASKS:
             self._refresh_task_list()
             self._reflect_waiting_input()
+            if self._drawer_requested:
+                self._drawer_requested = False
+                self.push_screen(TaskDrawer(self.controller.state.tasks), self._on_task_drawer_result)
         elif kind is TuiOperationKind.SELECT_TASK:
             self._rerender_activity()
             self._refresh_phase_bar()
+            self._refresh_header()
             self._reflect_waiting_input()
         elif kind is TuiOperationKind.TRACE:
             self._rerender_activity()
@@ -735,14 +833,10 @@ class HanCodeTuiApp(App[None]):
         elif kind is TuiOperationKind.GET_STATUS:
             self._refresh_phase_bar()
             self._refresh_task_list_data_only()
+            self._refresh_header()
         elif kind is TuiOperationKind.LIST_ARTIFACTS:
             self._render_artifact_list()
-        elif kind in {
-            TuiOperationKind.DIFF,
-            TuiOperationKind.TEST_REPORT,
-            TuiOperationKind.CHECKPOINTS,
-            TuiOperationKind.DELIVERY,
-        }:
+        elif kind in {TuiOperationKind.DIFF, TuiOperationKind.TEST_REPORT, TuiOperationKind.CHECKPOINTS, TuiOperationKind.DELIVERY}:
             self._render_inspection_detail()
         elif kind is TuiOperationKind.GET_APPROVAL:
             self._render_approval_detail(message.result.value)
@@ -813,6 +907,7 @@ class HanCodeTuiApp(App[None]):
     def on_run_finished(self, message: RunFinished) -> None:
         task_id = self.controller.on_run_finished(refresh_status=False)
         self._refresh_phase_bar()
+        self._refresh_header()
         self._reflect_waiting_input()
         if task_id is not None:
             self._start_query(
@@ -823,6 +918,7 @@ class HanCodeTuiApp(App[None]):
         task_id = self.controller.on_run_finished(refresh_status=False)
         self._notify(message.error.message)
         self._refresh_phase_bar()
+        self._refresh_header()
         self._reflect_waiting_input()
         if task_id is not None:
             self._start_query(
@@ -916,14 +1012,26 @@ class HanCodeTuiApp(App[None]):
         if result == "approve":
             self._decide_approval(approved=True, reason=None)
         elif result == "reject":
-            self._decide_approval(approved=False, reason=None)
+            self.push_screen(RejectionReasonDialog(), self._on_rejection_reason)
+
+    def _on_rejection_reason(self, reason: str | None) -> None:
+        if reason is not None:
+            self._decide_approval(approved=False, reason=reason)
 
     def _reset_composer_placeholder(self) -> None:
         try:
             composer = self.screen.query_one("#tui-composer", Input)
         except Exception:
             return
-        composer.placeholder = "描述你的课程项目任务，或输入 /help"
+        summary = self.controller.state.active_task
+        if summary is None:
+            composer.placeholder = "描述你希望 HanCode 完成的开发任务……"
+        elif summary.status is TaskStatus.COMPLETED:
+            composer.placeholder = "查看交付结果，或输入新的开发任务……"
+        elif summary.latest_test_status == "failed":
+            composer.placeholder = "输入修复建议，或选择继续分析……"
+        else:
+            composer.placeholder = "输入补充要求、问题或命令……"
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # Worker completion is surfaced via explicit OperationFinished and
@@ -939,30 +1047,34 @@ class HanCodeTuiApp(App[None]):
             return
 
         view = present_task(summary)
-        checkpoint = view.latest_checkpoint or "none"
-        test_status = view.latest_test_status or "none"
-        build_status = view.latest_build_status or "none"
-        builds_run = ", ".join(view.builds_run) or "none"
+        from hancode.interfaces.tui.copy.zh_cn import PHASE_LABELS, STATUS_LABELS
+
+        checkpoint = view.latest_checkpoint or "尚无"
+        test_status = STATUS_LABELS.get(view.latest_test_status, view.latest_test_status or "未知")
+        build_status = STATUS_LABELS.get(view.latest_build_status, view.latest_build_status or "未知")
+        builds_run = ", ".join(view.builds_run) or "尚未执行"
 
         self._render_detail(
-            f"# {view.task_id}\n\n"
-            f"Goal: {view.goal}\n\n"
-            f"Status: {view.status}\n\n"
-            f"Phase: {view.current_phase}\n\n"
-            f"Retry budget: {view.retry_budget_remaining}\n\n"
-            f"Latest test: {test_status}\n\n"
-            f"Latest build: {build_status}\n\n"
-            f"Builds run: {builds_run}\n\n"
-            f"Latest checkpoint: {checkpoint}"
+            f"任务概览\n\n"
+            f"任务：{view.task_id}\n"
+            f"目标：{view.goal or '未填写'}\n"
+            f"状态：{STATUS_LABELS.get(view.status, view.status)} ({view.status})\n"
+            f"当前阶段：{PHASE_LABELS.get(view.current_phase, view.current_phase)}\n\n"
+            f"已修改文件：{len(view.files_changed)}\n"
+            f"测试结果：{test_status}\n"
+            f"构建状态：{build_status}\n"
+            f"最近检查点：{checkpoint}\n"
+            f"剩余重试：{view.retry_budget_remaining}\n"
+            f"已执行构建：{builds_run}"
         )
 
     def _render_inspection_detail(self) -> None:
         detail = self.controller.state.detail
         if isinstance(detail, DiffView):
             lines = [
-                "# Diff",
-                f"Scope: {detail.scope}",
-                f"Checkpoints: {', '.join(detail.checkpoint_ids) or 'none'}",
+                "代码改动",
+                f"范围：{detail.scope}",
+                f"检查点：{', '.join(detail.checkpoint_ids) or '尚无'}",
             ]
             for file_view in detail.files:
                 marker = {"created": "A", "modified": "M", "deleted": "D"}.get(
@@ -970,35 +1082,39 @@ class HanCodeTuiApp(App[None]):
                 )
                 if file_view.drifted:
                     marker = "!"
-                suffix = " binary" if file_view.binary else ""
+                suffix = " · 二进制文件" if file_view.binary else ""
                 lines.append(f"{marker} {file_view.path}{suffix}")
                 if file_view.unified_diff:
                     lines.extend(("", file_view.unified_diff))
             if detail.risks:
-                lines.extend(("", "Risks:", *[f"- {risk}" for risk in detail.risks]))
+                lines.extend(("", "风险：", *[f"! {risk}" for risk in detail.risks]))
             if detail.truncated:
-                lines.append("[diff truncated]")
+                lines.append("[Diff 预览已截断]")
             self._render_detail("\n".join(lines))
             return
         if isinstance(detail, TestReportView):
             lines = [
-                "# Test Report",
-                f"Status: {detail.status}",
-                f"Command: {detail.command or 'unknown'}",
-                f"Passed: {detail.passed_count if detail.passed_count is not None else 'unknown'}",
-                f"Failed: {detail.failed_count if detail.failed_count is not None else 'unknown'}",
+                "测试结果",
+                f"状态：{detail.status}",
+                f"命令：{detail.command or '未知'}",
+                f"通过：{detail.passed_count if detail.passed_count is not None else '未知'}",
+                f"失败：{detail.failed_count if detail.failed_count is not None else '未知'}",
+                f"失败分类：{detail.failure_category or '未记录'}",
+                f"摘要：{detail.summary or '当前测试报告未记录具体失败用例。'}",
+                f"下一步：{detail.next_action_hint or '查看测试报告原文后继续分析。'}",
                 "",
+                "测试报告原文（已脱敏）：",
                 detail.content,
             ]
             if detail.truncated:
-                lines.append("[report truncated]")
+                lines.append("[测试报告已截断]")
             self._render_detail("\n".join(lines))
             return
         if isinstance(detail, CheckpointListView):
-            lines = ["# Checkpoints"]
+            lines = ["检查点"]
             for checkpoint_view in detail.checkpoints:
-                files = f"{len(checkpoint_view.files)} files"
-                rollback = " rollback-available" if checkpoint_view.rollback_available else ""
+                files = f"{len(checkpoint_view.files)} 个文件"
+                rollback = " · 可恢复" if checkpoint_view.rollback_available else ""
                 lines.append(
                     f"{checkpoint_view.checkpoint_id} {checkpoint_view.status} "
                     f"{files}{rollback} · {checkpoint_view.phase}"
@@ -1008,21 +1124,21 @@ class HanCodeTuiApp(App[None]):
             return
         if isinstance(detail, DeliveryView):
             lines = [
-                "# Delivery",
-                f"Status: {detail.status}",
-                f"Tests: {detail.latest_test_status}",
-                f"Build: {detail.latest_build_status}",
-                f"Knowledge items: {detail.knowledge_count}",
-                f"Export ready: {'yes' if detail.export_ready else 'no'}",
+                "交付结果",
+                f"状态：{detail.status}",
+                f"测试：{detail.latest_test_status}",
+                f"构建：{detail.latest_build_status}",
+                f"知识条目：{detail.knowledge_count}",
+                f"可导出：{'是' if detail.export_ready else '否'}",
             ]
             if detail.requirement_coverage:
-                lines.extend(("", "Requirements:"))
+                lines.extend(("", "需求覆盖："))
                 lines.extend(
                     f"{'*' if item.is_core else '-'} {item.requirement_id}: {item.status}"
                     for item in detail.requirement_coverage
                 )
             if detail.blockers:
-                lines.extend(("", "Blockers:", *[f"! {blocker}" for blocker in detail.blockers]))
+                lines.extend(("", "阻塞项：", *[f"! {blocker}" for blocker in detail.blockers]))
             self._render_detail("\n".join(lines))
             return
         if isinstance(detail, EventDetailView):
@@ -1030,14 +1146,14 @@ class HanCodeTuiApp(App[None]):
                 "\n".join(
                     (
                         "# Event",
-                        f"Event ID: {detail.event_id}",
-                        f"Seq: {detail.seq}",
-                        f"Type: {detail.event_type}",
-                        f"Phase: {detail.phase}",
-                        f"Status: {detail.status}",
-                        f"Tool: {detail.tool_name or 'none'}",
-                        f"Target: {detail.target_path or 'none'}",
-                        f"Error: {detail.error_summary or 'none'}",
+                        f"事件 ID：{detail.event_id}",
+                        f"序号：{detail.seq}",
+                        f"类型：{detail.event_type}",
+                        f"阶段：{detail.phase}",
+                        f"状态：{detail.status}",
+                        f"工具：{detail.tool_name or '无'}",
+                        f"目标：{detail.target_path or '无'}",
+                        f"错误：{detail.error_summary or '无'}",
                     )
                 )
             )
@@ -1045,15 +1161,7 @@ class HanCodeTuiApp(App[None]):
     # -- widget refresh helpers -----------------------------------------
 
     def _refresh_activity(self) -> None:
-        try:
-            from hancode.interfaces.tui.widgets.activity_log import ActivityLog
-
-            log = self.screen.query_one("#tui-activity-log", ActivityLog)
-        except Exception:
-            return
-        events = self.controller.state.trace_events
-        if events:
-            log.append_event(present_trace_event(events[-1]))
+        self._render_activity_views()
 
     def _refresh_phase_bar(self) -> None:
         try:
@@ -1076,28 +1184,29 @@ class HanCodeTuiApp(App[None]):
         """Update task labels in-place to avoid Textual layout cascade."""
         try:
             from textual.widgets import Label, ListItem, ListView
-
-            view = self.screen.query_one("#tui-task-list", ListView)
         except Exception:
             return
         tasks = self.controller.state.tasks
-        old_count = len(view.children)
-        for index, summary in enumerate(tasks):
-            if index < old_count:
-                item = view.children[index]
-                for child in item.walk_children():
-                    if isinstance(child, Label):
-                        child.update(f"{summary.task_id} \u00b7 {summary.status.value}")
-                        break
-            else:
-                view.append(
-                    ListItem(
-                        Label(f"{summary.task_id} \u00b7 {summary.status.value}"),
-                        id=f"task-{summary.task_id}",
-                    )
-                )
-        while len(view.children) > len(tasks):
-            view.children[-1].remove()
+        try:
+            views = tuple(self.screen.query(ListView))
+        except Exception:
+            return
+        for view in views:
+            if view.id not in {"tui-task-list", "tui-task-list-narrow"}:
+                continue
+            old_count = len(view.children)
+            for index, summary in enumerate(tasks):
+                label = _task_label(summary)
+                if index < old_count:
+                    item = view.children[index]
+                    for child in item.walk_children():
+                        if isinstance(child, Label):
+                            child.update(label)
+                            break
+                else:
+                    view.append(ListItem(Label(label), id=f"task-{summary.task_id}"))
+            while len(view.children) > len(tasks):
+                view.children[-1].remove()
 
     def _notify(self, text: str) -> None:
         try:
@@ -1114,6 +1223,17 @@ def _tui_internal_error() -> StructuredError:
         denied_rule="tui_internal_error",
         suggested_fix="检查任务状态与 trace 后重试。",
     )
+
+
+def _task_label(summary: TaskSummary) -> str:
+    from hancode.interfaces.tui.copy.zh_cn import PHASE_LABELS, STATUS_LABELS
+
+    status = STATUS_LABELS.get(summary.status.value, summary.status.value)
+    phase = PHASE_LABELS.get(summary.current_phase.value, summary.current_phase.value)
+    goal = (summary.goal or "未填写目标").replace("\n", " ")[:28]
+    return f"{summary.task_id} · {status} ({summary.status.value})\n{phase} · {goal}"
+
+
 
 
 def _operation_error(

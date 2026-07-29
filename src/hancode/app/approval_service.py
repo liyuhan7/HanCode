@@ -15,6 +15,7 @@ from hancode.core.state import load_state
 from hancode.storage.approvals import ApprovalStore
 from hancode.storage.task_lock import FilesystemTaskMutationGuard
 from hancode.storage.workspace import task_path
+from hancode.tooling.file_tools import redact_text
 
 
 class ApprovalService:
@@ -65,6 +66,13 @@ class ApprovalService:
             "reason": record.action.reason,
             "status": record.status.value,
             "preview": record.preview.to_dict() if record.preview else None,
+            "expected_checkpoint_id": record.expected_checkpoint_id,
+            "latest_checkpoint_at_request": record.latest_checkpoint_at_request,
+            "command": (
+                redact_text(value)
+                if isinstance((value := record.action.args.get("command")), str)
+                else None
+            ),
         }
 
     def approve(

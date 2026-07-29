@@ -9,6 +9,7 @@ never touches the file).
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 
 from hancode.app.task_models import TaskSummary
@@ -18,6 +19,13 @@ from hancode.storage.trace import TraceEvent
 
 
 MAX_EVENT_BUFFER = 500
+
+
+class DisplayMode(str, Enum):
+    """Center-pane presentation mode, independent from task state."""
+
+    FOCUS = "focus"
+    INSPECT = "inspect"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +46,7 @@ class TuiViewState:
     selected_event_id: str | None = None
     detail_kind: DetailKind = DetailKind.TASK
     detail: object | None = None
+    display_mode: DisplayMode = DisplayMode.FOCUS
 
     selected_artifact: str | None = None
     artifact_preview: str | None = None
@@ -57,6 +66,9 @@ class TuiViewState:
 
     def with_busy(self, busy: bool, *, running_task_id: str | None) -> TuiViewState:
         return replace(self, busy=busy, running_task_id=running_task_id)
+
+    def with_display_mode(self, display_mode: DisplayMode) -> TuiViewState:
+        return replace(self, display_mode=display_mode)
 
 
 def reduce_trace_arrived(state: TuiViewState, event: TraceEvent) -> TuiViewState:
@@ -140,6 +152,7 @@ def _pending_fields(summary: TaskSummary) -> tuple[str | None, str | None, str |
 __all__ = [
     "TuiViewState",
     "MAX_EVENT_BUFFER",
+    "DisplayMode",
     "reduce_trace_arrived",
     "reduce_run_finished",
     "reduce_task_selected",

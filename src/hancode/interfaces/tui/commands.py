@@ -38,6 +38,8 @@ _COMMANDS: dict[str, tuple[int, int | None, str]] = {
     "open": (1, 1, "tui_artifact_name_required"),
     "rollback": (0, 1, ""),
     "clear": (0, 0, ""),
+    "view": (1, 1, "tui_view_mode_required"),
+    "theme": (1, 1, "tui_theme_required"),
     "quit": (0, 0, ""),
 }
 
@@ -165,6 +167,18 @@ def parse_command(raw: str) -> TuiCommand | TuiCommandError:
             "tui_artifact_name_invalid",
             "The artifact name is not allow-listed.",
             "Open one of SPEC.md, PLAN.md, TEST_REPORT.md, REVIEW.md, KNOWLEDGE.md, or DELIVERABLES.md.",
+        )
+    if name == "view" and args[0] not in {"focus", "inspect"}:
+        return TuiCommandError(
+            "tui_view_mode_invalid",
+            "/view 只支持 focus 或 inspect。",
+            "使用 /view focus 或 /view inspect。",
+        )
+    if name == "theme" and args[0] not in {"dark", "light"}:
+        return TuiCommandError(
+            "tui_theme_invalid",
+            "/theme 只支持 dark 或 light。",
+            "使用 /theme dark 或 /theme light。",
         )
 
     return TuiCommand(name=name, args=args)

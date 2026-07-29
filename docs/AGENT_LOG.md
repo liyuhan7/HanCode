@@ -2119,3 +2119,13 @@
 - 锁定交付：`uv lock` 更新 `uv.lock`，`uv sync --locked --extra dev` 成功。
 - 最终验证：pytest `1381 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 102 source files`。
 - 状态：S6-R6 已完成；GitHub CI 证明仍为明确非目标，需另行授权与任务卡。
+
+### 2026-07-29 — S7 中文开发者工作台（实施中）
+
+- 用户明确授权完整 R0–R8，实现于 `codex/tui-ux`；不使用 Superpowers、不采用 TDD、由用户进行三轮页面人工评审；未经授权不提交或推送。
+- 边界：只修改 TUI、Presenter、只读展示模型、文档和 Demo；不修改 AgentLoop、ToolPolicy、ApprovalPolicy、Checkpoint 语义、持久化格式或 Headless CLI。
+- 已实现基础：中文文案真源、`hancode-dark`/`hancode-light` 会话主题、F2 Focus/Inspect、语义活动流、结构化 Inspector、宽中窄布局骨架、审批/rollback 中文后果文案、测试报告摘要字段、Command Palette 与专用 Diff/Test 检查页面。
+- 自动验证：TUI 既有范围回归 `75 passed`，S7 新增页面回归 `4 passed`，全量 pytest `1385 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 114 source files`；`uv build --offline` 成功；Mock Demo 返回 `status=completed`；`git diff --check` 通过。
+- 环境说明：受限沙箱下 pytest 清理阶段会触发工作区临时目录的 `WinError 5`；最终 pytest 使用任务专属、用户可写的 `TEMP`/`TMP`/`UV_CACHE_DIR` 与 `--basetemp` 完成。空隔离 uv cache 缺少 `setuptools>=68` 时离线 build 未进入构建，切换到已有离线依赖 cache 后构建成功。
+- 评审材料：已生成 Wide 深/浅、Medium 深、Narrow 深的 SVG 截图至 `docs/assets/tui/`；临时截图、pytest 目录与构建产物在交付前清理。
+- 状态：代码实现与自动验证已完成；三轮人工页面评审尚待用户执行，未提交、未推送。

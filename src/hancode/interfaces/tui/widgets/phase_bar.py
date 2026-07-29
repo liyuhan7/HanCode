@@ -10,6 +10,7 @@ from textual.widgets import Static
 
 from hancode.app.task_models import TaskSummary
 from hancode.core.models import Phase, TaskStatus
+from hancode.interfaces.tui.copy.zh_cn import PHASE_LABELS
 
 
 _PHASE_ORDER: tuple[Phase, ...] = (
@@ -60,10 +61,10 @@ def _cell_state(summary: TaskSummary, index: int, current_index: int) -> str:
 def render_phase_bar(summary: TaskSummary | None) -> str:
     if summary is None:
         return " → ".join(
-            f"{_GLYPH['not_started']} {phase.value}" for phase in _PHASE_ORDER
+            f"{_GLYPH['not_started']} {PHASE_LABELS[phase.value]}" for phase in _PHASE_ORDER
         )
     return " → ".join(
-        f"{_GLYPH[state]} {phase_value}" for phase_value, state in phase_cells(summary)
+        f"{_GLYPH[state]} {PHASE_LABELS[phase_value]}" for phase_value, state in phase_cells(summary)
     )
 
 

@@ -47,6 +47,7 @@ from hancode.interfaces.tui.presenters import (
     present_test_report,
 )
 from hancode.interfaces.tui.view_state import (
+    DisplayMode,
     MAX_EVENT_BUFFER,
     TuiViewState,
     reduce_run_finished,
@@ -469,6 +470,10 @@ class TuiSessionController:
 
     def clear_activity(self) -> None:
         self._state = replace(self._state, trace_events=(), selected_event_id=None)
+
+    def set_display_mode(self, display_mode: DisplayMode) -> None:
+        """Update only session presentation state; never persist it to a task."""
+        self._state = self._state.with_display_mode(display_mode)
 
     def on_run_finished(self, *, refresh_status: bool = True) -> str | None:
         running_task_id = self._state.running_task_id
