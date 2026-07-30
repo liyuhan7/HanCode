@@ -27,6 +27,7 @@ _STATE_FIELDS = frozenset(
         "tests_run",
         "latest_test_status",
         "test_status_consumed",
+        "test_strategy_digest",
         "retry_budget_remaining",
         "inconsistent",
         "source_edits_this_phase",
@@ -43,6 +44,7 @@ _STATE_FIELDS = frozenset(
         "pending_approval_id",
         "builds_run",
         "latest_build_status",
+        "test_strategy_digest",
     }
 )
 _OPTIONAL_STATE_FIELDS = frozenset(
@@ -101,6 +103,7 @@ class TaskState:
     pending_approval_id: str | None = None
     builds_run: tuple[str, ...] = ()
     latest_build_status: str = "none"
+    test_strategy_digest: str | None = None
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -236,6 +239,15 @@ class TaskState:
             or self.latest_build_status not in {"none", "passed", "failed", "timed_out"}
         ):
             raise _invalid_state_field("latest_build_status")
+        if self.test_strategy_digest is not None and (
+            not isinstance(self.test_strategy_digest, str)
+            or len(self.test_strategy_digest) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.test_strategy_digest
+            )
+        ):
+            raise _invalid_state_field("test_strategy_digest")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )
@@ -323,6 +335,11 @@ def load_state(task_root: Path) -> TaskState:
                     frozenset({"none", "passed", "failed", "timed_out"}),
                 )
             ),
+            test_strategy_digest=(
+                None
+                if "test_strategy_digest" not in data
+                else _optional_str(data, "test_strategy_digest")
+            ),
         )
     except (OSError, UnicodeError, ValueError):
         raise _state_parse_error() from None
@@ -390,6 +407,7 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "pending_approval_id": state.pending_approval_id,
         "builds_run": list(state.builds_run),
         "latest_build_status": state.latest_build_status,
+        "test_strategy_digest": state.test_strategy_digest,
     }
     state_file = task_root / "state.json"
     if _is_link(state_file):

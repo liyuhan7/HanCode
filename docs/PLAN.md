@@ -7229,3 +7229,43 @@ S4-R2 Build       S4-R3 Test Report
 - 下一动作再次需要审批时创建新的 Approval ID 并返回 `WAITING_APPROVAL`，不绕过 Policy。
 - 错误或非 `RUNNING` 结果不得继续 Provider；CONSUMED/EXECUTING 恢复不得重复执行工具。
 - 审批 E2E、恢复、AgentLoop、TUI 自动恢复回归、Ruff、MyPy 与 `git diff --check` 通过。
+
+---
+
+## S10：Agent 自主测试策略
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [~] 实现完成；全量门禁有 1 个既有基线失败，离线构建缺少本地 `setuptools` 缓存 |
+| 分支 | `codex/agent-test-strategy` |
+| 依赖 | S9 |
+| 范围 | CODE→TEST 测试策略登记、自动补建测试、执行绑定与只读展示 |
+| 开发方式 | Core 行为变更，逐条 RED → GREEN |
+
+### 行为契约
+
+- Agent 在 CODE 阶段复用并补充现有测试；没有相关测试时必须在项目测试目录自行创建测试。
+- CODE 只有在真实测试文件和结构化测试策略均有效时才能完成。
+- 已进入 TEST 的旧任务若缺少或漂移测试策略，自动返回 CODE 补建，不要求用户预先提供测试命令。
+- TEST 只执行策略登记的单 argv 命令，并继续经过既有 RUN_TESTS Approval、`shell=False`、超时和脱敏边界。
+- 教师测试、评分文件和保护路径不可修改或登记为 Agent 自建测试；无法构造可执行测试时进入 WAITING_INPUT。
+- 不修改 Approval、Checkpoint、Provider 协议或 CLI 命令形式；旧 TaskState 缺少新可选字段时兼容加载。
+
+### 验收
+
+- 无测试项目可完成“创建测试→登记策略→审批执行→TEST_REPORT”闭环。
+- 已有测试项目可复用并补充覆盖；策略文件、测试文件哈希或命令不匹配时零 dispatch 并返回 CODE。
+- 测试失败沿用 REVIEW→CODE 重试；测试修改后必须重新登记策略。
+- 识别到零测试时不能标记通过；未知数量必须明确展示为未知。
+- AgentLoop、Router、Phase Gate、Policy、Approval、State、TUI 回归及全量质量门通过。
+
+### 实施结果（2026-07-30）
+
+- 已新增不可变 `TestStrategy`、测试文件 SHA-256、规范化 argv digest、任务级原子 `test_strategy.json` 和 CODE-only `record_test_strategy`。
+- `TaskState.test_strategy_digest` 为向后兼容可选字段；CODE Gate 同时要求源码修改和已登记策略，旧 TEST 任务缺策略时先服从失败/Rollback 路由，否则自动返回 CODE。
+- TEST 上下文只暴露已登记命令、框架、测试文件和覆盖映射；执行前校验状态摘要、策略摘要、命令 argv、测试文件哈希和保护路径，失败时零 dispatch 并回 CODE。
+- Agent 可通过既有 `write_file`/`edit_file` 创建或补充测试，继续经过 Source Write Checkpoint/Approval；测试执行继续经过 RUN_TESTS Approval。
+- 标准输出明确报告 `no tests ran`、`collected 0 items` 或 `0 tests` 时归类为 `no_tests`，不能标记通过。
+- Application Service/TUI 只读投影新增“测试策略已登记/未登记”；Mock Demo 已迁移为复用并登记现有 unittest。
+- 恢复后新鲜验证：S10 相关 `300 passed`；最终全量 `1427 passed, 17 skipped, 1 failed`，唯一失败为实施前已有的 `max_trace_events` 实际默认 `1000` 与旧测试期望 `40` 不一致；Ruff 全仓通过；MyPy `124` 个源码文件通过；`git diff --check` 通过。
+- `uv build --offline` 未通过：任务专属空缓存无法解析 `setuptools>=68`；`--no-build-isolation` 也因当前虚拟环境未安装 `setuptools` 失败。未联网安装依赖，未改变锁文件。

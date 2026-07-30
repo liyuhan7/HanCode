@@ -2164,3 +2164,27 @@
 - 安全边界：`Y/N/Esc` 与按钮仍只返回 approve/reject/cancel；拒绝理由、Approval Service、digest、Checkpoint 和自动恢复路径不变，普通 Composer 文本仍不能批准。
 - 实施后验证：新增源码审批页面回归 `7 passed`；源码审批、既有审批 Modal 与自动恢复聚焦回归合计 `18 passed`；完整 TUI 范围 `141 passed, 1285 deselected`；Ruff `All checks passed!`；相关生产文件 MyPy `Success: no issues found in 2 source files`；`git diff --check` 无空白错误。
 - 清理：Windows 验证使用的仓库内任务专属 pytest 临时目录已删除；未提交、未推送。
+
+### 2026-07-30 — S10 Agent 自主测试策略（实施中）
+
+- 用户冻结：优先复用并补充现有测试；没有测试时由 Agent 在项目原生测试目录自行创建；无法构造时进入 WAITING_INPUT。
+- 目标：新增结构化测试策略、CODE Gate、旧 TEST 任务自动返回 CODE、测试文件/命令绑定及 TUI 只读展示。
+- 安全边界：生成测试仍按 Source Write 进入 Checkpoint/Approval；运行仍按 RUN_TESTS Approval、单 argv、`shell=False`、脱敏和 exactly-once 执行。
+- Git：从干净的 `main@5633050` 创建 `codex/agent-test-strategy`；不提交、不推送。
+- 开发方式：Core 行为采用逐条 RED→GREEN；最终证据只引用本轮新鲜输出。
+
+#### 实施与验证
+
+- 新增 `core/test_strategy.py`、`storage/test_strategies.py`、`tooling/test_strategy_tools.py`；策略以任务、规范化 argv、测试文件哈希和需求覆盖映射形成摘要，并在任务目录原子保存。
+- `record_test_strategy` 仅在 CODE 可用；保护测试不可登记，普通既有项目测试可复用，Agent 新建测试仍由既有 Source Write Policy、Checkpoint 和 Approval 保护。
+- `TaskState` 新增向后兼容的 `test_strategy_digest`；CODE Gate 增加 `test_strategy_required`；旧 TEST 任务缺策略时自动重开 CODE，失败测试与 Rollback 路由优先级保持不变。
+- TEST 执行前校验策略/状态 digest、单 argv、测试文件内容和保护状态；漂移或命令不一致不调用 runner、不生成 TEST_REPORT，并清除摘要以返回 CODE。
+- Provider CODE 契约要求复用/补建测试并登记策略；TEST 只运行上下文中的已登记命令。明确零测试输出归类为 `no_tests`。
+- Application Service、Presenter 和任务 Inspector 增加测试策略登记状态；离线 Mock Demo 已登记现有 unittest 策略。
+- TDD 证据：分别确认模型缺失、工具 Schema、TaskState/CODE Gate、策略漂移、命令不匹配、零测试、Provider 契约和投影的 RED，再逐条转 GREEN。
+- 恢复记录：清理验证产物时曾误删尚未提交的 `src/` 与 `tests/` 内容；获得用户明确授权后，先以 `git restore --source=HEAD -- src tests` 恢复已提交基线，再依据删除前的实现清单逐项重放 S10 生产代码和测试。Git 分支、HEAD 与提交历史未改变。
+- 恢复后相关回归：`300 passed`，包括无测试项目“Agent 创建测试→源码审批→登记策略→测试审批→生成 TEST_REPORT”的端到端闭环。
+- 恢复后全量 pytest：`1427 passed, 17 skipped, 1 failed`；唯一失败为既有 `tests/test_config.py::test_config_loads_defaults`，实际完整模板默认 `max_trace_events=1000`，测试仍期望 `40`，本任务未修改该配置契约。
+- 恢复后质量门禁：Ruff `All checks passed!`；MyPy `Success: no issues found in 124 source files`；`git diff --check` 通过。
+- 离线构建：`uv build --offline` 因任务专属缓存没有 `setuptools>=68` 失败；关闭构建隔离后当前 `.venv` 也没有 `setuptools`。未联网安装、未修改依赖或锁文件。
+- Git：保留在 `codex/agent-test-strategy`，未提交、未推送。

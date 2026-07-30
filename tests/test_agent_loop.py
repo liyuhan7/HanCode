@@ -2,19 +2,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+import json
 from pathlib import Path
 from typing import Mapping
 
 import pytest
 
 from hancode.app.approval_service import ApprovalService
-from hancode.core.actions import Action
+from hancode.core.actions import Action, ActionType
 from hancode.core.state import TaskState, load_state, save_state
-from hancode.runtime.agent_loop import AgentLoop, InMemoryMutationGuard
+from hancode.core.test_strategy import TestCoverageItem
+from hancode.runtime.agent_loop import (
+    AgentLoop,
+    InMemoryMutationGuard,
+    _state_after_tool,
+)
 from hancode.runtime.engine import create_agent_loop
 from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
-from hancode.core.config import HanCodeConfig
+from hancode.core.config import HanCodeConfig, load_config
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.runtime.feedback import FeedbackBuilder
@@ -25,6 +31,7 @@ from hancode.policy.tool_policy import PolicyDecision, ToolPolicy
 from hancode.tooling.factory import build_default_tool_registry
 from hancode.tooling.registry import ToolResult
 from hancode.storage.trace import TraceEvent
+from hancode.storage.test_strategies import TestStrategyStore
 
 
 @dataclass(frozen=True)
@@ -35,6 +42,98 @@ class StubPolicyDecision:
     denied_rule: str | None = None
     suggested_fix: str = "Use an allowed action."
     target_zone: PathZone | None = None
+
+
+def test_successful_strategy_record_updates_task_digest() -> None:
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name="record_test_strategy",
+        args={
+            "command": "python -m pytest -q",
+            "framework": "pytest",
+            "test_files": ["tests/test_app.py"],
+            "coverage": [
+                {
+                    "requirement": "REQ-001",
+                    "verification": "test_app",
+                }
+            ],
+        },
+        reason=None,
+    )
+    result = ToolResult(
+        success=True,
+        action_name="record_test_strategy",
+        output={"test_strategy_digest": "a" * 64},
+        mutation_applied=True,
+    )
+
+    updated = _state_after_tool(
+        _task_state(),
+        action,
+        result,
+        False,
+        source_write=False,
+    )
+
+    assert updated.test_strategy_digest == "a" * 64
+
+
+def test_strategy_preflight_failure_clears_digest_without_recording_test() -> None:
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.TEST,
+        tool_name="run_tests",
+        args={"command": "python -m pytest -q"},
+        reason=None,
+    )
+    state = replace(_task_state(), test_strategy_digest="a" * 64)
+    result = ToolResult(
+        success=False,
+        action_name="run_tests",
+        output={"strategy_error": "test_strategy_stale"},
+        error_summary="A registered test file changed.",
+    )
+
+    updated = _state_after_tool(
+        state,
+        action,
+        result,
+        False,
+        source_write=False,
+    )
+
+    assert updated.test_strategy_digest is None
+    assert updated.tests_run == ()
+    assert updated.latest_test_status == "none"
+
+
+def test_zero_tests_is_recorded_as_failed_evidence() -> None:
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.TEST,
+        tool_name="run_tests",
+        args={"command": "python -m pytest -q"},
+        reason=None,
+    )
+    result = ToolResult(
+        success=True,
+        action_name="run_tests",
+        stdout="no tests ran in 0.01s",
+        exit_code=0,
+        command="python -m pytest -q",
+    )
+
+    updated = _state_after_tool(
+        _task_state(),
+        action,
+        result,
+        False,
+        source_write=False,
+    )
+
+    assert updated.latest_test_status == "failed"
 
 
 class StubStateStore:
@@ -461,7 +560,10 @@ def test_max_steps_prevents_infinite_loop() -> None:
     assert trace.events[-1].observation == {"error_code": "max_steps_exceeded"}
 
 
-def test_repeated_test_discovery_requests_test_command_instead_of_looping() -> None:
+@pytest.mark.parametrize("interaction_enabled", [False, True])
+def test_legacy_test_phase_without_strategy_reopens_code(
+    interaction_enabled: bool,
+) -> None:
     trace = SpyTraceAppender()
     state = replace(
         _task_state(),
@@ -477,66 +579,19 @@ def test_repeated_test_discovery_requests_test_command_instead_of_looping() -> N
         },
     )
     loop, llm, _, _, tools, _ = _build_loop(
-        [_test_list_files_action(), _test_list_files_action()],
-        max_steps=4,
+        [_read_file_action()],
+        max_steps=1,
         state=state,
         trace_appender=trace,
-        interaction_enabled=True,
-    )
-
-    result = loop.run("task-001")
-
-    assert result.status is TaskStatus.WAITING_INPUT
-    assert result.steps == 2
-    assert len(llm.contexts) == 2
-    assert [action.tool_name for action in tools.actions] == ["list_files"]
-    assert result.final_state.pending_interaction_id == "ask-000001"
-    assert result.final_observation == {
-        "interaction_id": "ask-000001",
-        "question": (
-            "No executable behavioral test command was found. "
-            "Provide one exact command to run, or add a project test runner "
-            "before resuming."
-        ),
-    }
-    assert [event.event_type for event in trace.events][-2:] == [
-        "test_strategy_missing",
-        "interaction_requested",
-    ]
-
-
-def test_repeated_test_discovery_blocks_with_actionable_error_when_input_disabled() -> None:
-    trace = SpyTraceAppender()
-    state = replace(
-        _task_state(),
-        status=TaskStatus.RUNNING,
-        current_phase=Phase.TEST,
-        phase_completed={
-            Phase.SPEC.value: True,
-            Phase.PLAN.value: True,
-            Phase.CODE.value: True,
-            Phase.TEST.value: False,
-            Phase.REVIEW.value: False,
-            Phase.DELIVER.value: False,
-        },
-    )
-    loop, _, _, _, tools, _ = _build_loop(
-        [_test_list_files_action(), _test_list_files_action()],
-        max_steps=4,
-        state=state,
-        trace_appender=trace,
+        interaction_enabled=interaction_enabled,
     )
 
     result = loop.run("task-001")
 
     assert result.status is TaskStatus.BLOCKED
-    assert result.error is not None
-    assert result.error.error_code == "test_strategy_missing"
-    assert result.error.suggested_fix == (
-        "Configure test_command or add a project test runner before resuming."
-    )
-    assert [action.tool_name for action in tools.actions] == ["list_files"]
-    assert trace.events[-1].event_type == "test_strategy_missing"
+    assert llm.contexts[0]["phase"] == Phase.CODE.value
+    assert [action.tool_name for action in tools.actions] == ["read_file"]
+    assert any(event.event_type == "test_strategy_missing" for event in trace.events)
 
 
 def test_trace_sequence_skip_is_accepted_other_components_may_write_trace_events() -> None:
@@ -750,6 +805,7 @@ def test_real_feedback_observation_is_json_safe_for_mock_llm_context() -> None:
         state,
         current_phase=Phase.TEST,
         phase_completed={**state.phase_completed, Phase.CODE.value: True},
+        test_strategy_digest="a" * 64,
     )
     loop, llm, _, _, _, _ = _build_loop(
         [
@@ -1142,7 +1198,7 @@ def _policy_config(project_root: Path) -> HanCodeConfig:
         max_checkpoints_per_task=5,
         max_observation_bytes=8192,
         max_context_chars=24000,
-        max_trace_events=40,
+        max_trace_events=1000,
         protected_patterns=("assignment.md",),
         writable_roots=(project_root / "src",),
     )
@@ -1209,6 +1265,23 @@ def _prepare_explicit_test_loop(
     task_root = init_task_workspace(project_root, "task-001", goal="Run the tests.")
     (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
     (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    (project_root / "tests").mkdir()
+    (project_root / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n",
+        encoding="utf-8",
+    )
+    strategy = TestStrategyStore(project_root).record(
+        "task-001",
+        command="python -m pytest -q",
+        framework="pytest",
+        test_files=("tests/test_app.py",),
+        coverage=(
+            TestCoverageItem(
+                requirement="REQ-001",
+                verification="test_app",
+            ),
+        ),
+    )
 
     state = load_state(task_root)
     save_state(
@@ -1227,6 +1300,7 @@ def _prepare_explicit_test_loop(
                 "SPEC.md": True,
                 "PLAN.md": True,
             },
+            test_strategy_digest=strategy.digest,
         ),
     )
 
@@ -1274,6 +1348,133 @@ def _prepare_explicit_test_loop(
         max_steps=2,
     )
     return project_root, task_root, provider, calls, loop
+
+
+def test_agent_creates_registers_and_runs_project_test_strategy(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    project_file = project_root / ".hancode" / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    project_data["approval_mode"] = "all_source_writes"
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+    task_root = init_task_workspace(
+        project_root,
+        "task-001",
+        goal="Create and verify the requested behavior.",
+    )
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    state = load_state(task_root)
+    save_state(
+        task_root,
+        replace(
+            state,
+            current_phase=Phase.CODE,
+            phase_completed={
+                **state.phase_completed,
+                Phase.SPEC.value: True,
+                Phase.PLAN.value: True,
+            },
+            artifacts={
+                **state.artifacts,
+                "SPEC.md": True,
+                "PLAN.md": True,
+            },
+        ),
+    )
+    command = "python -m pytest tests/test_agent_feature.py -q"
+    provider = MockLLM(
+        [
+            {
+                "type": "tool_call",
+                "phase": "code",
+                "tool_name": "write_file",
+                "args": {
+                    "path": "tests/test_agent_feature.py",
+                    "content": "def test_feature():\n    assert True\n",
+                },
+                "reason": "Create behavioral coverage for the requested feature.",
+            },
+            {
+                "type": "tool_call",
+                "phase": "code",
+                "tool_name": "record_test_strategy",
+                "args": {
+                    "command": command,
+                    "framework": "pytest",
+                    "test_files": ["tests/test_agent_feature.py"],
+                    "coverage": [
+                        {
+                            "requirement": "REQ-001",
+                            "verification": "test_feature",
+                        }
+                    ],
+                },
+                "reason": None,
+            },
+            {
+                "type": "finish_phase",
+                "phase": "code",
+                "tool_name": None,
+                "args": {},
+                "reason": None,
+            },
+            {
+                "type": "tool_call",
+                "phase": "test",
+                "tool_name": "run_tests",
+                "args": {"command": command},
+                "reason": "Run the registered behavioral test.",
+            },
+            {
+                "type": "finish_phase",
+                "phase": "test",
+                "tool_name": None,
+                "args": {},
+                "reason": None,
+            },
+        ]
+    )
+    calls: list[str | None] = []
+    registry = build_default_tool_registry(
+        load_config(project_root, "task-001"),
+        run_tests_tool=lambda selected: (
+            calls.append(selected)
+            or ToolResult(
+                success=True,
+                action_name="run_tests",
+                stdout="1 passed",
+                exit_code=0,
+                command=selected,
+            )
+        ),
+    )
+    loop = create_agent_loop(
+        project_root,
+        "task-001",
+        provider=provider,
+        tool_registry=registry,
+        max_steps=6,
+    )
+
+    first_approval = loop.run("task-001")
+    assert first_approval.status is TaskStatus.WAITING_APPROVAL
+    ApprovalService(project_root).approve("task-001")
+    second_approval = loop.run("task-001", resume=True)
+    assert second_approval.status is TaskStatus.WAITING_APPROVAL
+    ApprovalService(project_root).approve("task-001")
+    loop.run("task-001", resume=True)
+
+    final_state = load_state(task_root)
+    assert (project_root / "tests" / "test_agent_feature.py").is_file()
+    assert final_state.test_strategy_digest is not None
+    assert final_state.tests_run == (command,)
+    assert final_state.latest_test_status == "passed"
+    assert final_state.artifacts["TEST_REPORT.md"] is True
+    assert calls == [command]
 
 
 def test_approved_run_tests_resumes_provider_and_persists_passed_state(

@@ -81,6 +81,7 @@ def test_task_summary_from_state_serializes_enums(tmp_path: Path) -> None:
     assert d["status"] == "created"
     assert d["current_phase"] == "spec"
     assert d["resumable"] is False
+    assert d["test_strategy_registered"] is False
 
 
 def test_task_summary_resumable_for_blocked(tmp_path: Path) -> None:

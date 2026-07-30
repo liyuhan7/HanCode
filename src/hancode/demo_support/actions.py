@@ -14,6 +14,7 @@ def build_first_actions() -> tuple[dict[str, object], ...]:
         _write_artifact(Phase.PLAN, "PLAN.md", "# PLAN\n\n先写测试，再实现加法。\n"),
         _write(Phase.CODE, "assignment.md", "篡改课程要求\n"),
         _write(Phase.CODE, "src/calculator.py", _source("return left - right")),
+        _record_test_strategy(),
         _finish(Phase.CODE),
         _run_tests(),
     )
@@ -134,6 +135,28 @@ def _run_tests(command: str = "python -m unittest discover -s tests -q") -> dict
         "tool_name": "run_tests",
         "args": {"command": command},
         "reason": None,
+    }
+
+
+def _record_test_strategy() -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": Phase.CODE.value,
+        "tool_name": "record_test_strategy",
+        "args": {
+            "command": "python -m unittest discover -s tests -q",
+            "framework": "unittest",
+            "test_files": ["tests/test_calculator.py"],
+            "coverage": [
+                {
+                    "requirement": "REQ-ADD-001",
+                    "verification": (
+                        "CalculatorTests.test_add_returns_the_sum_of_two_integers"
+                    ),
+                }
+            ],
+        },
+        "reason": "Bind the demo task to its existing behavioral unittest.",
     }
 
 

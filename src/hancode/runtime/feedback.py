@@ -20,6 +20,7 @@ from hancode.tooling.registry import ToolResult
 
 class FailureCategory(str, Enum):
     NONE = "none"
+    NO_TESTS = "no_tests"
     SYNTAX_ERROR = "syntax_error"
     IMPORT_ERROR = "import_error"
     ASSERTION_FAILURE = "assertion_failure"
@@ -131,7 +132,7 @@ class FeedbackBuilder:
 
     def from_tool_result(self, result: ToolResult, *, phase: Phase) -> Observation:
         phase = _require_phase(phase)
-        if result.action_name == "run_tests":
+        if result.action_name == "run_tests" and not _has_test_strategy_error(result):
             return self._test_observation(result, phase)
         try:
             summary = _tool_summary(result)
@@ -320,6 +321,7 @@ def build_observation(
 
 _HINTS = {
     FailureCategory.NONE: "Tests passed; continue with the next planned step.",
+    FailureCategory.NO_TESTS: "Create executable behavioral tests and record the strategy again.",
     FailureCategory.SYNTAX_ERROR: "Fix syntax or indentation before changing business logic.",
     FailureCategory.IMPORT_ERROR: "Record the dependency risk; do not install dependencies automatically.",
     FailureCategory.ASSERTION_FAILURE: "Compare the implementation with the PLAN verification expectation.",
@@ -362,9 +364,22 @@ def _classify(output: str, exit_code: int, timed_out: bool) -> FailureCategory:
         return FailureCategory.TIMEOUT_OR_CRASH
     if "Error" in output or "Exception" in output:
         return FailureCategory.ERROR_EXCEPTION
+    normalized_output = output.casefold()
+    if (
+        "no tests ran" in normalized_output
+        or "collected 0 items" in normalized_output
+        or re.search(r"\b0 tests?\b", normalized_output)
+    ):
+        return FailureCategory.NO_TESTS
     if exit_code == 0:
         return FailureCategory.NONE
     return FailureCategory.UNKNOWN
+
+
+def _has_test_strategy_error(result: ToolResult) -> bool:
+    return isinstance(result.output, Mapping) and isinstance(
+        result.output.get("strategy_error"), str
+    )
 
 
 def _pytest_count(output: str, label: str) -> int:

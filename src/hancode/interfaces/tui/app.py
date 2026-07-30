@@ -1085,6 +1085,11 @@ class HanCodeTuiApp(App[None]):
             return
 
         view = present_task(summary)
+        strategy_line = (
+            "测试策略：已登记\n"
+            if view.test_strategy_registered
+            else "测试策略：未登记\n"
+        )
         from hancode.interfaces.tui.copy.zh_cn import PHASE_LABELS, STATUS_LABELS
 
         checkpoint = view.latest_checkpoint or "尚无"
@@ -1093,6 +1098,8 @@ class HanCodeTuiApp(App[None]):
         builds_run = ", ".join(view.builds_run) or "尚未执行"
 
         self._render_detail(
+            strategy_line
+            +
             f"任务概览\n\n"
             f"任务：{view.task_id}\n"
             f"目标：{view.goal or '未填写'}\n"

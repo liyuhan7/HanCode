@@ -13,6 +13,8 @@ from hancode.runtime.context import ContextBuilder, build_context
 from hancode.core.errors import HanCodeError
 from hancode.core.models import Phase
 from hancode.core.state import TaskState, load_state
+from hancode.core.test_strategy import TestCoverageItem
+from hancode.storage.test_strategies import TestStrategyStore
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
@@ -203,7 +205,7 @@ def test_review_phase_includes_test_report_changed_files_and_checkpoint(tmp_path
     }
 
 
-def test_test_phase_includes_plan_changed_files_checkpoint_and_test_command(
+def test_test_phase_includes_registered_strategy(
     tmp_path: Path,
 ) -> None:
     project_root, task_root = _workspace(tmp_path)
@@ -211,23 +213,53 @@ def test_test_phase_includes_plan_changed_files_checkpoint_and_test_command(
     _write_checkpoint_manifest(task_root)
     _set_project_config(project_root, test_command="uv run pytest")
     config = load_config(project_root, "task-001")
+    (project_root / "tests").mkdir()
+    (project_root / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n",
+        encoding="utf-8",
+    )
+    strategy = TestStrategyStore(project_root).record(
+        "task-001",
+        command="uv run pytest",
+        framework="pytest",
+        test_files=("tests/test_app.py",),
+        coverage=(
+            TestCoverageItem(
+                requirement="REQ-001",
+                verification="test_app",
+            ),
+        ),
+    )
     state = _state(
         task_root,
         goal="Implement the assignment.",
         artifact_names=("PLAN.md",),
         files_changed=("src/main.py",),
         latest_checkpoint="ckpt-001",
+        test_strategy_digest=strategy.digest,
     )
 
     context = build_context(project_root, "task-001", Phase.TEST, config, state=state)
 
     assert context["sections"]["plan"] == "# Plan\n"
-    assert context["sections"]["test_command"] == "uv run pytest"
+    assert context["sections"]["test_strategy"] == {
+        "status": "registered",
+        "command": "uv run pytest",
+        "framework": "pytest",
+        "test_files": ["tests/test_app.py"],
+        "coverage": [
+            {
+                "requirement": "REQ-001",
+                "verification": "test_app",
+            }
+        ],
+        "digest": strategy.digest,
+    }
     assert json.loads(context["sections"]["changed_files"]) == ["src/main.py"]
     assert json.loads(context["sections"]["checkpoint"])["checkpoint_id"] == "ckpt-001"
 
 
-def test_test_phase_allows_agent_generated_command_without_config(tmp_path: Path) -> None:
+def test_test_phase_reports_missing_strategy(tmp_path: Path) -> None:
     project_root, task_root = _workspace(tmp_path)
     (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
     config = load_config(project_root, "task-001")
@@ -236,7 +268,7 @@ def test_test_phase_allows_agent_generated_command_without_config(tmp_path: Path
     context = build_context(project_root, "task-001", Phase.TEST, config, state=state)
 
     assert context["phase"] == "test"
-    assert "test_command" not in context["sections"]
+    assert context["sections"]["test_strategy"] == {"status": "missing"}
 
 
 def test_deliver_phase_includes_required_artifacts_and_trace_summary(tmp_path: Path) -> None:
@@ -404,6 +436,7 @@ def _state(
     artifact_names: tuple[str, ...] = (),
     files_changed: tuple[str, ...] = (),
     latest_checkpoint: str | None = None,
+    test_strategy_digest: str | None = None,
 ) -> TaskState:
     state = load_state(task_root)
     artifacts = dict(state.artifacts)
@@ -415,6 +448,7 @@ def _state(
         artifacts=artifacts,
         files_changed=files_changed,
         latest_checkpoint=latest_checkpoint,
+        test_strategy_digest=test_strategy_digest,
     )
 
 

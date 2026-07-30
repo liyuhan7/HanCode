@@ -24,6 +24,7 @@ def test_state_json_is_single_machine_source(tmp_path: Path) -> None:
     assert state.current_phase is Phase.SPEC
     assert state.artifacts["SPEC.md"] is False
     assert state.files_changed == ()
+    assert state.test_strategy_digest is None
 
 
 def test_state_parse_error_blocks_task(tmp_path: Path) -> None:

@@ -92,6 +92,11 @@ def build_phase_gate(phase: Phase, state: TaskState) -> PhaseGate:
                 description="At least one allowed source change is required.",
                 satisfied=state.source_edits_this_phase > 0,
             ),
+            PhaseRequirement(
+                requirement_id="test_strategy_required",
+                description="An executable test strategy must be recorded.",
+                satisfied=state.test_strategy_digest is not None,
+            ),
         )
     elif phase is Phase.TEST:
         requirements = (

@@ -164,6 +164,51 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         read_only=False,
     ),
     ToolSpec(
+        name="record_test_strategy",
+        description=(
+            "Bind the task to one executable behavioral test command and the "
+            "project test files that implement its requirement coverage. "
+            "Create or update the test files before recording this strategy."
+        ),
+        args_schema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "framework": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "test_files": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                },
+                "coverage": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "requirement": {
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "\\S",
+                            },
+                            "verification": {
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "\\S",
+                            },
+                        },
+                        "required": ["requirement", "verification"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["command", "framework", "test_files", "coverage"],
+            "additionalProperties": False,
+        },
+        allowed_phases=frozenset({Phase.CODE}),
+        read_only=False,
+    ),
+    ToolSpec(
         name="rollback_last_checkpoint",
         description="Rollback to the last checkpoint.",
         args_schema={"type": "object", "maxProperties": 0, "additionalProperties": False},

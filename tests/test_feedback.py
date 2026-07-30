@@ -24,6 +24,8 @@ from hancode.tooling.registry import ToolResult
     ("output", "exit_code", "timed_out", "expected"),
     [
         ("", 0, False, FailureCategory.NONE),
+        ("no tests ran in 0.01s", 0, False, FailureCategory.NO_TESTS),
+        ("collected 0 items", 0, False, FailureCategory.NO_TESTS),
         ("SyntaxError: invalid syntax", 1, False, FailureCategory.SYNTAX_ERROR),
         ("ModuleNotFoundError: No module named 'demo'", 1, False, FailureCategory.IMPORT_ERROR),
         ("E   AssertionError: expected 1", 1, False, FailureCategory.ASSERTION_FAILURE),

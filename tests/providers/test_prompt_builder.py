@@ -93,6 +93,28 @@ def test_prompt_system_message_contains_current_phase() -> None:
     assert "code" in system_content
 
 
+def test_code_prompt_requires_behavioral_tests_and_strategy_registration() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(phase=Phase.CODE),
+        tool_catalog=_make_catalog(),
+    )
+
+    system_content = prompt.messages[0].content
+    assert "create project-native behavioral tests" in system_content
+    assert "record_test_strategy" in system_content
+
+
+def test_test_prompt_requires_exact_registered_command() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(phase=Phase.TEST),
+        tool_catalog=_make_catalog(),
+    )
+
+    system_content = prompt.messages[0].content
+    assert "Run only its exact command" in system_content
+    assert "do not discover, substitute, broaden, or invent" in system_content
+
+
 def test_prompt_user_message_contains_task_goal() -> None:
     builder = PromptBuilder()
     prompt = builder.build(

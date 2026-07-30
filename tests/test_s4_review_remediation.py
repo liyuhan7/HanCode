@@ -15,6 +15,7 @@ from hancode.core.approvals import ApprovalCategory
 from hancode.core.config import load_config
 from hancode.core.models import Phase
 from hancode.core.state import load_state, save_state
+from hancode.core.test_strategy import TestCoverageItem
 from hancode.core.tool_specs import TOOL_SPEC_BY_NAME
 from hancode.policy.tool_policy import ToolPolicy
 from hancode.policy.approval_policy import ApprovalPolicy
@@ -22,12 +23,39 @@ from hancode.providers.mock import MockLLM
 from hancode.runtime.engine import create_agent_loop
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.storage.delivery_evidence import DeliveryEvidenceStore
+from hancode.storage.test_strategies import TestStrategyStore
 from hancode.storage.checkpoint_queries import CheckpointQueryRepository
 from hancode.interfaces import cli
 from hancode.tooling.factory import build_default_tool_registry
 from hancode.tooling.delivery_tools import read_test_report
 from hancode.tooling.registry import ToolResult
 from hancode.tooling.registry import ToolRegistry
+
+
+def _record_strategy(
+    project_root: Path,
+    task_root: Path,
+    command: str,
+) -> str:
+    tests_root = project_root / "tests"
+    tests_root.mkdir(exist_ok=True)
+    (tests_root / "test_app.py").write_text(
+        "def test_app():\n    assert True\n",
+        encoding="utf-8",
+    )
+    strategy = TestStrategyStore(project_root).record(
+        task_root.name,
+        command=command,
+        framework="pytest",
+        test_files=("tests/test_app.py",),
+        coverage=(
+            TestCoverageItem(
+                requirement="REQ-001",
+                verification="test_app",
+            ),
+        ),
+    )
+    return strategy.digest
 
 
 def test_s4_structured_tool_actions_match_tool_specs() -> None:
@@ -163,6 +191,7 @@ def test_formal_agent_run_tests_generates_test_report(tmp_path: Path) -> None:
     project_file.write_text(json.dumps(project_data), encoding="utf-8")
     (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
     (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    strategy_digest = _record_strategy(project_root, task_root, "pytest -q")
     state = load_state(task_root)
     save_state(
         task_root,
@@ -180,6 +209,7 @@ def test_formal_agent_run_tests_generates_test_report(tmp_path: Path) -> None:
                 "SPEC.md": True,
                 "PLAN.md": True,
             },
+            test_strategy_digest=strategy_digest,
         ),
     )
     registry = ToolRegistry()
@@ -237,6 +267,11 @@ def _prepare_explicit_test_task(
     task_root = init_task_workspace(project_root, "task-001")
     (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
     (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    strategy_digest = _record_strategy(
+        project_root,
+        task_root,
+        "python -m pytest tests/test_app.py",
+    )
     state = load_state(task_root)
     save_state(
         task_root,
@@ -254,6 +289,7 @@ def _prepare_explicit_test_task(
                 "SPEC.md": True,
                 "PLAN.md": True,
             },
+            test_strategy_digest=strategy_digest,
         ),
     )
 
@@ -365,6 +401,7 @@ def test_formal_agent_run_build_persists_build_state_and_evidence(tmp_path: Path
     project_file.write_text(json.dumps(project_data), encoding="utf-8")
     (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
     (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    strategy_digest = _record_strategy(project_root, task_root, "pytest -q")
     state = load_state(task_root)
     save_state(
         task_root,
@@ -378,6 +415,7 @@ def test_formal_agent_run_build_persists_build_state_and_evidence(tmp_path: Path
                 Phase.CODE.value: True,
             },
             artifacts={**state.artifacts, "SPEC.md": True, "PLAN.md": True},
+            test_strategy_digest=strategy_digest,
         ),
     )
     registry = ToolRegistry()
@@ -435,6 +473,7 @@ def test_approved_agent_build_updates_state_and_evidence(tmp_path: Path) -> None
     project_file.write_text(json.dumps(project_data), encoding="utf-8")
     (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
     (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    strategy_digest = _record_strategy(project_root, task_root, "pytest -q")
     state = load_state(task_root)
     save_state(
         task_root,
@@ -448,6 +487,7 @@ def test_approved_agent_build_updates_state_and_evidence(tmp_path: Path) -> None
                 Phase.CODE.value: True,
             },
             artifacts={**state.artifacts, "SPEC.md": True, "PLAN.md": True},
+            test_strategy_digest=strategy_digest,
         ),
     )
     registry = ToolRegistry()
@@ -913,6 +953,7 @@ def test_provider_to_agent_to_delivery_path_completes_offline(tmp_path: Path) ->
     project_file.write_text(json.dumps(project_data), encoding="utf-8")
     (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
     (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    strategy_digest = _record_strategy(project_root, task_root, "pytest -q")
     state = load_state(task_root)
     save_state(
         task_root,
@@ -926,6 +967,7 @@ def test_provider_to_agent_to_delivery_path_completes_offline(tmp_path: Path) ->
                 Phase.CODE.value: True,
             },
             artifacts={**state.artifacts, "SPEC.md": True, "PLAN.md": True},
+            test_strategy_digest=strategy_digest,
         ),
     )
     config = load_config(project_root, "task-001")

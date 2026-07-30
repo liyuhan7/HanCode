@@ -871,6 +871,55 @@ class AgentLoop:
                     state,
                 )
 
+            if (
+                routing.phase is Phase.TEST
+                and state.current_phase is Phase.TEST
+                and state.test_strategy_digest is None
+                and state.phase_completed.get(Phase.CODE.value, False)
+            ):
+                phase_completed = dict(state.phase_completed)
+                phase_completed[Phase.CODE.value] = False
+                phase_completed[Phase.TEST.value] = False
+                previous_phase = state.current_phase
+                state = self._save_if_changed(
+                    task_id,
+                    state,
+                    replace(
+                        state,
+                        status=TaskStatus.RUNNING,
+                        current_phase=Phase.CODE,
+                        source_edits_this_phase=0,
+                        phase_completed=phase_completed,
+                    ),
+                )
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="test_strategy_missing",
+                    phase=Phase.TEST,
+                    status="succeeded",
+                    observation={
+                        "reason": "strategy_not_recorded",
+                        "next_phase": Phase.CODE.value,
+                    },
+                    state_transition={
+                        "current_phase": [previous_phase.value, Phase.CODE.value]
+                    },
+                )
+                if trace_error is not None:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step - 1,
+                        tuple(tool_calls),
+                        observation,
+                        trace_error,
+                        state,
+                    )
+                routing = select_next_phase(
+                    state, build_required=self._build_required
+                )
+
             state = self._enter_phase(task_id, state, routing.phase)
             if routing.phase is not traced_phase:
                 trace_error = self._append_trace(
@@ -1038,6 +1087,7 @@ class AgentLoop:
             test_discovery_key = _test_discovery_action_key(action, routing.phase)
             if (
                 state.latest_test_status == "none"
+                and state.test_strategy_digest is None
                 and test_discovery_key is not None
                 and test_discovery_key in completed_test_discovery_actions
             ):
@@ -2025,6 +2075,12 @@ class AgentLoop:
                         state,
                         risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
                     )
+                strategy_error = _test_strategy_error_code(tool_result)
+                semantic_test_report = (
+                    _feedback_report_for_test_result(tool_result)
+                    if action.tool_name == "run_tests" and strategy_error is None
+                    else None
+                )
                 trace_error = self._record_test_result_trace(
                     task_id,
                     trace_events,
@@ -2047,14 +2103,18 @@ class AgentLoop:
                         state_error,
                         state,
                     )
-                if action.tool_name == "run_tests" and self._delivery_pipeline is not None:
-                    report = _feedback_report_for_test_result(tool_result)
+                if (
+                    action.tool_name == "run_tests"
+                    and self._delivery_pipeline is not None
+                    and semantic_test_report is not None
+                ):
+                    report = semantic_test_report
                     trace_error = self._append_trace(
                         task_id,
                         trace_events,
                         event_type="test_completed",
                         phase=routing.phase,
-                        status="succeeded" if tool_result.success else "failed",
+                        status="succeeded" if report.passed else "failed",
                         action=_trace_action(action, decision, include_path=False),
                         observation={
                             "exit_code": tool_result.exit_code,
@@ -2140,7 +2200,11 @@ class AgentLoop:
                                 state_error,
                                 state,
                             )
-                if action.tool_name == "run_tests" and not tool_result.success:
+                if (
+                    action.tool_name == "run_tests"
+                    and semantic_test_report is not None
+                    and not semantic_test_report.passed
+                ):
                     trace_error = self._append_trace(
                         task_id,
                         trace_events,
@@ -2160,7 +2224,11 @@ class AgentLoop:
                         },
                         error_summary=redact_text(
                             tool_result.error_summary
-                            or ("Test command timed out." if tool_result.timed_out else "Test command failed.")
+                            or (
+                                "Test command timed out."
+                                if tool_result.timed_out
+                                else "The registered strategy did not produce passing tests."
+                            )
                         ),
                         state_transition={
                             "latest_test_status": [
@@ -3529,7 +3597,10 @@ class AgentLoop:
             pipeline = self._delivery_pipeline
             if pipeline is not None:
                 task_root = task_path(self._project_root, task_id)
-                if action.tool_name == "run_tests":
+                if (
+                    action.tool_name == "run_tests"
+                    and _test_strategy_error_code(tool_result) is None
+                ):
                     pipeline.record_test(
                         task_root,
                         _feedback_report_for_test_result(tool_result),
@@ -3576,6 +3647,26 @@ class AgentLoop:
     ) -> StructuredError | None:
         if action.tool_name != "run_tests":
             return None
+        strategy_error = _test_strategy_error_code(tool_result)
+        if strategy_error is not None:
+            return self._append_trace(
+                task_id,
+                trace_events,
+                event_type="test_strategy_invalid",
+                phase=phase,
+                status="failed",
+                action=_trace_action(action, decision, include_path=False),
+                observation={
+                    "error_code": strategy_error,
+                    "next_phase": Phase.CODE.value,
+                },
+                state_transition={
+                    "test_strategy_digest": [
+                        previous_state.test_strategy_digest,
+                        None,
+                    ]
+                },
+            )
 
         return self._append_trace(
             task_id,
@@ -4432,6 +4523,14 @@ def _state_after_tool(
 ) -> TaskState:
     phase_completed = dict(state.phase_completed)
     if action.tool_name == "run_tests":
+        if _test_strategy_error_code(result) is not None:
+            phase_completed[Phase.TEST.value] = False
+            return replace(
+                state,
+                test_strategy_digest=None,
+                phase_completed=phase_completed,
+            )
+        report = _feedback_report_for_test_result(result)
         phase_completed[Phase.TEST.value] = False
         return replace(
             state,
@@ -4439,10 +4538,23 @@ def _state_after_tool(
                 *state.tests_run,
                 redact_text(result.command) if result.command else "run_tests",
             ),
-            latest_test_status="passed" if result.success else "failed",
+            latest_test_status="passed" if report.passed else "failed",
             test_status_consumed=False,
             phase_completed=phase_completed,
         )
+
+    if action.tool_name == "record_test_strategy" and result.success:
+        digest = (
+            result.output.get("test_strategy_digest")
+            if isinstance(result.output, Mapping)
+            else None
+        )
+        if (
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest)
+        ):
+            return replace(state, test_strategy_digest=digest)
 
     if action.tool_name == "run_build":
         build_status = (
@@ -4542,6 +4654,13 @@ def _feedback_report_for_test_result(result: ToolResult) -> FeedbackReport:
         result.exit_code if result.exit_code is not None else (0 if result.success else 1),
         result.timed_out,
     )
+
+
+def _test_strategy_error_code(result: ToolResult) -> str | None:
+    if not isinstance(result.output, Mapping):
+        return None
+    value = result.output.get("strategy_error")
+    return value if isinstance(value, str) and value else None
 
 
 def _build_status_for_tool_result(result: ToolResult) -> str:

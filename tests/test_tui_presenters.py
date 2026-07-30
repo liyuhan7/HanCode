@@ -70,6 +70,7 @@ def _summary(**overrides: object) -> TaskSummary:
         },
         "requires_approval": False,
         "pending_approval": None,
+        "test_strategy_registered": True,
     }
     values.update(overrides)
     return TaskSummary(**values)
@@ -100,6 +101,7 @@ def test_task_presenter_includes_build_and_bounded_plain_fields() -> None:
     assert isinstance(view, TaskOverviewView)
     assert view.latest_build_status == "passed"
     assert view.builds_run == ("python -m build",)
+    assert view.test_strategy_registered is True
     assert len(view.goal) <= 4096
     assert len(view.files_changed) == 100
 

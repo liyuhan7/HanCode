@@ -268,7 +268,7 @@ def _config(
         max_checkpoints_per_task=5,
         max_observation_bytes=8192,
         max_context_chars=24000,
-        max_trace_events=40,
+        max_trace_events=1000,
         protected_patterns=protected_patterns
         or (
             "assignment.md",

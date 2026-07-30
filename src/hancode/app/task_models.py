@@ -33,6 +33,7 @@ class TaskSummary:
     pending_interaction: Mapping[str, object] | None = None
     requires_approval: bool = False
     pending_approval: Mapping[str, object] | None = None
+    test_strategy_registered: bool = False
 
     @classmethod
     def from_state(cls, state: TaskState) -> TaskSummary:
@@ -92,6 +93,7 @@ class TaskSummary:
             ),
             requires_approval=requires_approval,
             pending_approval=approval_pending,
+            test_strategy_registered=state.test_strategy_digest is not None,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -115,6 +117,7 @@ class TaskSummary:
             "pending_interaction": self.pending_interaction,
             "requires_approval": self.requires_approval,
             "pending_approval": self.pending_approval,
+            "test_strategy_registered": self.test_strategy_registered,
         }
 
 

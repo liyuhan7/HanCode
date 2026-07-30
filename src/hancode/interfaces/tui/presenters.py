@@ -64,6 +64,7 @@ class TaskOverviewView:
     resumable: bool
     requires_input: bool
     requires_approval: bool
+    test_strategy_registered: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +241,7 @@ def present_task(summary: TaskSummary) -> TaskOverviewView:
         resumable=summary.resumable,
         requires_input=summary.requires_input,
         requires_approval=summary.requires_approval,
+        test_strategy_registered=summary.test_strategy_registered,
     )
 
 

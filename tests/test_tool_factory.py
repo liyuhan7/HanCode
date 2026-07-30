@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 
 from hancode.core.actions import Action, ActionType
 from hancode.core.config import load_config
 from hancode.core.models import Phase
+from hancode.core.state import load_state, save_state
+from hancode.core.test_strategy import TestCoverageItem
+from hancode.storage.test_strategies import TestStrategyStore
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.factory import build_default_tool_registry
-from hancode.storage.workspace import init_project_workspace
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 def test_default_registry_registers_file_edit_and_configured_test_tools(tmp_path: Path) -> None:
@@ -65,6 +69,82 @@ def test_default_registry_registers_file_edit_and_configured_test_tools(tmp_path
     assert dynamic_result.success is True
     assert dynamic_result.command == "python -m pytest"
     assert calls == [["pytest", "-q"], ["python", "-m", "pytest"]]
+
+
+def test_task_registry_records_test_strategy(tmp_path: Path) -> None:
+    init_project_workspace(tmp_path, "project-001", "SE", "Harness")
+    init_task_workspace(tmp_path, "task-001", goal="Test behavior.")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n",
+        encoding="utf-8",
+    )
+    registry = build_default_tool_registry(load_config(tmp_path, "task-001"))
+
+    result = registry.dispatch(
+        _action(
+            "record_test_strategy",
+            {
+                "command": "python -m pytest tests/test_app.py -q",
+                "framework": "pytest",
+                "test_files": ["tests/test_app.py"],
+                "coverage": [
+                    {
+                        "requirement": "REQ-001",
+                        "verification": "test_app",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result.success is True
+    assert isinstance(result.output, dict)
+    assert len(result.output["test_strategy_digest"]) == 64
+
+
+def test_task_registry_rejects_command_mismatch_without_dispatch(
+    tmp_path: Path,
+) -> None:
+    init_project_workspace(tmp_path, "project-001", "SE", "Harness")
+    task_root = init_task_workspace(tmp_path, "task-001", goal="Test behavior.")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n",
+        encoding="utf-8",
+    )
+    strategy = TestStrategyStore(tmp_path).record(
+        "task-001",
+        command="python -m pytest tests/test_app.py -q",
+        framework="pytest",
+        test_files=("tests/test_app.py",),
+        coverage=(
+            TestCoverageItem(
+                requirement="REQ-001",
+                verification="test_app",
+            ),
+        ),
+    )
+    save_state(
+        task_root,
+        replace(load_state(task_root), test_strategy_digest=strategy.digest),
+    )
+    calls: list[str | None] = []
+    registry = build_default_tool_registry(
+        load_config(tmp_path, "task-001"),
+        run_tests_tool=lambda command: (
+            calls.append(command)
+            or run_tests(tmp_path, command)
+        ),
+    )
+
+    result = registry.dispatch(
+        _action("run_tests", {"command": "python -m pytest -q"})
+    )
+
+    assert result.success is False
+    assert result.output == {"strategy_error": "test_command_mismatch"}
+    assert calls == []
 
 
 def _action(name: str, args: dict[str, object]) -> Action:

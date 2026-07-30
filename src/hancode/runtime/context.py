@@ -11,6 +11,7 @@ from typing import Mapping
 from hancode.core.config import HanCodeConfig
 from hancode.core.interactions import InteractionStatus
 from hancode.storage.checkpoints import _load_manifest, _validate_manifest_identity
+from hancode.storage.test_strategies import TestStrategyStore
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.tooling.file_tools import redact_text
 from hancode.core.models import Phase
@@ -42,7 +43,7 @@ _TRUNCATION_ORDER = {
         "spec",
     ),
     Phase.CODE: ("source_snippets", "protected_patterns", "plan", "spec"),
-    Phase.TEST: ("checkpoint", "changed_files", "test_command", "plan"),
+    Phase.TEST: ("checkpoint", "changed_files", "test_strategy", "plan"),
     Phase.REVIEW: ("checkpoint", "changed_files", "test_report", "plan", "spec"),
     Phase.DELIVER: ("trace_summary", "review", "test_report", "plan", "spec"),
 }
@@ -155,16 +156,38 @@ def build_context(
             resolved_project_root,
         )
         _add_source_snippets(sections, risks, resolved_project_root, current_state, config)
+        if config.test_command is not None:
+            sections["test_command_candidate"] = redact_text(config.test_command)
     if phase in {Phase.TEST, Phase.REVIEW}:
         sections["changed_files"] = _canonical_json(
             _safe_changed_files(current_state, config, risks)
         )
         _add_checkpoint_summary(sections, risks, task_root, current_state, config, phase)
     if phase is Phase.TEST:
-        # A configured command is an optional candidate.  When it is absent,
-        # the Agent must inspect the project and select an explicit command.
-        if config.test_command is not None:
-            sections["test_command"] = config.test_command
+        if current_state.test_strategy_digest is None:
+            sections["test_strategy"] = {"status": "missing"}
+        else:
+            try:
+                store = TestStrategyStore(resolved_project_root)
+                strategy = store.load(task_id)
+                strategy = store.validate(
+                    task_id,
+                    expected_digest=current_state.test_strategy_digest,
+                    command=strategy.command,
+                )
+                sections["test_strategy"] = {
+                    "status": "registered",
+                    "command": redact_text(strategy.command),
+                    "framework": redact_text(strategy.framework),
+                    "test_files": [item.path for item in strategy.test_files],
+                    "coverage": [item.to_dict() for item in strategy.coverage],
+                    "digest": strategy.digest,
+                }
+            except HanCodeError as exc:
+                sections["test_strategy"] = {
+                    "status": "invalid",
+                    "error_code": exc.structured_error.error_code,
+                }
     if phase is Phase.DELIVER:
         sections["trace_summary"] = _read_trace_summary(
             task_root,
@@ -194,6 +217,7 @@ def build_context(
             "source_edits_this_phase": current_state.source_edits_this_phase,
             "latest_test_status": current_state.latest_test_status,
             "test_status_consumed": current_state.test_status_consumed,
+            "test_strategy_digest": current_state.test_strategy_digest,
             "retry_budget_remaining": current_state.retry_budget_remaining,
             "rollback_required": current_state.rollback_required,
             "rollback_done": current_state.rollback_done,

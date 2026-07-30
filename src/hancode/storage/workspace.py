@@ -172,6 +172,7 @@ def init_task_workspace(
             "tests_run": [],
             "latest_test_status": "none",
             "test_status_consumed": False,
+            "test_strategy_digest": None,
             "retry_budget_remaining": retry_budget,
             "inconsistent": False,
             "source_edits_this_phase": 0,

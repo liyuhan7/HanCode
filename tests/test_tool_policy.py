@@ -29,6 +29,7 @@ from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools
                 "list_checkpoints",
                 "list_files",
                 "read_file",
+                "record_test_strategy",
                 "search_text",
                 "write_file",
             ),
@@ -256,7 +257,15 @@ def test_denies_source_write_when_state_phase_is_not_code(tmp_path: Path) -> Non
         (Phase.SPEC, {"artifacts": {"SPEC.md": False}}, False, "spec_finish_requirements"),
         (Phase.PLAN, {"artifacts": {"PLAN.md": True}}, True, None),
         (Phase.PLAN, {"artifacts": {"PLAN.md": False}}, False, "plan_finish_requirements"),
-        (Phase.CODE, {"source_edits_this_phase": 1}, True, None),
+        (
+            Phase.CODE,
+            {
+                "source_edits_this_phase": 1,
+                "test_strategy_digest": "a" * 64,
+            },
+            True,
+            None,
+        ),
         (Phase.CODE, {}, False, "code_finish_requirements"),
         (Phase.TEST, {"latest_test_status": "passed"}, True, None),
         (Phase.TEST, {}, False, "test_finish_requirements"),
@@ -486,7 +495,7 @@ def _config(
         max_checkpoints_per_task=5,
         max_observation_bytes=8192,
         max_context_chars=24000,
-        max_trace_events=40,
+        max_trace_events=1000,
         protected_patterns=("assignment.md",),
         writable_roots=(project_root / "src",),
         interaction_mode=interaction_mode,  # type: ignore[arg-type]
@@ -504,6 +513,7 @@ def _state(
     latest_test_status: str = "none",
     rollback_required: bool = False,
     rollback_done: bool = False,
+    test_strategy_digest: str | None = None,
 ) -> TaskState:
     values = {
         "SPEC.md": True,
@@ -534,6 +544,7 @@ def _state(
         rollback_done=rollback_done,
         phase_completed={item.value: False for item in Phase},
         artifacts=values,
+        test_strategy_digest=test_strategy_digest,
     )
 
 

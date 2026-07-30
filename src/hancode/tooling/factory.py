@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any, cast
 
 from hancode.core.config import HanCodeConfig
+from hancode.core.errors import HanCodeError
+from hancode.core.state import load_state
 from hancode.core.tool_specs import ALL_TOOL_SPECS
+from hancode.policy.path_policy import PathClassifier, PathZone
+from hancode.providers.base import ToolDescriptor
+from hancode.storage.test_strategies import TestStrategyStore
 from hancode.tooling.build_tools import run_build as _run_build_tool
 from hancode.tooling.checkpoint_tools import list_checkpoints
 from hancode.tooling.delivery_tools import record_knowledge, record_review, read_test_report
@@ -24,7 +29,7 @@ from hancode.tooling.file_tools import (
 )
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.registry import ToolRegistry, ToolResult
-from hancode.providers.base import ToolDescriptor
+from hancode.tooling.test_strategy_tools import record_test_strategy
 
 
 RunTestsTool = Callable[[str | None], ToolResult]
@@ -40,12 +45,40 @@ def _resolve_test_command(
 
 
 def _run_tests_dispatch(
-    project_root: Path,
+    config: HanCodeConfig,
     fallback_command: str | None,
     run_tests_tool: RunTestsTool | None = None,
     **kwargs: object,
 ) -> ToolResult:
+    project_root = config.project_root
     command, remaining = _resolve_test_command(fallback_command, **kwargs)
+    if config.task_root is not None:
+        if not isinstance(command, str):
+            return _test_strategy_failure(
+                "test_strategy_invalid",
+                "The registered test command is required.",
+            )
+        try:
+            state = load_state(config.task_root)
+            strategy = TestStrategyStore(project_root).validate(
+                config.task_root.name,
+                expected_digest=state.test_strategy_digest,
+                command=command,
+            )
+            classifier = PathClassifier(config)
+            if any(
+                classifier.classify(item.path) is PathZone.PROTECTED
+                for item in strategy.test_files
+            ):
+                return _test_strategy_failure(
+                    "test_strategy_stale",
+                    "A registered test file is now protected.",
+                )
+        except HanCodeError as exc:
+            return _test_strategy_failure(
+                exc.structured_error.error_code,
+                exc.structured_error.message,
+            )
     if run_tests_tool is not None:
         if remaining:
             return ToolResult(
@@ -55,6 +88,16 @@ def _run_tests_dispatch(
             )
         return _redact_test_result(run_tests_tool(command))
     return run_tests(project_root, command, **cast(dict[str, Any], remaining))
+
+
+def _test_strategy_failure(error_code: str, message: str) -> ToolResult:
+    return ToolResult(
+        success=False,
+        action_name="run_tests",
+        output={"strategy_error": error_code},
+        error_summary=redact_text(message),
+        mutation_applied=False,
+    )
 
 
 def _redact_test_result(result: ToolResult) -> ToolResult:
@@ -101,7 +144,7 @@ def build_default_tool_registry(
         "run_tests",
         partial(
             _run_tests_dispatch,
-            project_root,
+            config,
             config.test_command,
             run_tests_tool,
         ),
@@ -128,6 +171,10 @@ def build_default_tool_registry(
         registry.register(
             "record_knowledge",
             partial(record_knowledge, project_root, task_root.name),
+        )
+        registry.register(
+            "record_test_strategy",
+            partial(record_test_strategy, config),
         )
     registry.register(
         "run_build",

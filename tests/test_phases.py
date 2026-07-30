@@ -13,6 +13,7 @@ def _state(
     latest_test_status: str = "none",
     rollback_required: bool = False,
     rollback_done: bool = False,
+    test_strategy_digest: str | None = None,
 ) -> TaskState:
     values = {
         "SPEC.md": True,
@@ -43,6 +44,7 @@ def _state(
         rollback_done=rollback_done,
         phase_completed={item.value: False for item in Phase},
         artifacts=values,
+        test_strategy_digest=test_strategy_digest,
     )
 
 
@@ -93,6 +95,11 @@ def test_code_gate_requires_source_edit() -> None:
                 "description": (
                     "At least one allowed source change is required."
                 ),
+                "satisfied": False,
+            },
+            {
+                "id": "test_strategy_required",
+                "description": "An executable test strategy must be recorded.",
                 "satisfied": False,
             }
         ],
@@ -153,7 +160,11 @@ def test_deliver_gate_requires_knowledge_and_delivery_evidence() -> None:
 
 
 def test_phase_gate_serialization_is_deterministic() -> None:
-    state = _state(Phase.CODE, source_edits_this_phase=1)
+    state = _state(
+        Phase.CODE,
+        source_edits_this_phase=1,
+        test_strategy_digest="a" * 64,
+    )
 
     gate_a = build_phase_gate(Phase.CODE, state)
     gate_b = build_phase_gate(Phase.CODE, state)
@@ -169,6 +180,11 @@ def test_phase_gate_serialization_is_deterministic() -> None:
                 "description": (
                     "At least one allowed source change is required."
                 ),
+                "satisfied": True,
+            },
+            {
+                "id": "test_strategy_required",
+                "description": "An executable test strategy must be recorded.",
                 "satisfied": True,
             }
         ],
