@@ -2154,3 +2154,13 @@
 - 评审材料：新增 `docs/assets/tui/config-provider-api-key.svg`，只包含 Fake Keyring 的 `****7a2c` 掩码；完整测试值、用户绝对路径均未进入截图。
 - 环境说明：一次为探测异步输出而设置的 1 秒 pytest 超时被主动丢弃，产生输出管道 `OSError 22`；随后使用用户可写专属 TEMP 正常重跑全量测试并通过，最终证据只采用后者。
 - 状态：代码与自动验证完成，等待用户人工页面评审；未提交、未推送。
+
+### 2026-07-30 — S7-R4 源码 Diff 全屏审批整改（等待人工评审）
+
+- 用户选择：源码 Diff 使用全屏审批页；测试、构建等短内容继续使用紧凑弹窗。
+- 工作流覆盖：不使用 Superpowers，不采用 TDD；先完成页面与分类路由，再补 Textual 回归。
+- 实现：新增 `SourceApprovalScreen`，将 source write、source overwrite 和 multi-file write 路由到全屏 Modal；固定目的、范围、风险、可恢复性、状态和操作区，Diff 独立滚动，技术标识默认折叠。
+- 响应式：Wide/Medium 使用横向摘要和固定底部按钮；Narrow 压缩摘要、隐藏重复 Footer，并使用三枚全宽纵向按钮。三档尺寸均保持操作完整可见。
+- 安全边界：`Y/N/Esc` 与按钮仍只返回 approve/reject/cancel；拒绝理由、Approval Service、digest、Checkpoint 和自动恢复路径不变，普通 Composer 文本仍不能批准。
+- 实施后验证：新增源码审批页面回归 `7 passed`；源码审批、既有审批 Modal 与自动恢复聚焦回归合计 `18 passed`；完整 TUI 范围 `141 passed, 1285 deselected`；Ruff `All checks passed!`；相关生产文件 MyPy `Success: no issues found in 2 source files`；`git diff --check` 无空白错误。
+- 清理：Windows 验证使用的仓库内任务专属 pytest 临时目录已删除；未提交、未推送。

@@ -394,9 +394,59 @@ def test_real_tool_policy_denial_does_not_execute_tool(tmp_path: Path) -> None:
     assert decision.denied_rule == "protected_path"
 
 
+def test_out_of_scope_task_file_is_policy_denied_without_inconsistent_state(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    llm = MockLLM(
+        [
+            {
+                "type": "tool_call",
+                "phase": "code",
+                "tool_name": "write_file",
+                "args": {
+                    "path": ".hancode/tasks/task-001/index.html",
+                    "content": "<!doctype html>\n",
+                },
+                "reason": "Create the requested page.",
+            }
+        ]
+    )
+    tools = SpyToolRegistry(events)
+    feedback = SpyFeedbackBuilder()
+    trace = SpyTraceAppender()
+    loop = AgentLoop(
+        llm=llm,
+        context_builder=SpyContextBuilder(),
+        policy=ToolPolicy(_policy_config(tmp_path)),
+        tool_registry=tools,
+        feedback_builder=feedback,
+        state_store=StubStateStore(_task_state()),
+        trace_appender=trace,
+        checkpoint_manager=StubCheckpointManager(),
+        rollback_manager=StubRollbackManager(),
+        max_steps=1,
+        mutation_guard=InMemoryMutationGuard(),
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.final_state.inconsistent is False
+    assert result.error is not None
+    assert result.error.error_code == "policy_denied"
+    assert result.error.denied_rule == "path_out_of_scope"
+    assert not tools.actions
+    assert len(feedback.policy_denials) == 1
+    assert any(event.event_type == "policy_denied" for event in trace.events)
+
+
 def test_max_steps_prevents_infinite_loop() -> None:
+    trace = SpyTraceAppender()
     loop, llm, _, _, tools, _ = _build_loop(
-        [_read_file_action(), _read_file_action(), _read_file_action()], max_steps=2
+        [_read_file_action(), _read_file_action(), _read_file_action()],
+        max_steps=2,
+        trace_appender=trace,
     )
 
     result = loop.run("task-001")
@@ -407,6 +457,86 @@ def test_max_steps_prevents_infinite_loop() -> None:
     assert result.error.error_code == "max_steps_exceeded"
     assert len(llm.contexts) == 2
     assert [action.tool_name for action in tools.actions] == ["read_file", "read_file"]
+    assert trace.events[-1].event_type == "run_blocked"
+    assert trace.events[-1].observation == {"error_code": "max_steps_exceeded"}
+
+
+def test_repeated_test_discovery_requests_test_command_instead_of_looping() -> None:
+    trace = SpyTraceAppender()
+    state = replace(
+        _task_state(),
+        status=TaskStatus.RUNNING,
+        current_phase=Phase.TEST,
+        phase_completed={
+            Phase.SPEC.value: True,
+            Phase.PLAN.value: True,
+            Phase.CODE.value: True,
+            Phase.TEST.value: False,
+            Phase.REVIEW.value: False,
+            Phase.DELIVER.value: False,
+        },
+    )
+    loop, llm, _, _, tools, _ = _build_loop(
+        [_test_list_files_action(), _test_list_files_action()],
+        max_steps=4,
+        state=state,
+        trace_appender=trace,
+        interaction_enabled=True,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.WAITING_INPUT
+    assert result.steps == 2
+    assert len(llm.contexts) == 2
+    assert [action.tool_name for action in tools.actions] == ["list_files"]
+    assert result.final_state.pending_interaction_id == "ask-000001"
+    assert result.final_observation == {
+        "interaction_id": "ask-000001",
+        "question": (
+            "No executable behavioral test command was found. "
+            "Provide one exact command to run, or add a project test runner "
+            "before resuming."
+        ),
+    }
+    assert [event.event_type for event in trace.events][-2:] == [
+        "test_strategy_missing",
+        "interaction_requested",
+    ]
+
+
+def test_repeated_test_discovery_blocks_with_actionable_error_when_input_disabled() -> None:
+    trace = SpyTraceAppender()
+    state = replace(
+        _task_state(),
+        status=TaskStatus.RUNNING,
+        current_phase=Phase.TEST,
+        phase_completed={
+            Phase.SPEC.value: True,
+            Phase.PLAN.value: True,
+            Phase.CODE.value: True,
+            Phase.TEST.value: False,
+            Phase.REVIEW.value: False,
+            Phase.DELIVER.value: False,
+        },
+    )
+    loop, _, _, _, tools, _ = _build_loop(
+        [_test_list_files_action(), _test_list_files_action()],
+        max_steps=4,
+        state=state,
+        trace_appender=trace,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "test_strategy_missing"
+    assert result.error.suggested_fix == (
+        "Configure test_command or add a project test runner before resuming."
+    )
+    assert [action.tool_name for action in tools.actions] == ["list_files"]
+    assert trace.events[-1].event_type == "test_strategy_missing"
 
 
 def test_trace_sequence_skip_is_accepted_other_components_may_write_trace_events() -> None:
@@ -920,6 +1050,7 @@ def _build_loop(
     actions: list[dict[str, object]],
     *,
     max_steps: int = 3,
+    interaction_enabled: bool = False,
     state: TaskState | None = None,
     decision: StubPolicyDecision | None = None,
     events: list[str] | None = None,
@@ -952,6 +1083,7 @@ def _build_loop(
         checkpoint_manager=checkpoint_manager or StubCheckpointManager(),
         rollback_manager=rollback_manager or StubRollbackManager(),
         max_steps=max_steps,
+        interaction_enabled=interaction_enabled,
         mutation_guard=InMemoryMutationGuard(),
     )
     return loop, llm, context_builder, policy, tools, feedback
@@ -1023,6 +1155,16 @@ def _read_file_action() -> dict[str, object]:
         "tool_name": "read_file",
         "args": {"path": "src/example.py"},
         "reason": None,
+    }
+
+
+def _test_list_files_action() -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": "test",
+        "tool_name": "list_files",
+        "args": {"path": ".hancode"},
+        "reason": "Find the project test runner.",
     }
 
 

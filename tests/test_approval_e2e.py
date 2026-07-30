@@ -2,8 +2,8 @@
 
 These tests drive the engine (create_agent_loop/run_task) — not a hand-built
 AgentLoop — so they prove the approval components are actually wired in, and
-that the approval round trip (pause -> approve -> execute exact action) holds
-without a second Provider call.
+that the approval round trip (pause -> approve -> execute exact action ->
+continue the AgentLoop) holds through the public runtime interface.
 """
 
 from __future__ import annotations
@@ -93,6 +93,17 @@ _WRITE_SPEC = {
     "reason": "Persist the specification.",
 }
 
+_WRITE_PLAN = {
+    "type": "tool_call",
+    "phase": "plan",
+    "tool_name": "write_file",
+    "args": {
+        "path": ".hancode/tasks/task-001/PLAN.md",
+        "content": "# Plan\n\nImplement src/main.py.\n",
+    },
+    "reason": "Persist the implementation plan.",
+}
+
 
 def test_engine_wires_approval_and_pauses_before_write(tmp_path: Path) -> None:
     _setup(tmp_path)
@@ -107,37 +118,55 @@ def test_engine_wires_approval_and_pauses_before_write(tmp_path: Path) -> None:
     assert len(transport.requests) == 1
 
 
-def test_approved_action_executes_without_second_provider_call(tmp_path: Path) -> None:
-    _setup(tmp_path)
-    transport = _ScriptedTransport([_response(_WRITE_SPEC), _error_response()])
+def test_approved_action_continues_until_the_next_pause(tmp_path: Path) -> None:
+    _setup(tmp_path, approval_mode="all_source_writes")
+    transport = _ScriptedTransport([_response(_WRITE_SPEC), _response(_WRITE_PLAN)])
     provider = _provider(tmp_path, transport)
 
     run_task(tmp_path, "task-001", provider=provider)
     assert len(transport.requests) == 1
 
     ApprovalService(tmp_path).approve("task-001")
-    run_task(tmp_path, "task-001", resume=True, provider=provider)
+    resumed = run_task(tmp_path, "task-001", resume=True, provider=provider)
 
     spec = tmp_path / ".hancode" / "tasks" / "task-001" / "SPEC.md"
     assert spec.is_file()  # exact approved action executed
     assert "Target: src/main.py" in spec.read_text(encoding="utf-8")
-    # The Provider must NOT be called again on approval resume (design §10).
-    assert len(transport.requests) == 1
+    assert len(transport.requests) == 2
+    assert resumed.status is TaskStatus.WAITING_APPROVAL
+    assert resumed.final_state.pending_approval_id == "apr-000002"
 
 
-def test_rejected_action_is_not_executed(tmp_path: Path) -> None:
-    _setup(tmp_path)
+def test_rejected_action_is_not_executed_and_reason_becomes_feedback(
+    tmp_path: Path,
+) -> None:
+    _setup(tmp_path, approval_mode="all_source_writes")
     transport = _ScriptedTransport(
-        [_response(_WRITE_SPEC), _response(_WRITE_SPEC), _error_response()]
+        [_response(_WRITE_SPEC), _response(_WRITE_SPEC)]
     )
     provider = _provider(tmp_path, transport)
 
     run_task(tmp_path, "task-001", provider=provider)
-    ApprovalService(tmp_path).reject("task-001", reason="Not now.")
-    run_task(tmp_path, "task-001", resume=True, provider=provider)
+    ApprovalService(tmp_path).reject(
+        "task-001", reason="Do not write it; token=secret-value."
+    )
+    resumed = run_task(tmp_path, "task-001", resume=True, provider=provider)
 
     spec = tmp_path / ".hancode" / "tasks" / "task-001" / "SPEC.md"
     assert not spec.exists()  # rejection means the action never runs
+    assert resumed.status is TaskStatus.WAITING_APPROVAL
+    assert len(transport.requests) == 2
+
+    user_message = transport.requests[1].json_body["messages"][1]
+    assert isinstance(user_message, dict)
+    context = json.loads(str(user_message["content"]))["task_context"]
+    assert context["observation"] == {
+        "kind": "approval_rejected",
+        "approval_id": "apr-000001",
+        "decision": "rejected",
+        "tool_name": "write_file",
+        "reason": "Do not write it; token=[REDACTED]",
+    }
 
 
 def test_trace_does_not_leak_action_content(tmp_path: Path) -> None:

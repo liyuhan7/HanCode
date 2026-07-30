@@ -7146,7 +7146,7 @@ S4-R2 Build       S4-R3 Test Report
 2. **R1 中文文案与主题**：集中阶段、状态、工具和事件文案；注册 `hancode-dark`/`hancode-light`。
 3. **R2 工作台与活动流**：任务导航、语义 ActivityFeed、Raw Trace 和 Focus/Inspect 切换。
 4. **R3 Inspector**：将纯文本 DetailPanel 升级为任务、Diff、测试、审批、检查点、交付、产物和错误的结构化展示。
-5. **R4 决策界面**：按 source write、test、build 和 rollback 显示后果、证据和显式操作；拒绝可附原因。
+5. **R4 决策界面**：源码 Diff 使用全屏决策页，test、build 和 rollback 保留紧凑弹窗；均显示后果、证据和显式操作，拒绝可附原因。
 6. **R5 测试与 Diff**：安全的专用检查页面、文件标记、截断/脱敏和结构化 TEST_REPORT 摘要。
 7. **R6 操作菜单**：`Ctrl+K` 的状态感知 Palette 与现有 Slash Command 共用操作描述。
 8. **R7 响应式与可访问性**：三档布局、键盘操作、颜色外的文字/符号状态和双主题。
@@ -7157,6 +7157,14 @@ S4-R2 Build       S4-R3 Test Report
 - 第一轮：R0–R3，评审中文术语、主题、宽中屏信息层级、活动流和 Inspector。
 - 第二轮：R4–R6，评审审批、Rollback、测试、Diff 与 Palette 的决策清晰度。
 - 第三轮：R7–R8，评审 `120×36`、`90×32`、`60×28` 三种终端尺寸、文档与 Demo。
+
+### R4 人工评审整改：源码 Diff 全屏审批
+
+- 用户冻结“源码 Diff 使用全屏审批页；测试、构建等短内容继续使用紧凑弹窗”。
+- Source write、overwrite 和 multi-file write 路由到全屏 Modal Screen；标题、目的、影响范围、风险、可恢复性和操作区固定，Diff 使用独立滚动区，技术标识默认折叠。
+- `Y/N/Esc`、J/K、PageUp/PageDown 和按钮均只在决策页生效；批准、拒绝和稍后处理仍返回既有 TUI Intent，不直接修改 Approval 状态。
+- `120×36`、`90×32` 和 `60×28` 必须保持三枚操作按钮完整可见；Narrow 隐藏重复 Footer 并使用全宽纵向按钮。
+- 测试、构建及其他短审批继续使用原 `ApprovalDialog`；Rollback 继续使用独立紧凑确认弹窗。
 
 ---
 
@@ -7187,3 +7195,37 @@ S4-R2 Build       S4-R3 Test Report
 - 自动回归覆盖模板、旧配置迁移、原子保存、CLI、Textual 键盘路径和主工作台状态保持。
 - Provider 页显示“未配置 / 已配置（末四位）/ 环境变量 / `.env`”状态；Key 输入使用密码模式，更新和清除均需显式确认。
 - Keyring 不可用、空 Key、外部来源清除等失败不得泄露输入值，也不得改变 `project.json`。
+
+---
+
+## S9：Approval 消费后连续运行 AgentLoop
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [~] 实施中 |
+| 分支 | `codex/tui-ux` |
+| 范围 | AgentLoop 审批恢复控制流与回归测试；不修改 Approval/Checkpoint 持久化格式 |
+| 开发方式 | Core 行为修复，遵循 RED → GREEN → 回归验证 |
+
+### 行为契约
+
+- Approval 是 AgentLoop 的暂停点，不是一次 run 的结束点。
+- 用户批准后，`resume=True` 复核原 Action、Policy、digest 与 Checkpoint，执行并消费 Approval；成功且状态仍为 `RUNNING` 时，将 ToolResult observation 回灌并在同一次调用中继续 Provider 循环。
+- 只有再次进入 `WAITING_APPROVAL`、`WAITING_INPUT`，达到资源限制，或进入 `BLOCKED`、`FAILED`、`INCONSISTENT`、`COMPLETED` 时才能返回。
+- 已消费或执行中的 Approval 不得重复 dispatch；审批执行失败、状态同步失败和 Checkpoint 失败继续 fail-closed。
+- `run_tests` 已有连续恢复语义推广到所有批准动作；TUI、CLI 和 Headless 共用同一 AgentLoop 行为，不在 TUI 层串联第二次 resume。
+- 拒绝后的结构化反馈与继续运行语义保持兼容。
+
+### 文件边界
+
+- `src/hancode/runtime/agent_loop.py`
+- `tests/test_approval_e2e.py` 及必要的既有审批恢复测试
+- `docs/PLAN.md`、`docs/AGENT_LOG.md`
+
+### 验收
+
+- 批准源码/Artifact 写入后，同一次 `run_task(..., resume=True)` 必须再次调用 Provider，并继续到下一暂停点或终态。
+- 连续运行时保留 approved ToolResult observation、step/tool-call/risk 统计和现有 Trace 顺序。
+- 下一动作再次需要审批时创建新的 Approval ID 并返回 `WAITING_APPROVAL`，不绕过 Policy。
+- 错误或非 `RUNNING` 结果不得继续 Provider；CONSUMED/EXECUTING 恢复不得重复执行工具。
+- 审批 E2E、恢复、AgentLoop、TUI 自动恢复回归、Ruff、MyPy 与 `git diff --check` 通过。

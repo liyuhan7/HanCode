@@ -103,15 +103,21 @@ def test_cli_approval_shows_pending(tmp_path: Path) -> None:
     assert payload["approval"]["status"] == "pending"
 
 
-def test_cli_approve_transitions_task(tmp_path: Path) -> None:
+def test_cli_approve_resumes_and_emits_final_run(tmp_path: Path) -> None:
     _pending(tmp_path)
     result = runner.invoke(
         cli.app,
         ["task", "approve", "task-001", "--project-root", str(tmp_path)],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     payload = _payload(result)
     assert payload["decision"] == "approved"
+    assert payload["status"] == "blocked"
+    assert payload["task"]["status"] == "blocked"
+    assert payload["run"]["task"]["status"] == "blocked"
+    assert (
+        tmp_path / ".hancode" / "tasks" / "task-001" / "SPEC.md"
+    ).is_file()
 
 
 def test_cli_reject_with_reason(tmp_path: Path) -> None:
@@ -124,9 +130,14 @@ def test_cli_reject_with_reason(tmp_path: Path) -> None:
             "--project-root", str(tmp_path),
         ],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     payload = _payload(result)
     assert payload["decision"] == "rejected"
+    assert payload["status"] == "blocked"
+    assert "run" in payload
+    assert not (
+        tmp_path / ".hancode" / "tasks" / "task-001" / "SPEC.md"
+    ).exists()
 
 
 def test_cli_approve_then_reject_conflict_is_nonzero_exit(tmp_path: Path) -> None:

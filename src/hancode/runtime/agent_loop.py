@@ -337,6 +337,40 @@ class AgentRunResult:
     trace_events: tuple[TraceEvent, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _RejectedApproval:
+    """Safe feedback emitted after a human rejects one approval request."""
+
+    approval_id: str
+    tool_name: str
+    reason: str
+
+    def to_observation(self) -> dict[str, object]:
+        return {
+            "kind": "approval_rejected",
+            "approval_id": self.approval_id,
+            "decision": "rejected",
+            "tool_name": self.tool_name,
+            "reason": self.reason,
+        }
+
+
+_TEST_DISCOVERY_TOOLS = frozenset(
+    {
+        "get_diff",
+        "list_checkpoints",
+        "list_files",
+        "read_file",
+        "read_test_report",
+        "search_text",
+    }
+)
+_TEST_COMMAND_QUESTION = (
+    "No executable behavioral test command was found. "
+    "Provide one exact command to run, or add a project test runner before resuming."
+)
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -352,6 +386,7 @@ class AgentLoop:
         rollback_manager: RollbackManager,
         max_steps: int,
         provider_protocol_retries: int = 2,
+        interaction_enabled: bool = False,
         mutation_guard: MutationGuard | None = None,
         approval_policy: ApprovalPolicyPort | None = None,
         approval_store: ApprovalStore | None = None,
@@ -368,6 +403,8 @@ class AgentLoop:
             or provider_protocol_retries < 0
         ):
             raise ValueError("provider_protocol_retries must be a non-negative integer")
+        if not isinstance(interaction_enabled, bool):
+            raise ValueError("interaction_enabled must be a bool")
         self._llm = llm
         self._context_builder = context_builder
         self._policy = policy
@@ -380,6 +417,7 @@ class AgentLoop:
         self._mutation_guard = mutation_guard or _FailClosedMutationGuard()
         self._max_steps = max_steps
         self._provider_protocol_retries = provider_protocol_retries
+        self._interaction_enabled = interaction_enabled
         self._approval_policy = approval_policy
         self._approval_store = approval_store
         self._approval_request_builder = approval_request_builder
@@ -537,6 +575,7 @@ class AgentLoop:
         pending_risks: list[Risk] = []
         steps_completed = 0
         consecutive_provider_failures = 0
+        completed_test_discovery_actions: set[str] = set()
 
         def _result(
             status: TaskStatus,
@@ -730,13 +769,6 @@ class AgentLoop:
                             routing.phase,
                             trace_events,
                         )
-                        # Preserve the existing approval contract for source
-                        # writes and other approved mutations.  TEST actions
-                        # are the exception: after the approved command runs,
-                        # the same resume must feed its result back to the
-                        # Agent so it can finish TEST or enter REVIEW.
-                        if approved_action.tool_name != "run_tests":
-                            return exec_result
                         tool_calls.extend(exec_result.tool_calls)
                         pending_risks.extend(exec_result.risks)
                         steps_completed += exec_result.steps
@@ -755,8 +787,10 @@ class AgentLoop:
                                 exec_result.error,
                                 state,
                             )
+                    elif isinstance(approval_result, _RejectedApproval):
+                        observation = approval_result.to_observation()
                     else:
-                        # AgentRunResult returned (pending, rejected, error)
+                        # AgentRunResult returned (still pending or error).
                         return approval_result
                 # Reload state after approval handling
                 state = self._state_store.load(task_id)
@@ -1001,6 +1035,88 @@ class AgentLoop:
                 continue
 
             consecutive_provider_failures = 0
+            test_discovery_key = _test_discovery_action_key(action, routing.phase)
+            if (
+                state.latest_test_status == "none"
+                and test_discovery_key is not None
+                and test_discovery_key in completed_test_discovery_actions
+            ):
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="test_strategy_missing",
+                    phase=routing.phase,
+                    status="waiting" if self._interaction_enabled else "failed",
+                    observation={
+                        "reason": "repeated_test_discovery",
+                        "tool_name": action.tool_name,
+                    },
+                    error_summary=(
+                        None
+                        if self._interaction_enabled
+                        else "No executable behavioral test command was found."
+                    ),
+                )
+                if trace_error is not None:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        trace_error,
+                        state,
+                    )
+                if not self._interaction_enabled:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        _test_strategy_missing_error(routing.phase),
+                        state,
+                    )
+                interaction_action = Action(
+                    type=ActionType.ASK_USER,
+                    phase=routing.phase,
+                    tool_name=None,
+                    args={"question": _TEST_COMMAND_QUESTION},
+                    reason="A behavioral test command is required to continue TEST.",
+                )
+                state, interaction = self._request_user_input(
+                    task_id,
+                    state,
+                    interaction_action,
+                    routing.phase,
+                )
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="interaction_requested",
+                    phase=routing.phase,
+                    status="waiting",
+                    observation={
+                        "interaction_id": interaction.interaction_id,
+                        "question_length": len(interaction.question),
+                    },
+                )
+                return _result(
+                    TaskStatus.WAITING_INPUT,
+                    step,
+                    tuple(tool_calls),
+                    {
+                        "interaction_id": interaction.interaction_id,
+                        "question": interaction.question,
+                    },
+                    trace_error,
+                    state,
+                    risks=(
+                        (_trace_failure_risk(trace_error),)
+                        if trace_error is not None
+                        else ()
+                    ),
+                )
 
             decision = self._policy.evaluate(
                 action=action,
@@ -1615,6 +1731,10 @@ class AgentLoop:
                         state,
                         risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
                     )
+                if tool_result.success:
+                    completed_key = _test_discovery_action_key(action, routing.phase)
+                    if completed_key is not None:
+                        completed_test_discovery_actions.add(completed_key)
                 tool_calls.append(action.tool_name)
                 if requires_checkpoint:
                     if not tool_result.success:
@@ -2304,20 +2424,31 @@ class AgentLoop:
                 state,
             )
 
+        max_steps_error = last_recoverable_error or StructuredError(
+            error_code="max_steps_exceeded",
+            message="Agent loop reached the configured maximum number of steps.",
+            phase=routing.phase.value,
+            denied_rule="max_steps_limit",
+            suggested_fix="Increase max_steps or make the action sequence terminate earlier.",
+        )
+        trace_error = self._append_trace(
+            task_id,
+            trace_events,
+            event_type="run_blocked",
+            phase=routing.phase,
+            status="failed",
+            observation={"error_code": max_steps_error.error_code},
+            error_summary=redact_text(max_steps_error.message),
+        )
+        if trace_error is not None:
+            pending_risks.append(_trace_failure_risk(trace_error))
         state = self._block(task_id, state)
         return _result(
             TaskStatus.BLOCKED,
             self._max_steps,
             tuple(tool_calls),
             observation,
-            last_recoverable_error
-            or StructuredError(
-                error_code="max_steps_exceeded",
-                message="Agent loop reached the configured maximum number of steps.",
-                phase=routing.phase.value,
-                denied_rule="max_steps_limit",
-                suggested_fix="Increase max_steps or make the action sequence terminate earlier.",
-            ),
+            max_steps_error,
             state,
         )
 
@@ -3106,7 +3237,7 @@ class AgentLoop:
         task_id: str,
         state: TaskState,
         trace_events: list[TraceEvent],
-    ) -> AgentRunResult | Action | None:
+    ) -> AgentRunResult | Action | _RejectedApproval | None:
         """Handle WAITING_APPROVAL on resume: AgentRunResult, an Action, or None."""
         if self._approval_store is None:
             error = StructuredError(
@@ -3169,7 +3300,10 @@ class AgentLoop:
             )
 
         if status == ApprovalStatus.REJECTED:
-            # Clear pending approval and return rejection observation
+            # Clear the pending pointer and feed the decision back to the
+            # Provider on this same resume.  Do not expose the action payload
+            # or preview: the tool name and a redacted human reason are enough
+            # for the Agent to revise its next action safely.
             updated_state = replace(
                 state,
                 status=TaskStatus.RUNNING,
@@ -3187,7 +3321,13 @@ class AgentLoop:
                     _inconsistent(state),
                 )
 
-            return None  # Return None to continue the loop with rejection observation
+            return _RejectedApproval(
+                approval_id=approval_id,
+                tool_name=record.action.tool_name or "unknown",
+                reason=redact_text(
+                    record.rejection_reason or "No rejection reason provided."
+                ),
+            )
 
         if status == ApprovalStatus.CONSUMED:
             # Crash after execution completed but before state was cleared.
@@ -4481,6 +4621,13 @@ def _is_valid_policy_decision(
         "edit_file",
     }:
         return not requires_checkpoint
+    if not allowed:
+        # A denied write may intentionally contain an unsafe, protected, or
+        # out-of-scope target.  Those action defects belong to the normal
+        # policy-denial feedback loop; they do not prove the Policy adapter is
+        # structurally inconsistent.  A denied decision must still avoid
+        # authorizing a checkpoint or claiming a writable target zone.
+        return not requires_checkpoint and target_zone is None
     target = action.args.get("path")
     if not isinstance(target, str) or not target.strip():
         return False
@@ -4825,6 +4972,36 @@ def _is_checkpoint_manifest_for(
 
 def _is_optional_sha256(value: object) -> bool:
     return value is None or _is_sha256(value)
+
+
+def _test_discovery_action_key(action: Action, phase: Phase) -> str | None:
+    if (
+        phase is not Phase.TEST
+        or action.type is not ActionType.TOOL_CALL
+        or action.tool_name not in _TEST_DISCOVERY_TOOLS
+    ):
+        return None
+    return json.dumps(
+        {
+            "tool_name": action.tool_name,
+            "args": dict(action.args),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _test_strategy_missing_error(phase: Phase) -> StructuredError:
+    return StructuredError(
+        error_code="test_strategy_missing",
+        message="No executable behavioral test command was found.",
+        phase=phase.value,
+        denied_rule="test_strategy_required",
+        suggested_fix=(
+            "Configure test_command or add a project test runner before resuming."
+        ),
+    )
 
 
 def _is_sha256(value: object) -> bool:

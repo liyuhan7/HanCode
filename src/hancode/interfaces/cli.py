@@ -494,17 +494,23 @@ def task_approve(
     """Approve a pending approval request."""
     try:
         service = ApprovalService(project_root)
-        summary = service.approve(task_id, approval_id=approval_id)
-        _emit(
-            {
-                "command": "task approve",
-                "status": "completed",
-                "task": summary.to_dict(),
-                "decision": "approved",
-            }
-        )
+        service.approve(task_id, approval_id=approval_id)
+        result = task_service.resume(project_root, task_id)
+        _emit_approval_result("task approve", "approved", result)
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_task_operation_failed",
+                    "The task operation could not access its workspace.",
+                    "Check project workspace permissions and retry.",
+                    denied_rule="task_workspace_access_required",
+                ),
+                exit_code=2,
+            )
+        ) from None
 
 
 @task_app.command("reject")
@@ -523,17 +529,23 @@ def task_reject(
     """Reject a pending approval request."""
     try:
         service = ApprovalService(project_root)
-        summary = service.reject(task_id, approval_id=approval_id, reason=reason)
-        _emit(
-            {
-                "command": "task reject",
-                "status": "completed",
-                "task": summary.to_dict(),
-                "decision": "rejected",
-            }
-        )
+        service.reject(task_id, approval_id=approval_id, reason=reason)
+        result = task_service.resume(project_root, task_id)
+        _emit_approval_result("task reject", "rejected", result)
     except HanCodeError as exc:
         raise typer.Exit(_handle_error(exc)) from None
+    except OSError:
+        raise typer.Exit(
+            _handle_error(
+                _cli_error(
+                    "cli_task_operation_failed",
+                    "The task operation could not access its workspace.",
+                    "Check project workspace permissions and retry.",
+                    denied_rule="task_workspace_access_required",
+                ),
+                exit_code=2,
+            )
+        ) from None
 
 
 # --- S4 new task commands ---
@@ -882,6 +894,27 @@ def _emit_task_result(
         {
             "command": command,
             "status": status_value,
+            "task": summary.task.to_dict(),
+            "run": summary.to_dict(),
+        }
+    )
+    raise typer.Exit(_task_exit_code(summary.task.status))
+
+
+def _emit_approval_result(
+    command: str,
+    decision: str,
+    result: object,
+) -> None:
+    """Emit the final state reached after an approval decision resumes a task."""
+    from hancode.app.task_models import TaskRunSummary
+
+    summary = TaskRunSummary.from_result(result)  # type: ignore[arg-type]
+    _emit(
+        {
+            "command": command,
+            "status": summary.task.status.value,
+            "decision": decision,
             "task": summary.task.to_dict(),
             "run": summary.to_dict(),
         }

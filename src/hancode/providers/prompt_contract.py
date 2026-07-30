@@ -118,6 +118,10 @@ PHASE_CONTRACTS: dict[Phase, str] = {
         "Do not ask the user for permission through ask_user. "
         "The deterministic runtime will automatically request approval for the "
         "command. "
+        "Do not repeat an identical successful discovery action. "
+        "If bounded inspection finds no executable behavioral test command and "
+        "ask_user is available, ask for one exact command instead of continuing "
+        "to enumerate the same files. "
         "After observing a passing result, return finish_phase. "
         "A failed result will be routed to REVIEW for diagnosis and remediation."
     ),

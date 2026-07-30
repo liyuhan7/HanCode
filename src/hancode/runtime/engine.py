@@ -123,6 +123,7 @@ def create_agent_loop(
         mutation_guard=selected_mutation_guard,
         max_steps=selected_max_steps,
         provider_protocol_retries=config.provider_protocol_retries,
+        interaction_enabled=config.interaction_mode == "ask_user",
         approval_policy=approval_policy,
         approval_store=approval_store,
         approval_request_builder=approval_request_builder,

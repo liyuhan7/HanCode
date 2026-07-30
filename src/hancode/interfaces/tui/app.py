@@ -71,6 +71,10 @@ from hancode.interfaces.tui.presenters import (
     present_trace_event,
 )
 from hancode.interfaces.tui.screens.main import MainScreen
+from hancode.interfaces.tui.screens.approval import (
+    SOURCE_APPROVAL_CATEGORIES,
+    SourceApprovalScreen,
+)
 from hancode.interfaces.tui.screens.config import ConfigScreen
 from hancode.interfaces.tui.palette import CommandPalette
 from hancode.interfaces.tui.task_drawer import TaskDrawer
@@ -115,7 +119,10 @@ class HanCodeTuiApp(App[None]):
     #tui-command-palette { width: 70%; max-width: 84; height: 70%; background: $panel; border: heavy $primary; padding: 1 2; }
     #tui-command-palette-list { height: 1fr; }
     ApprovalDialog, RollbackDialog { align: center middle; }
-    #tui-approval-dialog, #tui-rollback-dialog { width: 76%; max-width: 92; background: $panel; border: heavy $primary; padding: 1 2; }
+    #tui-approval-dialog, #tui-rollback-dialog {
+        width: 76%; max-width: 92; height: auto; max-height: 80%;
+        background: $panel; border: heavy $primary; padding: 1 2;
+    }
     """
     BINDINGS = [
         ("f2", "toggle_display_mode", "聚焦/检查"),
@@ -1025,7 +1032,12 @@ class HanCodeTuiApp(App[None]):
         )
         if self.is_running and not self._approval_modal_open:
             self._approval_modal_open = True
-            self.push_screen(ApprovalDialog(view), self._on_approval_modal_result)
+            decision_screen = (
+                SourceApprovalScreen(view)
+                if view.category in SOURCE_APPROVAL_CATEGORIES
+                else ApprovalDialog(view)
+            )
+            self.push_screen(decision_screen, self._on_approval_modal_result)
         try:
             composer = self.screen.query_one("#tui-composer", Input)
         except Exception:

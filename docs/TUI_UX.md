@@ -33,6 +33,14 @@ Wide 终端（100 列及以上）显示任务、当前进展、Inspector 三栏�
 
 测试页面读取已持久化的 `TEST_REPORT.md`：状态、命令、通过/失败数、失败分类、摘要与下一步。当前持久化格式不保留 stdout/stderr 正文或失败用例列表，因此界面不会猜测或伪造这些内容。
 
+## 审批决策
+
+- 源码写入、覆盖和多文件修改使用全屏审批页；测试、构建和 Rollback 等短决策保留紧凑弹窗。
+- 全屏页固定展示操作目的、影响范围、风险、可恢复性和后果按钮；Diff 位于独立滚动区域，技术标识默认折叠。
+- `Y/N/Esc` 分别表示批准、拒绝和稍后处理；J/K、PageUp/PageDown 浏览 Diff。普通 Composer 输入不能作出审批决定。
+- Wide、Medium 和 Narrow 均保持批准、拒绝、稍后处理三项操作可见；Narrow 使用全宽纵向按钮。
+- 页面只返回现有 TUI Intent，审批 digest、Checkpoint、状态转换和恢复仍由 Application Service 与 Core 执行。
+
 ## 项目配置中心
 
 - `/config` 或 Command Palette“项目设置”打开与 `hancode config setup` 相同的全屏配置页。

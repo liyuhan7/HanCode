@@ -1055,6 +1055,7 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
         "tool_called",
         "source_write_authorized",
         "tool_completed",
+        "run_blocked",
     ]
     assert result.trace_events == tuple(trace_appender.events)
 
