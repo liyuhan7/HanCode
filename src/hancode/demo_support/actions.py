@@ -22,19 +22,10 @@ def build_first_actions() -> tuple[dict[str, object], ...]:
 
 def build_retry_actions() -> tuple[dict[str, object], ...]:
     return (
-        _record_review(
-            [
-                {
-                    "requirement_id": "REQ-ADD-001",
-                    "status": "partial",
-                    "evidence": "测试失败记录已生成。",
-                    "risk": "当前实现未通过加法测试。",
-                    "is_core": True,
-                }
-            ],
-            ["测试失败后进入重试与回退流程。"],
+        _record_remediation(
+            diagnosis="The subtraction implementation violates the addition assertion.",
+            planned_paths=["src/calculator.py"],
         ),
-        _finish(Phase.REVIEW),
         _write(Phase.CODE, "src/calculator.py", _source("return 0")),
         _finish(Phase.CODE),
         _run_tests(),
@@ -42,6 +33,19 @@ def build_retry_actions() -> tuple[dict[str, object], ...]:
 
 
 def build_recovery_actions() -> tuple[dict[str, object], ...]:
+    return (
+        _record_remediation(
+            diagnosis="The constant result still violates the addition assertion.",
+            planned_paths=["src/calculator.py"],
+        ),
+        _write(Phase.CODE, "src/calculator.py", _source("return left + right")),
+        _finish(Phase.CODE),
+        _run_tests(),
+    )
+
+
+def build_post_rollback_actions() -> tuple[dict[str, object], ...]:
+    """Apply the final source repair after the retry-budget rollback."""
     return (
         _write(Phase.CODE, "src/calculator.py", _source("return left + right")),
         _finish(Phase.CODE),
@@ -52,6 +56,7 @@ def build_recovery_actions() -> tuple[dict[str, object], ...]:
 def build_finish_actions() -> tuple[dict[str, object], ...]:
     return (
         _finish(Phase.TEST),
+        _get_diff(),
         _record_review(
             [
                 {
@@ -64,8 +69,6 @@ def build_finish_actions() -> tuple[dict[str, object], ...]:
             ],
             [],
         ),
-        _get_diff(),
-        _finish(Phase.REVIEW),
     )
 
 
@@ -178,6 +181,23 @@ def _record_review(
         "phase": Phase.REVIEW.value,
         "tool_name": "record_review",
         "args": {"requirements": requirements, "risks": risks},
+        "reason": None,
+    }
+
+
+def _record_remediation(
+    *, diagnosis: str, planned_paths: list[str]
+) -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": Phase.REVIEW.value,
+        "tool_name": "record_remediation",
+        "args": {
+            "kind": "modify_source",
+            "diagnosis": diagnosis,
+            "planned_paths": planned_paths,
+            "question": None,
+        },
         "reason": None,
     }
 

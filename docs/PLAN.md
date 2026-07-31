@@ -7240,7 +7240,7 @@ S4-R2 Build       S4-R3 Test Report
 | 分支 | `codex/agent-test-strategy` |
 | 依赖 | S9 |
 | 范围 | CODE→TEST 测试策略登记、自动补建测试、执行绑定与只读展示 |
-| 开发方式 | Core 行为变更，逐条 RED → GREEN |
+| 开发方式 | Core 行为变更；按用户授权先实现、后补回归验证（不采用 TDD） |
 
 ### 行为契约
 
@@ -7267,5 +7267,41 @@ S4-R2 Build       S4-R3 Test Report
 - Agent 可通过既有 `write_file`/`edit_file` 创建或补充测试，继续经过 Source Write Checkpoint/Approval；测试执行继续经过 RUN_TESTS Approval。
 - 标准输出明确报告 `no tests ran`、`collected 0 items` 或 `0 tests` 时归类为 `no_tests`，不能标记通过。
 - Application Service/TUI 只读投影新增“测试策略已登记/未登记”；Mock Demo 已迁移为复用并登记现有 unittest。
+- Review 收敛：`record_review` 成功即写入 `REVIEW.md` 状态并自动完成 Review；失败测试回到 CODE，成功测试进入 DELIVER，不再依赖模型额外调用 `finish_phase`。
+- Review 无进展保护：重复读取同一证据第一次仅回灌纠错提示，第二次以 `review_progress_stalled` 阻塞；Provider/Parse 历史错误不会污染后续 `max_steps_exceeded`。
+- 测试环境反馈：测试策略登记检查首个 argv 可解析性；Provider Context 公开只读运行环境摘要；命令启动、WSL 服务和权限类失败归类为 `environment_error`，不保存完整输出。
+- 本轮验证：相关回归 `151 passed`；兼容回归 `14 passed`；全量 `1436 passed, 17 skipped`；Ruff 与 MyPy（124 个源码文件）通过，`git diff --check` 通过。`uv build --offline` 仍因本地缓存缺少 `setuptools>=68` 未通过。
 - 恢复后新鲜验证：S10 相关 `300 passed`；最终全量 `1427 passed, 17 skipped, 1 failed`，唯一失败为实施前已有的 `max_trace_events` 实际默认 `1000` 与旧测试期望 `40` 不一致；Ruff 全仓通过；MyPy `124` 个源码文件通过；`git diff --check` 通过。
 - `uv build --offline` 未通过：任务专属空缓存无法解析 `setuptools>=68`；`--no-build-isolation` 也因当前虚拟环境未安装 `setuptools` 失败。未联网安装依赖，未改变锁文件。
+
+---
+
+## S10-R1：测试失败诊断与自主修复闭环
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；离线构建受本地 `setuptools>=68` 缓存缺失阻断 |
+| 分支 | `codex/agent-test-strategy` |
+| 依赖 | S10 |
+| 范围 | TEST 失败证据、REVIEW 修复决策、CODE 定向修复、原策略复测与无进展保护 |
+| 开发方式 | Core 行为变更；按用户授权先实现、后补回归验证（不采用 TDD） |
+
+### 行为契约
+
+- 失败测试生成任务级、脱敏、有摘要绑定的 `test_failure.json`；Agent 通过独立 `record_remediation` 提交修复目标，不再用 `record_review` 兼任失败修复。
+- `modify_source`、`modify_test`、`replace_test_strategy`、`rerun_for_diagnosis`、`request_input` 与 `rollback` 使用确定性分流；测试通过后才允许 `record_review` 完成最终审查。
+- 修复决策必须绑定当前 failure digest；源码/测试修复只能写入声明且未受保护的路径，策略替换必须重新登记真实可执行命令。
+- 自主修复在真正应用时消耗一次 retry budget；诊断复测和人工输入不消耗预算。重复失败通过规范化 fingerprint 判定并在无进展时停止空转。
+- Windows runner 输出按字节安全解码；WSL/Git Bash 权限和启动失败归类为 `environment_error`，不得误导 Agent 修改业务源码。
+- 旧任务缺少新字段时兼容加载；旧失败报告在 resume 时生成受限 legacy failure，不手工改写 state、报告或测试策略。
+- Provider、Approval、Checkpoint、受保护文件与单 argv `shell=False` 边界保持不变；不自动安装依赖、修改系统权限或切换 Provider。
+
+### 验收
+
+- assertion failure 可完成“失败记录→modify_source→审批修改→绑定策略复测→通过”闭环。
+- 测试文件修复会使旧策略失效并要求重登；受保护测试零写入拒绝。
+- WSL/Git Bash `E_ACCESSDENIED` / `WinError 5` 被识别为环境错误，并可安全切换到已安装的项目原生 runner。
+- stale remediation、越界路径、伪造内部记录和损坏摘要均 fail-closed。
+- 同一 failure fingerprint 第一次重复进入 REVIEW，第二次进入 WAITING_INPUT 或明确 BLOCKED，不无限读取证据。
+- task-001 fixture 可在不手工修改 state 的前提下完成 legacy 失败建档与恢复。
+- AgentLoop、Router、Phase Gate、Policy、Provider Schema、State、Context、TUI 只读投影、Mock Demo 和全量质量门均有新鲜验证证据。

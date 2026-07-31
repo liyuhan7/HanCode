@@ -1110,6 +1110,9 @@ class HanCodeTuiApp(App[None]):
             f"构建状态：{build_status}\n"
             f"最近检查点：{checkpoint}\n"
             f"剩余重试：{view.retry_budget_remaining}\n"
+            f"{_test_failure_label(view.latest_test_status, view.latest_remediation_digest)}：{view.latest_test_failure_digest or '无'}\n"
+            f"修复决策：{view.latest_remediation_digest or '无'}\n"
+            f"修复已应用：{'是' if view.remediation_applied else '否'}\n"
             f"已执行构建：{builds_run}"
         )
 
@@ -1268,6 +1271,14 @@ def _tui_internal_error() -> StructuredError:
         denied_rule="tui_internal_error",
         suggested_fix="检查任务状态与 trace 后重试。",
     )
+
+
+def _test_failure_label(test_status: str, remediation_digest: str | None) -> str:
+    if test_status == "failed":
+        return "活动失败证据"
+    if test_status == "none" and remediation_digest:
+        return "修复中失败证据"
+    return "最近已解决失败"
 
 
 def _task_label(summary: TaskSummary) -> str:

@@ -24,7 +24,11 @@ from hancode.providers.strict_schema import (
     StrictSchemaProjection,
     StrictSchemaValidationError,
 )
-from hancode.core.schema_validator import SchemaValidationError, validate_instance
+from hancode.core.schema_validator import (
+    SchemaValidationError,
+    SchemaViolation,
+    validate_instance,
+)
 from hancode.providers.action_normalizer import normalize_provider_arguments
 from hancode.policy.tool_policy import allowed_tools_for_phase
 from hancode.providers.transport import (
@@ -181,10 +185,11 @@ class OpenAICompatibleProvider:
                     phase=phase.value,
                     protocol_retryable=True,
                 ) from None
-        if validate_instance(raw_action, prompt.action_schema):
+        violations = validate_instance(raw_action, prompt.action_schema)
+        if violations:
             raise _provider_error(
                 "provider_action_schema_invalid",
-                "Provider action does not match the expected schema.",
+                _schema_violation_message(violations),
                 phase=phase.value,
                 protocol_retryable=True,
             )
@@ -441,6 +446,21 @@ def _provider_error(
             suggested_fix="Check provider configuration and retry.",
         ),
         protocol_retryable=protocol_retryable,
+    )
+
+
+def _schema_violation_message(violations: tuple[SchemaViolation, ...]) -> str:
+    """Return bounded schema diagnostics without echoing provider-supplied values."""
+    summaries: list[str] = []
+    for violation in violations[:3]:
+        path = ".".join(str(part) for part in violation.path) or "$"
+        summaries.append(f"{path} ({violation.validator})")
+    diagnostic = "; ".join(summaries)
+    if len(violations) > len(summaries):
+        diagnostic += "; additional violations omitted"
+    return (
+        "Provider action does not match the expected schema. "
+        f"Safe validation details: {diagnostic}."
     )
 
 

@@ -2188,3 +2188,21 @@
 - 恢复后质量门禁：Ruff `All checks passed!`；MyPy `Success: no issues found in 124 source files`；`git diff --check` 通过。
 - 离线构建：`uv build --offline` 因任务专属缓存没有 `setuptools>=68` 失败；关闭构建隔离后当前 `.venv` 也没有 `setuptools`。未联网安装、未修改依赖或锁文件。
 - Git：保留在 `codex/agent-test-strategy`，未提交、未推送。
+
+### 2026-07-30 — Review 收敛与自动路由
+
+- `record_review` 成功后由 AgentLoop 同步 `REVIEW.md` artifact、完成 Review Gate 并自动路由：失败测试重新打开 CODE 并消费失败标记，通过测试进入 DELIVER；Retry Budget 仍只在后续首次成功源码修改时扣减。
+- 新增 Review 证据去重：同一运行内首次重复读取回灌 `review_action_repeated`，再次重复以 `review_progress_stalled` 阻塞并记录对应 trace 事件。
+- 成功 Provider Action 会清除旧可恢复错误；步数耗尽固定报告 `max_steps_exceeded`。OpenAI-compatible JSON 校验失败仅暴露受限的路径/校验器摘要。
+- 运行环境摘要、命令可解析性检查和 `environment_error` 分类帮助 Agent 在 Windows 上优先选择 Python 或项目原生测试。当前 HTML/CSS 测试脚本的 `grep` 模式已以 `--` 分隔符修正，并由 Git Bash 实测通过。
+- 新鲜验证：相关回归 `151 passed`，兼容回归 `14 passed`，全量 `1436 passed, 17 skipped`；Ruff 通过，MyPy `124` 个源码文件通过，`git diff --check` 通过。`uv build --offline` 因缓存缺少 `setuptools>=68` 失败，未联网安装依赖。
+
+### 2026-07-31 — S10-R1 评审缺陷修复（进行中）
+
+- 用户明确本轮不采用 TDD，按“先实现、后补回归”执行；保留 `codex/agent-test-strategy` 的全部未提交改动，不提交、不推送。
+- 已收紧修复路径边界：统一项目相对路径为 POSIX 形式，拒绝盘符、绝对路径、`.`、`..` 与逃逸；活动修复期间每次源码/测试写入均须命中 `planned_paths`，首次应用修复后不再放宽。
+- 已收紧失败记录存储：failure/remediation 保存前自校验 schema、任务身份与 digest；任务目录、目标及原子临时文件拒绝 symlink、junction/reparse point。
+- 已修复修复生命周期投影：诊断复测的同 fingerprint 计数递增，新 fingerprint 重置计数；通过后的 failure/remediation 仅作为审计摘要，不参与下一轮失败 fingerprint；Review/TUI 区分活动、修复中与最近已解决失败。
+- 已限制 `environment_error` 只允许换策略、请求输入或回滚；Mock Demo 改为从实时 REVIEW Context 注入 remediation 的 failure digest，静态 sentinel 与预运行 hydration 已移除。
+- 本轮定向核心回归：`155 passed in 1.56s`；Mock Demo 与 CLI 回归：`11 passed in 34.72s`。修复了 rollback 后阶段编排：自动 rollback 已将 Router 带回 CODE，Demo 现在直接进行受既有 `planned_paths` 约束的最终源码修复、登记策略复测，再进入最终 REVIEW 与 Deliver，不再伪造没有活动 failure 的 remediation。
+- 最终验证：全量 pytest `1454 passed, 17 skipped in 97.77s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 128 source files`；`git diff --check` 通过。`uv build --offline` 仍因本地离线 cache 没有 `setuptools>=68` 未进入构建；未联网安装依赖、未修改锁文件。未提交、未推送。

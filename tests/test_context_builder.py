@@ -15,6 +15,9 @@ from hancode.core.models import Phase
 from hancode.core.state import TaskState, load_state
 from hancode.core.test_strategy import TestCoverageItem
 from hancode.storage.test_strategies import TestStrategyStore
+from hancode.storage.test_remediations import TestRemediationStore
+from hancode.runtime.test_remediation import build_test_failure_record
+from hancode.core.test_remediation import FailureCategory
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
@@ -47,6 +50,47 @@ def test_context_builder_includes_course_context(tmp_path: Path) -> None:
         "omitted_sections": [],
         "truncated_sections": [],
     }
+
+
+def test_review_context_projects_passed_failure_as_resolved_audit(tmp_path: Path) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    for artifact in ("SPEC.md", "PLAN.md", "TEST_REPORT.md"):
+        (task_root / artifact).write_text("# Evidence\n", encoding="utf-8")
+    failure = build_test_failure_record(
+        task_id="task-001",
+        attempt_seq=1,
+        strategy_digest=None,
+        command_argv=None,
+        category=FailureCategory.ASSERTION_FAILURE,
+        exit_code=1,
+        timed_out=False,
+        passed_count=0,
+        failed_count=1,
+        output="FAILED tests/test_app.py::test_app\nAssertionError",
+        project_root=project_root,
+    )
+    TestRemediationStore(project_root).save_failure(failure)
+    state = replace(
+        _state(
+            task_root,
+            goal="Review resolved evidence.",
+            artifact_names=("SPEC.md", "PLAN.md", "TEST_REPORT.md"),
+        ),
+        current_phase=Phase.REVIEW,
+        latest_test_status="passed",
+        latest_test_failure_digest=failure.digest,
+    )
+
+    context = build_context(
+        project_root,
+        "task-001",
+        Phase.REVIEW,
+        load_config(project_root, "task-001"),
+        state=state,
+    )
+
+    assert "test_failure" not in context["sections"]
+    assert context["sections"]["last_test_failure"]["digest"] == failure.digest
 
 
 def test_code_phase_context_requires_spec_and_plan(tmp_path: Path) -> None:

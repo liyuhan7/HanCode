@@ -65,6 +65,9 @@ class TaskOverviewView:
     requires_input: bool
     requires_approval: bool
     test_strategy_registered: bool = False
+    latest_test_failure_digest: str | None = None
+    latest_remediation_digest: str | None = None
+    remediation_applied: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +245,17 @@ def present_task(summary: TaskSummary) -> TaskOverviewView:
         requires_input=summary.requires_input,
         requires_approval=summary.requires_approval,
         test_strategy_registered=summary.test_strategy_registered,
+        latest_test_failure_digest=(
+            None
+            if summary.latest_test_failure_digest is None
+            else _text(summary.latest_test_failure_digest)
+        ),
+        latest_remediation_digest=(
+            None
+            if summary.latest_remediation_digest is None
+            else _text(summary.latest_remediation_digest)
+        ),
+        remediation_applied=summary.remediation_applied,
     )
 
 

@@ -100,6 +100,8 @@ PHASE_CONTRACTS: dict[Phase, str] = {
         "tools and accept the normal checkpoint and approval boundaries. "
         "After the test files exist, call record_test_strategy with one exact "
         "test command, framework, test files, and requirement coverage evidence. "
+        "Use runtime_environment to choose an available runner; on Windows, "
+        "prefer Python or the project-native runner over an assumed shell. "
         "Use ask_user only when a missing runtime, dependency, or external "
         "condition makes executable tests impossible; the mere absence of tests "
         "is not a reason to ask the user. "
@@ -124,9 +126,11 @@ PHASE_CONTRACTS: dict[Phase, str] = {
     Phase.REVIEW: (
         "Review requirement coverage, test evidence, diff evidence, and rollback "
         "risk. "
-        "When the latest test failed, inspect TEST_REPORT.md and source evidence, "
-        "record the failure cause and required remediation, then finish the review "
-        "phase. "
+        "When the latest test failed, use sections.test_failure as the authoritative "
+        "evidence and call record_remediation after any necessary reads. "
+        "Do not call record_review while a failure is active. "
+        "When the latest test passed, record final requirement coverage and risks "
+        "with record_review; a successful record_review completes this phase. "
         "Do not rerun tests in REVIEW; fixes must return through CODE and TEST."
     ),
     Phase.DELIVER: (

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from fnmatch import fnmatchcase
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from hancode.core.config import HanCodeConfig
 from hancode.policy.path_security import is_sensitive_path
@@ -30,6 +30,23 @@ _ARTIFACT_NAMES = frozenset(
     }
 )
 _MACHINE_FILE_NAMES = frozenset({"state.json", "history.jsonl", "trace.jsonl"})
+
+
+def normalize_project_relative_path(target: str) -> str:
+    """Return one clean POSIX project-relative path or fail closed."""
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("project-relative path is required")
+    normalized = target.replace("\\", "/")
+    windows_path = PureWindowsPath(target)
+    if normalized.startswith("/") or windows_path.is_absolute() or windows_path.drive:
+        raise ValueError("absolute project paths are not allowed")
+    raw_parts = normalized.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise ValueError("path contains unsupported segments")
+    path = PurePosixPath(normalized)
+    if path.is_absolute() or not path.parts:
+        raise ValueError("project-relative path is required")
+    return path.as_posix()
 
 
 class PathClassifier:

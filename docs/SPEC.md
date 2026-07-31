@@ -194,11 +194,11 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 
 ##### FR-15：测试报告与审查记录
 
-- 输入：测试命令、测试输出、changed files、SPEC、PLAN、checkpoint 信息和未测试说明。
-- 行为：在 test phase 生成或更新 `TEST_REPORT.md`；在 review phase 生成或更新 `REVIEW.md`，记录测试结果、失败原因、需求覆盖、代码质量问题、未测试风险和 rollback 建议。
-- 输出：测试报告和审查记录。
-- 边界条件：代码修改后必须运行相关测试；无法运行测试时必须记录原因和风险。
-- 错误处理：测试失败时，AgentLoop 必须将 phase 切换到 review，由 review phase 判断继续修改、记录风险或 rollback；不得直接返回 completed。
+- 输入：测试命令、测试输出、结构化失败记录、changed files、SPEC、PLAN、checkpoint 信息和未测试说明。
+- 行为：在 test phase 生成或更新 `TEST_REPORT.md` 与任务级 `test_failure.json`；测试失败时 review phase 通过独立 `record_remediation` 记录绑定 failure digest 的修复决策，测试通过后的最终 review 才生成或更新 `REVIEW.md`。
+- 输出：测试报告、失败记录、修复决策和最终审查记录。
+- 边界条件：代码修改后必须运行绑定测试策略；无法运行测试时必须记录环境原因。失败修复只能修改决策声明且未受保护的路径，不能修改教师测试或评分文件。
+- 错误处理：测试失败必须进入 remediation review；源码、测试、策略、环境、人工输入和 rollback 使用确定性分流。相同失败不得无限重试，也不得在没有新鲜通过证据时返回 completed。
 
 ##### FR-16：Knowledge Delivery
 
@@ -211,10 +211,10 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 ##### FR-18：受控开发查询、Test 与 Build 工具
 
 - 输入：当前 task 状态、checkpoint 数据、配置的 test/build 命令，或经审批的显式测试命令。
-- 行为：提供 `get_diff`（基于 checkpoint 快照的非 Git Diff）、`run_tests`（配置 fallback 或经人工审批的显式单条命令）、`run_build`（仅执行配置中的固定命令）、`read_test_report`（读取已生成的 `TEST_REPORT.md`）、`list_checkpoints`（列出当前 task 的所有 checkpoint 摘要）、`record_review`（结构化写入审查证据）和 `record_knowledge`（结构化写入知识条目）七项受控开发工具。
-- 输出：结构化 ToolResult，包含文件变更摘要、Build 状态、测试报告摘要、checkpoint 列表或审查/知识写入确认。
+- 行为：提供 `get_diff`、`run_tests`、`run_build`、`read_test_report`、`list_checkpoints`、`record_remediation`、`record_review` 和 `record_knowledge`。`record_remediation` 只在失败测试的 review phase 接受当前 failure digest、修复类型、诊断、计划路径和可选人工问题。
+- 输出：结构化 ToolResult，包含文件变更摘要、Build 状态、测试报告摘要、失败修复确认、checkpoint 列表或审查/知识写入确认。
 - 边界条件：Diff 不依赖 Git，仅使用 checkpoint before snapshot 与当前 workspace 对比；Build 命令只能来自 `config.build_command`，模型不得传入任意命令；`run_tests` 的显式命令必须经过 `ApprovalCategory.RUN_TESTS`，并以 `shlex.split` + `shell=False` 执行，拒绝 shell 操作符；`read_test_report` 不接受任意路径；`list_checkpoints` 只返回当前 task；完整 Diff 和 Build 输出不进入 Trace。
-- 错误处理：checkpoint 损坏、snapshot 缺失、Build 超时或命令缺失时返回结构化错误，不静默失败。
+- 错误处理：stale failure digest、越界修复路径、checkpoint 损坏、snapshot 缺失、Build 超时或命令缺失时返回结构化错误，不静默失败。
 
 ##### FR-19：统一 Delivery Pipeline
 

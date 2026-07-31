@@ -33,7 +33,8 @@ from hancode.providers.errors import ProviderError
 from hancode.providers.mock import MockLLMExhausted
 from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import OperationStatus, Phase, Risk, TaskStatus
-from hancode.policy.path_policy import PathZone
+from hancode.policy.path_policy import PathZone, normalize_project_relative_path
+from hancode.core.phases import build_phase_gate
 from hancode.core.router import select_next_phase
 from hancode.core.state import TaskState, load_state, reconcile_state, save_state
 from hancode.runtime.feedback import FeedbackReport, classify_test_output
@@ -41,6 +42,10 @@ from hancode.tooling.registry import ToolResult
 from hancode.storage.trace import TraceEvent, append_trace
 from hancode.storage.task_lock import FilesystemTaskMutationGuard
 from hancode.storage.workspace import task_path
+from hancode.core.test_remediation import RemediationKind
+from hancode.runtime.test_remediation import build_test_failure_record
+from hancode.storage.test_remediations import TestRemediationStore
+from hancode.storage.test_strategies import TestStrategyStore
 
 
 class StateStore(Protocol):
@@ -365,6 +370,7 @@ _TEST_DISCOVERY_TOOLS = frozenset(
         "search_text",
     }
 )
+_REVIEW_EVIDENCE_TOOLS = _TEST_DISCOVERY_TOOLS
 _TEST_COMMAND_QUESTION = (
     "No executable behavioral test command was found. "
     "Provide one exact command to run, or add a project test runner before resuming."
@@ -576,6 +582,8 @@ class AgentLoop:
         steps_completed = 0
         consecutive_provider_failures = 0
         completed_test_discovery_actions: set[str] = set()
+        completed_review_evidence_actions: set[str] = set()
+        review_progress_warning = False
 
         def _result(
             status: TaskStatus,
@@ -796,6 +804,91 @@ class AgentLoop:
                 state = self._state_store.load(task_id)
                 if not _is_valid_task_state(state, task_id):
                     raise HanCodeError(_state_adapter_error(Phase.SPEC))
+
+        if (
+            resume
+            and state.latest_test_status == "failed"
+            and state.latest_test_failure_digest is None
+        ):
+            try:
+                task_root = task_path(self._project_root, task_id)
+                report_path = task_root / "TEST_REPORT.md"
+                legacy_output = (
+                    report_path.read_text(encoding="utf-8")
+                    if report_path.is_file() and not report_path.is_symlink()
+                    else "Legacy failed test result has no diagnostic report."
+                )
+                report = classify_test_output(legacy_output, 1)
+                command_argv = None
+                if state.test_strategy_digest is not None:
+                    try:
+                        command_argv = TestStrategyStore(self._project_root).load(
+                            task_id
+                        ).command_argv
+                    except HanCodeError:
+                        command_argv = None
+                legacy_failure = build_test_failure_record(
+                    task_id=task_id,
+                    attempt_seq=state.test_attempt_seq + 1,
+                    strategy_digest=state.test_strategy_digest,
+                    command_argv=command_argv,
+                    category=report.failure_category,
+                    exit_code=None,
+                    timed_out=False,
+                    passed_count=report.passed_count,
+                    failed_count=report.failed_count,
+                    output=legacy_output,
+                    project_root=self._project_root,
+                    legacy_evidence=True,
+                )
+                TestRemediationStore(self._project_root).save_failure(legacy_failure)
+                state = self._save_if_changed(
+                    task_id,
+                    state,
+                    replace(
+                        state,
+                        latest_test_failure_digest=legacy_failure.digest,
+                        test_attempt_seq=state.test_attempt_seq + 1,
+                        latest_remediation_digest=None,
+                        remediation_applied=False,
+                    ),
+                )
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="legacy_test_failure_migrated",
+                    phase=state.current_phase,
+                    status="succeeded",
+                    observation={
+                        "attempt_id": legacy_failure.attempt_id,
+                        "failure_digest": legacy_failure.digest,
+                        "category": legacy_failure.category.value,
+                    },
+                )
+                if trace_error is not None:
+                    state, state_error = self._mark_inconsistent(
+                        task_id, state, trace_error
+                    )
+                    return _result(
+                        TaskStatus.INCONSISTENT,
+                        steps_completed,
+                        tuple(tool_calls),
+                        observation,
+                        state_error,
+                        state,
+                    )
+            except (OSError, UnicodeError, ValueError, HanCodeError):
+                state, state_error = self._mark_inconsistent(
+                    task_id, state, _state_persistence_error(state.current_phase)
+                )
+                return _result(
+                    TaskStatus.INCONSISTENT,
+                    steps_completed,
+                    tuple(tool_calls),
+                    observation,
+                    state_error,
+                    state,
+                )
 
         traced_phase: Phase | None = (
             state.current_phase if steps_completed > 0 else None
@@ -1084,6 +1177,10 @@ class AgentLoop:
                 continue
 
             consecutive_provider_failures = 0
+            # A valid action proves the provider recovered.  Do not let an older
+            # retryable provider or parse error masquerade as the later terminal
+            # error when this run eventually reaches its step limit.
+            last_recoverable_error = None
             test_discovery_key = _test_discovery_action_key(action, routing.phase)
             if (
                 state.latest_test_status == "none"
@@ -1235,6 +1332,79 @@ class AgentLoop:
                         feedback_error,
                         state,
                     )
+                continue
+
+            review_evidence_key = _review_evidence_action_key(
+                action, routing.phase, task_id
+            )
+            if (
+                review_evidence_key is not None
+                and review_evidence_key in completed_review_evidence_actions
+            ):
+                if review_progress_warning:
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="review_progress_stalled",
+                        phase=routing.phase,
+                        status="failed",
+                        observation={
+                            "reason": "repeated_review_evidence",
+                            "evidence_count": len(completed_review_evidence_actions),
+                        },
+                    )
+                    if trace_error is not None:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            trace_error,
+                            state,
+                            risks=(_trace_failure_risk(trace_error),),
+                        )
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        _review_progress_stalled_error(routing.phase),
+                        state,
+                    )
+                review_progress_warning = True
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="review_progress_warning",
+                    phase=routing.phase,
+                    status="waiting",
+                    observation={
+                        "reason": "repeated_review_evidence",
+                        "evidence_count": len(completed_review_evidence_actions),
+                    },
+                )
+                if trace_error is not None:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        trace_error,
+                        state,
+                        risks=(_trace_failure_risk(trace_error),),
+                    )
+                observation = {
+                    "kind": "review_action_repeated",
+                    "summary": "Review evidence was already inspected.",
+                    "next_action_hint": (
+                        "Record the review with the available evidence instead of "
+                        "reading it again."
+                    ),
+                    "evidence_count": len(completed_review_evidence_actions),
+                }
                 continue
 
             if action.type is ActionType.ASK_USER:
@@ -2158,6 +2328,30 @@ class AgentLoop:
                             state_error,
                             state,
                         )
+                    if report.passed and previous_state.latest_test_failure_digest:
+                        trace_error = self._append_trace(
+                            task_id,
+                            trace_events,
+                            event_type="test_failure_cleared",
+                            phase=routing.phase,
+                            status="succeeded",
+                            observation={
+                                "failure_digest": previous_state.latest_test_failure_digest,
+                                "remediation_digest": previous_state.latest_remediation_digest,
+                            },
+                        )
+                        if trace_error is not None:
+                            state, state_error = self._mark_inconsistent(
+                                task_id, state, trace_error
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                            )
                 if action.tool_name in {"record_review", "record_knowledge"}:
                     try:
                         state = self._state_store.load(task_id)
@@ -2201,10 +2395,141 @@ class AgentLoop:
                                 state,
                             )
                 if (
+                    action.tool_name == "record_review"
+                    and tool_result.success
+                    and previous_state.phase_completed[Phase.REVIEW.value] is False
+                    and state.phase_completed[Phase.REVIEW.value]
+                ):
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="phase_completed",
+                        phase=Phase.REVIEW,
+                        status="succeeded",
+                    )
+                    if trace_error is not None:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, trace_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                if action.tool_name == "record_remediation" and tool_result.success:
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="remediation_recorded",
+                        phase=routing.phase,
+                        status="succeeded",
+                        observation={
+                            "failure_digest": state.latest_test_failure_digest,
+                            "remediation_digest": state.latest_remediation_digest,
+                            "decision": (
+                                tool_result.output.get("kind")
+                                if isinstance(tool_result.output, Mapping)
+                                else None
+                            ),
+                        },
+                    )
+                    if trace_error is not None:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, trace_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                if (
+                    not previous_state.remediation_applied
+                    and state.remediation_applied
+                ):
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="remediation_applied",
+                        phase=routing.phase,
+                        status="succeeded",
+                        observation={
+                            "failure_digest": state.latest_test_failure_digest,
+                            "remediation_digest": state.latest_remediation_digest,
+                        },
+                    )
+                    if trace_error is not None:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, trace_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                if review_evidence_key is not None and tool_result.success:
+                    completed_review_evidence_actions.add(review_evidence_key)
+                    review_progress_warning = False
+                if (
                     action.tool_name == "run_tests"
                     and semantic_test_report is not None
                     and not semantic_test_report.passed
                 ):
+                    try:
+                        recorded_failure = TestRemediationStore(
+                            self._project_root
+                        ).load_failure(task_id)
+                    except HanCodeError:
+                        state, state_error = self._mark_inconsistent(
+                            task_id,
+                            state,
+                            _state_persistence_error(routing.phase),
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type=(
+                            "test_failure_repeated"
+                            if recorded_failure.repeat_count > 0
+                            else "test_failure_recorded"
+                        ),
+                        phase=routing.phase,
+                        status="failed",
+                        observation={
+                            "attempt_id": recorded_failure.attempt_id,
+                            "failure_digest": recorded_failure.digest,
+                            "category": recorded_failure.category.value,
+                            "repeat_count": recorded_failure.repeat_count,
+                        },
+                    )
+                    if trace_error is not None:
+                        state, state_error = self._mark_inconsistent(
+                            task_id, state, trace_error
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
                     trace_error = self._append_trace(
                         task_id,
                         trace_events,
@@ -2245,6 +2570,70 @@ class AgentLoop:
                             tuple(tool_calls),
                             observation,
                             trace_error,
+                            state,
+                        )
+                    if recorded_failure.repeat_count >= 2:
+                        trace_error = self._append_trace(
+                            task_id,
+                            trace_events,
+                            event_type="remediation_input_required",
+                            phase=routing.phase,
+                            status="waiting" if self._interaction_enabled else "blocked",
+                            observation={
+                                "failure_digest": recorded_failure.digest,
+                                "repeat_count": recorded_failure.repeat_count,
+                            },
+                        )
+                        if trace_error is not None:
+                            state, state_error = self._mark_inconsistent(
+                                task_id, state, trace_error
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                            )
+                        if self._interaction_enabled:
+                            no_progress_action = Action(
+                                type=ActionType.ASK_USER,
+                                phase=routing.phase,
+                                tool_name=None,
+                                args={
+                                    "question": (
+                                        "The same test failure remained after two "
+                                        "autonomous remediation attempts. What "
+                                        "project-specific constraint should be used next?"
+                                    )
+                                },
+                                reason="Autonomous remediation made no progress.",
+                            )
+                            state, interaction = self._request_user_input(
+                                task_id,
+                                state,
+                                no_progress_action,
+                                routing.phase,
+                            )
+                            return _result(
+                                TaskStatus.WAITING_INPUT,
+                                step,
+                                tuple(tool_calls),
+                                {
+                                    "interaction_id": interaction.interaction_id,
+                                    "question": interaction.question,
+                                },
+                                None,
+                                state,
+                            )
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            _test_remediation_no_progress_error(routing.phase),
                             state,
                         )
                 if state.retry_budget_remaining < previous_state.retry_budget_remaining:
@@ -3593,6 +3982,200 @@ class AgentLoop:
             source_write=source_write,
         )
         try:
+            remediation_store = TestRemediationStore(self._project_root)
+            if (
+                action.tool_name == "run_tests"
+                and _test_strategy_error_code(tool_result) is None
+            ):
+                report = _feedback_report_for_test_result(tool_result)
+                if not report.passed:
+                    previous_failure = None
+                    diagnostic_rerun_applied = False
+                    if (
+                        state.latest_test_status != "passed"
+                        and state.latest_remediation_digest is not None
+                        and state.latest_test_failure_digest is not None
+                    ):
+                        try:
+                            previous_failure = remediation_store.load_failure(task_id)
+                            previous_remediation = remediation_store.load_remediation(
+                                task_id
+                            )
+                            diagnostic_rerun_applied = (
+                                previous_remediation.failure_digest
+                                == previous_failure.digest
+                                and previous_remediation.kind
+                                is RemediationKind.RERUN_FOR_DIAGNOSIS
+                            )
+                        except HanCodeError:
+                            previous_failure = None
+                    command_argv = None
+                    if state.test_strategy_digest is not None:
+                        try:
+                            command_argv = TestStrategyStore(self._project_root).load(
+                                task_id
+                            ).command_argv
+                        except HanCodeError:
+                            command_argv = None
+                    output = "\n".join(
+                        value
+                        for value in (
+                            tool_result.error_summary,
+                            tool_result.stdout,
+                            tool_result.stderr,
+                        )
+                        if isinstance(value, str) and value
+                    )
+                    failure = build_test_failure_record(
+                        task_id=task_id,
+                        attempt_seq=state.test_attempt_seq + 1,
+                        strategy_digest=state.test_strategy_digest,
+                        command_argv=command_argv,
+                        category=report.failure_category,
+                        exit_code=tool_result.exit_code,
+                        timed_out=tool_result.timed_out,
+                        passed_count=report.passed_count,
+                        failed_count=report.failed_count,
+                        output=output,
+                        project_root=self._project_root,
+                        previous=previous_failure,
+                        diagnostic_rerun_applied=diagnostic_rerun_applied,
+                    )
+                    remediation_store.save_failure(failure)
+                    updated_state = replace(
+                        updated_state,
+                        latest_test_failure_digest=failure.digest,
+                        latest_remediation_digest=None,
+                        test_attempt_seq=state.test_attempt_seq + 1,
+                        remediation_applied=False,
+                    )
+                else:
+                    updated_state = replace(updated_state, remediation_applied=False)
+
+            if action.tool_name == "record_remediation" and tool_result.success:
+                remediation = remediation_store.load_remediation(task_id)
+                if (
+                    remediation.failure_digest != state.latest_test_failure_digest
+                    or remediation.task_id != task_id
+                ):
+                    raise ValueError("stale remediation decision")
+                phase_completed = dict(updated_state.phase_completed)
+                phase_completed[Phase.REVIEW.value] = False
+                if remediation.kind in {
+                    RemediationKind.MODIFY_SOURCE,
+                    RemediationKind.MODIFY_TEST,
+                    RemediationKind.REPLACE_TEST_STRATEGY,
+                }:
+                    phase_completed[Phase.CODE.value] = False
+                    updated_state = replace(
+                        updated_state,
+                        test_status_consumed=True,
+                        test_strategy_digest=(
+                            None
+                            if remediation.kind
+                            in {
+                                RemediationKind.MODIFY_TEST,
+                                RemediationKind.REPLACE_TEST_STRATEGY,
+                            }
+                            else updated_state.test_strategy_digest
+                        ),
+                        latest_remediation_digest=remediation.digest,
+                        remediation_applied=False,
+                        phase_completed=phase_completed,
+                    )
+                elif remediation.kind is RemediationKind.RERUN_FOR_DIAGNOSIS:
+                    phase_completed[Phase.TEST.value] = False
+                    updated_state = replace(
+                        updated_state,
+                        latest_test_status="none",
+                        test_status_consumed=False,
+                        latest_remediation_digest=remediation.digest,
+                        phase_completed=phase_completed,
+                    )
+                elif remediation.kind is RemediationKind.REQUEST_INPUT:
+                    if not self._interaction_enabled or remediation.question is None:
+                        return state, _remediation_input_unavailable_error(phase)
+                    interaction = InteractionRecord(
+                        interaction_id=f"ask-{state.interaction_seq + 1:06d}",
+                        phase=phase,
+                        question=remediation.question,
+                        answer=None,
+                        status=InteractionStatus.WAITING,
+                    )
+                    updated_state = replace(
+                        updated_state,
+                        status=TaskStatus.WAITING_INPUT,
+                        interaction_seq=state.interaction_seq + 1,
+                        interactions=(*state.interactions, interaction),
+                        pending_interaction_id=interaction.interaction_id,
+                        latest_remediation_digest=remediation.digest,
+                        phase_completed=phase_completed,
+                    )
+                elif remediation.kind is RemediationKind.ROLLBACK:
+                    updated_state = replace(
+                        updated_state,
+                        latest_remediation_digest=remediation.digest,
+                        rollback_required=True,
+                        phase_completed=phase_completed,
+                    )
+
+            if source_write and tool_result.success and state.latest_remediation_digest:
+                remediation = remediation_store.load_remediation(task_id)
+                path = action.args.get("path")
+                try:
+                    normalized_path = (
+                        normalize_project_relative_path(path)
+                        if isinstance(path, str)
+                        else None
+                    )
+                except ValueError:
+                    normalized_path = None
+                if (
+                    not state.remediation_applied
+                    and remediation.kind
+                    in {RemediationKind.MODIFY_SOURCE, RemediationKind.MODIFY_TEST}
+                    and normalized_path in remediation.planned_paths
+                ):
+                    phase_completed = dict(updated_state.phase_completed)
+                    phase_completed[Phase.TEST.value] = False
+                    updated_state = replace(
+                        updated_state,
+                        latest_test_status="none",
+                        test_status_consumed=False,
+                        remediation_applied=True,
+                        retry_budget_remaining=max(
+                            0, state.retry_budget_remaining - 1
+                        ),
+                        test_strategy_digest=(
+                            None
+                            if remediation.kind is RemediationKind.MODIFY_TEST
+                            else updated_state.test_strategy_digest
+                        ),
+                        phase_completed=phase_completed,
+                    )
+
+            if (
+                action.tool_name == "record_test_strategy"
+                and tool_result.success
+                and state.latest_remediation_digest is not None
+                and not state.remediation_applied
+            ):
+                remediation = remediation_store.load_remediation(task_id)
+                failure = remediation_store.load_failure(task_id)
+                if (
+                    remediation.kind is RemediationKind.REPLACE_TEST_STRATEGY
+                    and updated_state.test_strategy_digest is not None
+                    and updated_state.test_strategy_digest != failure.strategy_digest
+                ):
+                    updated_state = replace(
+                        updated_state,
+                        latest_test_status="none",
+                        test_status_consumed=False,
+                        remediation_applied=True,
+                        retry_budget_remaining=max(
+                            0, state.retry_budget_remaining - 1
+                        ),
+                    )
             state = self._save_if_changed(task_id, state, updated_state)
             pipeline = self._delivery_pipeline
             if pipeline is not None:
@@ -4556,6 +5139,15 @@ def _state_after_tool(
         ):
             return replace(state, test_strategy_digest=digest)
 
+    if action.tool_name == "record_remediation" and result.success:
+        digest = (
+            result.output.get("remediation_digest")
+            if isinstance(result.output, Mapping)
+            else None
+        )
+        if _is_sha256(digest):
+            return replace(state, latest_remediation_digest=digest)
+
     if action.tool_name == "run_build":
         build_status = (
             "timed_out"
@@ -4572,6 +5164,23 @@ def _state_after_tool(
             ),
             latest_build_status=build_status,
         )
+
+    if action.tool_name == "record_review" and result.success:
+        artifacts = dict(state.artifacts)
+        artifacts["REVIEW.md"] = True
+        phase_completed = dict(state.phase_completed)
+        phase_completed[Phase.REVIEW.value] = True
+        reviewed_state = replace(
+            state,
+            artifacts=artifacts,
+            phase_completed=phase_completed,
+        )
+        if (
+            action.phase is Phase.REVIEW
+            and build_phase_gate(Phase.REVIEW, reviewed_state).can_finish
+        ):
+            return _state_after_phase_finish(reviewed_state, Phase.REVIEW)
+        return reviewed_state
 
     if not source_write and result.success and action.tool_name in {"write_file", "edit_file"}:
         path = action.args.get("path")
@@ -4611,6 +5220,7 @@ def _state_after_tool(
         and state.source_edits_this_phase == 0
         and state.retry_budget_remaining > 0
         and requires_checkpoint
+        and state.latest_remediation_digest is None
     ):
         phase_completed[Phase.TEST.value] = False
         return replace(
@@ -5108,6 +5718,61 @@ def _test_discovery_action_key(action: Action, phase: Phase) -> str | None:
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
+    )
+
+
+def _review_evidence_action_key(
+    action: Action, phase: Phase, task_id: str
+) -> str | None:
+    if (
+        phase is not Phase.REVIEW
+        or action.type is not ActionType.TOOL_CALL
+        or action.tool_name not in _REVIEW_EVIDENCE_TOOLS
+    ):
+        return None
+    args = dict(action.args)
+    if action.tool_name == "read_file":
+        path = args.get("path")
+        if isinstance(path, str):
+            normalized_path = path.replace("\\", "/").lstrip("./")
+            task_report = f"hancode/tasks/{task_id}/TEST_REPORT.md"
+            if normalized_path == task_report:
+                return "read_test_report"
+    return json.dumps(
+        {"tool_name": action.tool_name, "args": args},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _review_progress_stalled_error(phase: Phase) -> StructuredError:
+    return StructuredError(
+        error_code="review_progress_stalled",
+        message="Review repeated evidence inspection without recording a review.",
+        phase=phase.value,
+        denied_rule="review_progress_required",
+        suggested_fix="Record REVIEW.md from the available evidence before resuming.",
+    )
+
+
+def _remediation_input_unavailable_error(phase: Phase) -> StructuredError:
+    return StructuredError(
+        error_code="remediation_input_unavailable",
+        message="The remediation requires human input but interaction is disabled.",
+        phase=phase.value,
+        denied_rule="interaction_required",
+        suggested_fix="Enable interaction or provide a safe autonomous remediation.",
+    )
+
+
+def _test_remediation_no_progress_error(phase: Phase) -> StructuredError:
+    return StructuredError(
+        error_code="test_remediation_no_progress",
+        message="The same test failure remained after two remediation attempts.",
+        phase=phase.value,
+        denied_rule="remediation_progress_required",
+        suggested_fix="Request human input or rollback to the latest checkpoint.",
     )
 
 

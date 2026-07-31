@@ -12,6 +12,8 @@ from hancode.core.models import Phase, TaskStatus
 from hancode.core.state import TaskState
 from hancode.policy.path_policy import PathZone
 from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools_for_phase
+from hancode.core.test_remediation import RemediationDecision, RemediationKind, digest_remediation
+from hancode.storage.test_remediations import TestRemediationStore
 
 
 @pytest.mark.parametrize(
@@ -54,9 +56,10 @@ from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools
                 "get_diff",
                 "list_checkpoints",
                 "list_files",
-                "read_file",
-                "read_test_report",
-                "record_review",
+                    "read_file",
+                    "read_test_report",
+                    "record_remediation",
+                    "record_review",
                 "rollback_last_checkpoint",
                 "run_build",
                 "search_text",
@@ -454,6 +457,40 @@ def test_denies_rollback_without_checkpoint(tmp_path: Path) -> None:
 
     assert decision.allowed is False
     assert decision.denied_rule == "rollback_checkpoint_required"
+
+
+def test_remediation_paths_remain_enforced_after_first_applied_write(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / ".hancode" / "tasks" / "task-001").mkdir(parents=True)
+    decision = RemediationDecision(
+        schema_version=1,
+        task_id="task-001",
+        failure_digest="a" * 64,
+        kind=RemediationKind.MODIFY_SOURCE,
+        diagnosis="Fix the declared implementation file.",
+        planned_paths=("src/a.py",),
+        question=None,
+        created_at="2026-07-31T00:00:00+00:00",
+        digest="pending",
+    )
+    decision = replace(decision, digest=digest_remediation(decision))
+    TestRemediationStore(tmp_path).save_remediation(decision)
+    state = replace(
+        _state(Phase.CODE, latest_test_status="none"),
+        latest_remediation_digest=decision.digest,
+        remediation_applied=True,
+    )
+
+    result = _policy(tmp_path).evaluate(
+        action=_write_action(Phase.CODE, "src/b.py"),
+        phase=Phase.CODE,
+        state=state,
+    )
+
+    assert result.allowed is False
+    assert result.denied_rule == "remediation_planned_path_required"
 
 
 def _policy(

@@ -1042,9 +1042,10 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
     assert [event.event_type for event in trace_appender.events] == [
         "phase_started",
         "tool_called",
-        "tool_failed",
-        "test_result_recorded",
-        "test_failed",
+            "tool_failed",
+            "test_result_recorded",
+            "test_failure_recorded",
+            "test_failed",
         "phase_started",
         "phase_completed",
         "phase_started",
@@ -1056,6 +1057,81 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
         "source_write_authorized",
         "tool_completed",
         "run_blocked",
+    ]
+
+
+def test_recorded_review_after_failed_test_automatically_returns_to_code() -> None:
+    state = replace(
+        _state(),
+        current_phase=Phase.REVIEW,
+        latest_test_status="failed",
+        test_status_consumed=False,
+        phase_completed={
+            **_state().phase_completed,
+            Phase.TEST.value: True,
+            Phase.REVIEW.value: False,
+        },
+    )
+    state_store = MemoryStateStore(state)
+    context_builder = RecordingContextBuilder()
+    loop = _loop(
+        llm=MockLLM([_record_review_action()]),
+        state_store=state_store,
+        context_builder=context_builder,
+        feedback=RecordingFeedback(),
+        max_steps=2,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.final_state.artifacts["REVIEW.md"] is True
+    assert result.final_state.phase_completed[Phase.REVIEW.value] is True
+    assert result.final_state.test_status_consumed is True
+    assert result.final_state.phase_completed[Phase.CODE.value] is False
+    assert result.final_state.retry_budget_remaining == 2
+    assert context_builder.calls[1]["phase"] == Phase.CODE.value
+
+
+def test_recorded_review_after_passing_test_automatically_routes_to_deliver() -> None:
+    state_store = MemoryStateStore(_review_state())
+    context_builder = RecordingContextBuilder()
+    loop = _loop(
+        llm=MockLLM([_record_review_action()]),
+        state_store=state_store,
+        context_builder=context_builder,
+        feedback=RecordingFeedback(),
+        max_steps=2,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.final_state.artifacts["REVIEW.md"] is True
+    assert result.final_state.phase_completed[Phase.REVIEW.value] is True
+    assert context_builder.calls[1]["phase"] == Phase.DELIVER.value
+
+
+def test_review_repeated_evidence_warns_then_blocks_without_redispatch() -> None:
+    state_store = MemoryStateStore(_review_state())
+    tools = ScriptedTools()
+    trace_appender = RecordingTraceAppender()
+    loop = _loop(
+        llm=MockLLM([_review_read_test_report_action()] * 3),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=tools,
+        trace_appender=trace_appender,
+        max_steps=3,
+    )
+
+    result = loop.run("task-001")
+
+    assert [action.tool_name for action in tools.actions] == ["read_test_report"]
+    assert result.error is not None
+    assert result.error.error_code == "review_progress_stalled"
+    assert [event.event_type for event in trace_appender.events][-2:] == [
+        "review_progress_warning",
+        "review_progress_stalled",
     ]
     assert result.trace_events == tuple(trace_appender.events)
 
@@ -1778,6 +1854,26 @@ def _finish_review_action() -> dict[str, object]:
         "tool_name": None,
         "args": {},
         "reason": None,
+    }
+
+
+def _record_review_action() -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": Phase.REVIEW.value,
+        "tool_name": "record_review",
+        "args": {"requirements": [], "risks": []},
+        "reason": "Record review evidence.",
+    }
+
+
+def _review_read_test_report_action() -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": Phase.REVIEW.value,
+        "tool_name": "read_test_report",
+        "args": {},
+        "reason": "Inspect the test report.",
     }
 
 

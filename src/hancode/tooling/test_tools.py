@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import locale
 from pathlib import Path
 import shlex
 import subprocess
@@ -11,7 +12,10 @@ from hancode.tooling.file_tools import redact_text
 from hancode.tooling.registry import ToolResult
 
 
-TestRunner = Callable[..., subprocess.CompletedProcess[str]]
+TestRunner = Callable[
+    ...,
+    subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes],
+]
 _SHELL_OPERATOR_CHARS = frozenset("&|;<>$`\r\n")
 
 
@@ -39,7 +43,7 @@ def run_tests(
         completed = selected_runner(
             argv,
             cwd=project_root,
-            text=True,
+            text=False,
             capture_output=True,
             check=False,
             shell=False,
@@ -56,10 +60,22 @@ def run_tests(
             command=redacted_command,
         )
     except OSError as exc:
+        stable_fields = [
+            f"errno={exc.errno}" if exc.errno is not None else None,
+            (
+                f"winerror={exc.winerror}"
+                if getattr(exc, "winerror", None) is not None
+                else None
+            ),
+        ]
+        metadata = ", ".join(field for field in stable_fields if field is not None)
         return ToolResult(
             success=False,
             action_name="run_tests",
-            error_summary=f"Test command could not be started: {type(exc).__name__}.",
+            error_summary=(
+                f"Test command could not be started: {type(exc).__name__}"
+                f"{f' ({metadata})' if metadata else ''}."
+            ),
             command=redacted_command,
         )
 
@@ -86,7 +102,20 @@ def _failed(error_summary: str) -> ToolResult:
 def _text_output(value: str | bytes | None) -> str | None:
     if isinstance(value, str) or value is None:
         return value
-    return value.decode("utf-8", errors="replace")
+    if value.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return value.decode("utf-16", errors="replace")
+    if b"\x00" in value:
+        even_nulls = value[0::2].count(0)
+        odd_nulls = value[1::2].count(0)
+        encoding = "utf-16-le" if odd_nulls >= even_nulls else "utf-16-be"
+        try:
+            return value.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return value.decode(locale.getpreferredencoding(False), errors="replace")
 
 
 def _redacted_output(value: str | bytes | None) -> str | None:

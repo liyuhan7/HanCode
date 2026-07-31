@@ -16,6 +16,7 @@ from hancode.core.config import HanCodeConfig, load_config
 from hancode.core.delivery_evidence import DeliveryResult
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.providers.mock import MockLLM
+from hancode.providers.errors import ProviderError
 from hancode.core.models import Phase, TaskStatus
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.factory import build_default_tool_registry
@@ -29,6 +30,7 @@ from hancode.demo_support.actions import (
     build_finish_actions,
     build_first_actions,
     build_delivery_actions,
+    build_post_rollback_actions,
     build_recovery_actions,
     build_retry_actions,
 )
@@ -66,6 +68,30 @@ _fixture_digest = fixture_digest
 _configure_demo = configure_demo
 _is_link = is_link
 _copy_packaged_fixture = copy_packaged_fixture
+
+
+class _DemoMockLLM(MockLLM):
+    """Resolve Demo-only remediation evidence from the current REVIEW context."""
+
+    def next_action(self, context: dict[str, object]) -> dict[str, object]:
+        action = super().next_action(context)
+        if action.get("tool_name") != "record_remediation":
+            return action
+        args = action.get("args")
+        sections = context.get("sections")
+        failure = sections.get("test_failure") if isinstance(sections, dict) else None
+        digest = failure.get("digest") if isinstance(failure, dict) else None
+        if not isinstance(args, dict) or not isinstance(digest, str):
+            raise ProviderError(
+                StructuredError(
+                    error_code="mock_demo_failure_digest_missing",
+                    message="Mock Demo remediation requires active structured failure evidence.",
+                    phase=str(context.get("phase", "review")),
+                    denied_rule="mock_demo_failure_evidence_required",
+                    suggested_fix="Run the registered tests and enter REVIEW before remediation.",
+                )
+            )
+        return {**action, "args": {**args, "failure_digest": digest}}
 
 
 class _DemoTraceAppender:
@@ -185,7 +211,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
             config,
             ports,
             registry,
-            build_recovery_actions(),
+            build_post_rollback_actions(),
             resume=True,
         )
         runs.append(fourth)
@@ -238,7 +264,7 @@ def _run_stage(
     loop = create_agent_loop(
         project_root,
         TASK_ID,
-        provider=MockLLM(list(actions)),
+        provider=_DemoMockLLM(list(actions)),
         tool_registry=registry,
         trace_appender=_DemoTraceAppender(ports.trace_appender),
         max_steps=max(1, len(actions) + _demo_stage_step_reserve(actions)),

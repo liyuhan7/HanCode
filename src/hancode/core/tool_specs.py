@@ -312,6 +312,55 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         read_only=False,
     ),
     ToolSpec(
+        name="record_remediation",
+        description=(
+            "Record one structured response to the latest active test failure. "
+            "The failure digest must match exactly; test commands are registered "
+            "separately with record_test_strategy."
+        ),
+        args_schema={
+            "type": "object",
+            "properties": {
+                "failure_digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "modify_source",
+                        "modify_test",
+                        "replace_test_strategy",
+                        "rerun_for_diagnosis",
+                        "request_input",
+                        "rollback",
+                    ],
+                },
+                "diagnosis": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "planned_paths": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                },
+                "question": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S"},
+                        {"type": "null"},
+                    ]
+                },
+            },
+            "required": [
+                "failure_digest",
+                "kind",
+                "diagnosis",
+                "planned_paths",
+                "question",
+            ],
+            "additionalProperties": False,
+        },
+        allowed_phases=frozenset({Phase.REVIEW}),
+        read_only=False,
+    ),
+    ToolSpec(
         name="record_knowledge",
         description="Record structured knowledge items.",
         args_schema={

@@ -8,10 +8,17 @@ from pathlib import Path, PureWindowsPath
 from hancode.core.actions import Action, ActionType
 from hancode.core.config import HanCodeConfig
 from hancode.core.models import Phase, TaskStatus
-from hancode.policy.path_policy import PathClassifier, PathZone
+from hancode.policy.path_policy import (
+    PathClassifier,
+    PathZone,
+    normalize_project_relative_path,
+)
 from hancode.core.phases import build_phase_gate, can_write_artifact
 from hancode.core.state import TaskState
 from hancode.core.tool_specs import TOOL_SPEC_BY_NAME
+from hancode.core.errors import HanCodeError
+from hancode.core.test_remediation import RemediationKind
+from hancode.storage.test_remediations import TestRemediationStore
 
 
 _ALLOWED_TOOL_PHASES = {
@@ -142,6 +149,23 @@ class ToolPolicy:
                     "rollback_checkpoint_required",
                     "Create and commit a checkpoint before requesting rollback.",
                 )
+        if action.tool_name == "record_review" and state.latest_test_status == "failed":
+            return _denied(
+                phase,
+                "Failed tests require a remediation decision, not final review.",
+                "remediation_required",
+                "Call record_remediation for the latest failure.",
+            )
+        if action.tool_name == "record_remediation" and (
+            state.latest_test_status != "failed"
+            or state.latest_test_failure_digest is None
+        ):
+            return _denied(
+                phase,
+                "No active failed test result is available for remediation.",
+                "active_test_failure_required",
+                "Run the registered tests before recording remediation.",
+            )
         if action.tool_name not in _WRITE_TOOLS:
             return _allowed(phase)
         if action.reason is None or not action.reason.strip():
@@ -199,6 +223,9 @@ class ToolPolicy:
                 "Write the artifact in its designated phase.",
             )
         if zone is PathZone.SOURCE:
+            remediation_denial = self._evaluate_remediation_path(target, phase, state)
+            if remediation_denial is not None:
+                return remediation_denial
             return self._evaluate_source_write(phase, state)
         return _denied(
             phase,
@@ -206,6 +233,55 @@ class ToolPolicy:
             "path_out_of_scope",
             "Use a configured artifact or source path inside the workspace.",
         )
+
+    def _evaluate_remediation_path(
+        self, target: str, phase: Phase, state: TaskState
+    ) -> PolicyDecision | None:
+        if (
+            state.latest_remediation_digest is None
+            or state.latest_test_status not in {"failed", "none"}
+        ):
+            return None
+        try:
+            decision = TestRemediationStore(self._config.project_root).load_remediation(
+                state.task_id
+            )
+        except HanCodeError:
+            return _denied(
+                phase,
+                "The active remediation record is invalid.",
+                "valid_remediation_required",
+                "Return to REVIEW and record remediation again.",
+            )
+        if decision.digest != state.latest_remediation_digest:
+            return _denied(
+                phase,
+                "The active remediation decision is stale.",
+                "valid_remediation_required",
+                "Return to REVIEW and record remediation again.",
+            )
+        if decision.kind not in {
+            RemediationKind.MODIFY_SOURCE,
+            RemediationKind.MODIFY_TEST,
+        }:
+            return None
+        try:
+            normalized = normalize_project_relative_path(target)
+        except ValueError:
+            return _denied(
+                phase,
+                "The write target is not a clean project-relative path.",
+                "remediation_planned_path_required",
+                "Use a clean path declared by the current remediation decision.",
+            )
+        if normalized not in decision.planned_paths:
+            return _denied(
+                phase,
+                "The write target is outside remediation planned_paths.",
+                "remediation_planned_path_required",
+                "Modify only a path declared by the current remediation decision.",
+            )
+        return None
 
     def _evaluate_ask_user(
         self, action: Action, phase: Phase, state: TaskState

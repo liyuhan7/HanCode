@@ -30,6 +30,7 @@ from hancode.tooling.file_tools import (
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.registry import ToolRegistry, ToolResult
 from hancode.tooling.test_strategy_tools import record_test_strategy
+from hancode.tooling.test_remediation_tools import record_remediation
 
 
 RunTestsTool = Callable[[str | None], ToolResult]
@@ -175,6 +176,10 @@ def build_default_tool_registry(
         registry.register(
             "record_test_strategy",
             partial(record_test_strategy, config),
+        )
+        registry.register(
+            "record_remediation",
+            partial(record_remediation, config),
         )
     registry.register(
         "run_build",

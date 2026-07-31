@@ -10,23 +10,13 @@ from types import MappingProxyType
 from typing import Mapping
 
 from hancode.core.actions import ParseError
+from hancode.core.test_remediation import FailureCategory
 from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import Phase
 from hancode.tooling.file_tools import redact_text
 from hancode.policy.tool_policy import PolicyDecision
 from hancode.tooling.registry import ToolResult
-
-
-class FailureCategory(str, Enum):
-    NONE = "none"
-    NO_TESTS = "no_tests"
-    SYNTAX_ERROR = "syntax_error"
-    IMPORT_ERROR = "import_error"
-    ASSERTION_FAILURE = "assertion_failure"
-    ERROR_EXCEPTION = "error_exception"
-    TIMEOUT_OR_CRASH = "timeout_or_crash"
-    UNKNOWN = "unknown"
 
 
 class ObservationKind(str, Enum):
@@ -326,6 +316,9 @@ _HINTS = {
     FailureCategory.IMPORT_ERROR: "Record the dependency risk; do not install dependencies automatically.",
     FailureCategory.ASSERTION_FAILURE: "Compare the implementation with the PLAN verification expectation.",
     FailureCategory.ERROR_EXCEPTION: "Use the exception type to narrow the changed code path.",
+    FailureCategory.ENVIRONMENT_ERROR: (
+        "Use an available project-native test runner and record the strategy again."
+    ),
     FailureCategory.TIMEOUT_OR_CRASH: "Reduce the change scope and inspect the latest checkpoint.",
     FailureCategory.UNKNOWN: "Inspect the retained test output before making another change.",
 }
@@ -354,6 +347,18 @@ def classify_test_output(
 
 
 def _classify(output: str, exit_code: int, timed_out: bool) -> FailureCategory:
+    normalized_output = output.casefold()
+    if (
+        "test command could not be started" in normalized_output
+        or "e_accessdenied" in normalized_output
+        or "wslservice" in normalized_output
+        or "bash/service/createinstance" in normalized_output
+        or "win32 error 5" in normalized_output
+        or "winerror 5" in normalized_output
+        or "filenotfounderror" in normalized_output
+        or "permissionerror" in normalized_output
+    ):
+        return FailureCategory.ENVIRONMENT_ERROR
     if any(marker in output for marker in ("SyntaxError", "IndentationError", "errors during collection")):
         return FailureCategory.SYNTAX_ERROR
     if any(marker in output for marker in ("ModuleNotFoundError", "ImportError")):
@@ -364,7 +369,6 @@ def _classify(output: str, exit_code: int, timed_out: bool) -> FailureCategory:
         return FailureCategory.TIMEOUT_OR_CRASH
     if "Error" in output or "Exception" in output:
         return FailureCategory.ERROR_EXCEPTION
-    normalized_output = output.casefold()
     if (
         "no tests ran" in normalized_output
         or "collected 0 items" in normalized_output

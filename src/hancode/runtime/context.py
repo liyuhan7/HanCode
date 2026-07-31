@@ -6,12 +6,15 @@ from collections import deque
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import shutil
+import sys
 from typing import Mapping
 
 from hancode.core.config import HanCodeConfig
 from hancode.core.interactions import InteractionStatus
 from hancode.storage.checkpoints import _load_manifest, _validate_manifest_identity
 from hancode.storage.test_strategies import TestStrategyStore
+from hancode.storage.test_remediations import TestRemediationStore
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.tooling.file_tools import redact_text
 from hancode.core.models import Phase
@@ -163,6 +166,40 @@ def build_context(
             _safe_changed_files(current_state, config, risks)
         )
         _add_checkpoint_summary(sections, risks, task_root, current_state, config, phase)
+    if (
+        phase is Phase.REVIEW
+        and current_state.latest_test_failure_digest is not None
+        and current_state.latest_test_status in {"failed", "passed"}
+    ):
+        try:
+            remediation_store = TestRemediationStore(resolved_project_root)
+            failure = remediation_store.load_failure(task_id)
+            if failure.digest != current_state.latest_test_failure_digest:
+                raise ValueError("stale failure binding")
+            failure_section = (
+                "test_failure"
+                if current_state.latest_test_status == "failed"
+                else "last_test_failure"
+            )
+            sections[failure_section] = failure.to_dict()
+            if current_state.latest_remediation_digest is not None:
+                remediation = remediation_store.load_remediation(task_id)
+                if remediation.digest != current_state.latest_remediation_digest:
+                    raise ValueError("stale remediation binding")
+                remediation_section = (
+                    "test_remediation"
+                    if current_state.latest_test_status == "failed"
+                    else "last_test_remediation"
+                )
+                sections[remediation_section] = remediation.to_dict()
+        except (HanCodeError, ValueError):
+            raise _context_error(
+                "test_failure_invalid",
+                "The retained test failure record is missing or invalid.",
+                phase,
+                "valid_test_failure_required",
+                "Recreate the failure record from the latest test result.",
+            ) from None
     if phase is Phase.TEST:
         if current_state.test_strategy_digest is None:
             sections["test_strategy"] = {"status": "missing"}
@@ -218,9 +255,25 @@ def build_context(
             "latest_test_status": current_state.latest_test_status,
             "test_status_consumed": current_state.test_status_consumed,
             "test_strategy_digest": current_state.test_strategy_digest,
+            **(
+                {
+                    "latest_test_failure_digest": current_state.latest_test_failure_digest,
+                    "latest_remediation_digest": current_state.latest_remediation_digest,
+                    "test_attempt_seq": current_state.test_attempt_seq,
+                    "remediation_applied": current_state.remediation_applied,
+                }
+                if phase in {Phase.CODE, Phase.TEST, Phase.REVIEW}
+                else {}
+            ),
             "retry_budget_remaining": current_state.retry_budget_remaining,
             "rollback_required": current_state.rollback_required,
             "rollback_done": current_state.rollback_done,
+        },
+        "runtime_environment": {
+            "platform": sys.platform,
+            "shell": False,
+            "python_available": shutil.which("python") is not None,
+            "preferred_test_runner": "python" if sys.platform == "win32" else None,
         },
         "phase_gate": phase_gate.to_dict(),
         "context_risks": risks,
@@ -285,6 +338,12 @@ def _apply_context_budget(
             continue
         del sections[section_name]
         omitted.append(section_name)
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
+
+    if "runtime_environment" in context:
+        del context["runtime_environment"]
+        omitted.append("runtime_environment")
         if len(_canonical_json(context)) <= max_context_chars:
             return context
 

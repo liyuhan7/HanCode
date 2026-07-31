@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import shlex
+import shutil
 from tempfile import mkstemp
 from typing import Iterable
 
@@ -52,6 +53,11 @@ class TestStrategyStore:
         coverage: Iterable[TestCoverageItem],
     ) -> TestStrategy:
         argv = _parse_command(command)
+        if shutil.which(argv[0]) is None:
+            raise _invalid(
+                "Test command executable is not available in this environment.",
+                "Choose an available project-native runner and record the strategy again.",
+            )
         normalized_framework = framework.strip()
         coverage_items = tuple(coverage)
         if not normalized_framework or not coverage_items:

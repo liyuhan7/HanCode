@@ -30,7 +30,7 @@ def test_run_tests_executes_configured_command_as_argv(tmp_path: Path) -> None:
         {
             "args": (["pytest", "-q"],),
             "cwd": tmp_path,
-            "text": True,
+            "text": False,
             "capture_output": True,
             "check": False,
             "shell": False,
@@ -77,6 +77,36 @@ def test_run_tests_redacts_command_and_process_output(tmp_path: Path) -> None:
     assert result.stderr == '{"api_key": "[REDACTED]"}\n'
     assert "stdout-secret" not in str(result)
     assert "stderr-secret" not in str(result)
+
+
+def test_run_tests_decodes_utf16_windows_launcher_failure(tmp_path: Path) -> None:
+    message = "Bash/Service/CreateInstance/E_ACCESSDENIED\r\n"
+
+    def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args[0],
+            1,
+            stdout=b"",
+            stderr=message.encode("utf-16-le"),
+        )
+
+    result = run_tests(tmp_path, "bash tests.sh", runner=runner)
+
+    assert result.stderr == message
+
+
+def test_run_tests_persists_only_stable_os_error_metadata(tmp_path: Path) -> None:
+    def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        error = PermissionError(13, "secret path is denied")
+        error.winerror = 5
+        raise error
+
+    result = run_tests(tmp_path, "python -m pytest", runner=runner)
+
+    assert result.error_summary == (
+        "Test command could not be started: PermissionError (errno=13, winerror=5)."
+    )
+    assert "secret path" not in str(result)
 
 
 def test_run_tests_does_not_start_runner_without_a_configured_command(

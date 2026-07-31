@@ -93,7 +93,7 @@ def test_code_gate_requires_source_edit() -> None:
             {
                 "id": "source_change_required",
                 "description": (
-                    "At least one allowed source change is required."
+                        "An allowed source change or recorded remediation progress is required."
                 ),
                 "satisfied": False,
             },
@@ -178,7 +178,7 @@ def test_phase_gate_serialization_is_deterministic() -> None:
             {
                 "id": "source_change_required",
                 "description": (
-                    "At least one allowed source change is required."
+                        "An allowed source change or recorded remediation progress is required."
                 ),
                 "satisfied": True,
             },

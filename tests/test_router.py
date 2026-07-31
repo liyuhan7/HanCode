@@ -104,7 +104,7 @@ def test_waiting_input_routes_to_answer_required() -> None:
 def test_failed_test_routes_to_review() -> None:
     decision = select_next_phase(_state(latest_test_status="failed"))
 
-    assert decision == RoutingDecision(Phase.REVIEW, "test_failed")
+    assert decision == RoutingDecision(Phase.REVIEW, "test_remediation_required")
 
 
 def test_retry_budget_exhausted_requires_rollback() -> None:

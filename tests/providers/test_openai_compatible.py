@@ -400,6 +400,20 @@ def test_json_object_mode_uses_json_object_response_format() -> None:
     }
 
 
+def test_json_object_schema_error_exposes_only_safe_validation_paths() -> None:
+    transport = _ScriptedTransport([_ok_response({"type": "tool_call"})])
+    provider = _make_provider(transport=transport, response_mode="json_object")
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.next_action(_make_context())
+
+    error = exc_info.value.structured_error
+    assert error.error_code == "provider_action_schema_invalid"
+    assert "Safe validation details:" in error.message
+    assert "oneOf" in error.message
+    assert "tool_call" not in error.message
+
+
 def test_json_schema_mode_uses_strict_action_schema() -> None:
     transport = _ScriptedTransport([_ok_response()])
     provider = _make_provider(transport=transport, response_mode="json_schema")

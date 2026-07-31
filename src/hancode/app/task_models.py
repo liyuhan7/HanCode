@@ -34,6 +34,9 @@ class TaskSummary:
     requires_approval: bool = False
     pending_approval: Mapping[str, object] | None = None
     test_strategy_registered: bool = False
+    latest_test_failure_digest: str | None = None
+    latest_remediation_digest: str | None = None
+    remediation_applied: bool = False
 
     @classmethod
     def from_state(cls, state: TaskState) -> TaskSummary:
@@ -94,6 +97,9 @@ class TaskSummary:
             requires_approval=requires_approval,
             pending_approval=approval_pending,
             test_strategy_registered=state.test_strategy_digest is not None,
+            latest_test_failure_digest=state.latest_test_failure_digest,
+            latest_remediation_digest=state.latest_remediation_digest,
+            remediation_applied=state.remediation_applied,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -118,6 +124,9 @@ class TaskSummary:
             "requires_approval": self.requires_approval,
             "pending_approval": self.pending_approval,
             "test_strategy_registered": self.test_strategy_registered,
+            "latest_test_failure_digest": self.latest_test_failure_digest,
+            "latest_remediation_digest": self.latest_remediation_digest,
+            "remediation_applied": self.remediation_applied,
         }
 
 

@@ -44,6 +44,10 @@ _STATE_FIELDS = frozenset(
         "pending_approval_id",
         "builds_run",
         "latest_build_status",
+        "latest_test_failure_digest",
+        "latest_remediation_digest",
+        "test_attempt_seq",
+        "remediation_applied",
         "test_strategy_digest",
     }
 )
@@ -58,6 +62,10 @@ _OPTIONAL_STATE_FIELDS = frozenset(
         "pending_approval_id",
         "builds_run",
         "latest_build_status",
+        "latest_test_failure_digest",
+        "latest_remediation_digest",
+        "test_attempt_seq",
+        "remediation_applied",
     }
 )
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
@@ -104,6 +112,10 @@ class TaskState:
     builds_run: tuple[str, ...] = ()
     latest_build_status: str = "none"
     test_strategy_digest: str | None = None
+    latest_test_failure_digest: str | None = None
+    latest_remediation_digest: str | None = None
+    test_attempt_seq: int = 0
+    remediation_applied: bool = False
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -248,6 +260,20 @@ class TaskState:
             )
         ):
             raise _invalid_state_field("test_strategy_digest")
+        for field_name, digest in (
+            ("latest_test_failure_digest", self.latest_test_failure_digest),
+            ("latest_remediation_digest", self.latest_remediation_digest),
+        ):
+            if digest is not None and (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise _invalid_state_field(field_name)
+        if not _is_nonnegative_int(self.test_attempt_seq):
+            raise _invalid_state_field("test_attempt_seq")
+        if not isinstance(self.remediation_applied, bool):
+            raise _invalid_state_field("remediation_applied")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )
@@ -340,6 +366,26 @@ def load_state(task_root: Path) -> TaskState:
                 if "test_strategy_digest" not in data
                 else _optional_str(data, "test_strategy_digest")
             ),
+            latest_test_failure_digest=(
+                None
+                if "latest_test_failure_digest" not in data
+                else _optional_str(data, "latest_test_failure_digest")
+            ),
+            latest_remediation_digest=(
+                None
+                if "latest_remediation_digest" not in data
+                else _optional_str(data, "latest_remediation_digest")
+            ),
+            test_attempt_seq=(
+                0
+                if "test_attempt_seq" not in data
+                else _required_int(data, "test_attempt_seq")
+            ),
+            remediation_applied=(
+                False
+                if "remediation_applied" not in data
+                else _required_bool(data, "remediation_applied")
+            ),
         )
     except (OSError, UnicodeError, ValueError):
         raise _state_parse_error() from None
@@ -408,6 +454,10 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "builds_run": list(state.builds_run),
         "latest_build_status": state.latest_build_status,
         "test_strategy_digest": state.test_strategy_digest,
+        "latest_test_failure_digest": state.latest_test_failure_digest,
+        "latest_remediation_digest": state.latest_remediation_digest,
+        "test_attempt_seq": state.test_attempt_seq,
+        "remediation_applied": state.remediation_applied,
     }
     state_file = task_root / "state.json"
     if _is_link(state_file):

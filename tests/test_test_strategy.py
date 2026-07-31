@@ -103,6 +103,26 @@ def test_record_rejects_secret_bearing_command(tmp_path: Path) -> None:
     assert error.value.structured_error.error_code == "test_strategy_invalid"
 
 
+def test_record_rejects_unavailable_test_command_executable(tmp_path: Path) -> None:
+    project_root, _task_root = _workspace(tmp_path)
+
+    with pytest.raises(HanCodeError) as error:
+        TestStrategyStore(project_root).record(
+            "task-001",
+            command="missing-hancode-test-runner -q",
+            framework="custom",
+            test_files=("tests/test_app.py",),
+            coverage=(
+                TestCoverageItem(
+                    requirement="REQ-001",
+                    verification="test_app",
+                ),
+            ),
+        )
+
+    assert error.value.structured_error.error_code == "test_strategy_invalid"
+
+
 def test_atomic_replace_failure_preserves_existing_strategy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

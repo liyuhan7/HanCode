@@ -67,7 +67,7 @@ def select_next_phase(state: TaskState, *, build_required: bool = False) -> Rout
                 "retry_budget_exhausted_no_checkpoint",
                 blocked=True,
             )
-        return RoutingDecision(Phase.REVIEW, "test_failed")
+        return RoutingDecision(Phase.REVIEW, "test_remediation_required")
     if not state.phase_completed["code"]:
         return RoutingDecision(Phase.CODE, "code_incomplete")
     if state.latest_test_status == "none" or not state.phase_completed["test"]:

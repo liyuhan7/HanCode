@@ -9,6 +9,9 @@ from hancode.core.config import load_config
 from hancode.core.models import Phase
 from hancode.core.state import load_state, save_state
 from hancode.core.test_strategy import TestCoverageItem
+from hancode.core.test_remediation import FailureCategory
+from hancode.runtime.test_remediation import build_test_failure_record
+from hancode.storage.test_remediations import TestRemediationStore
 from hancode.storage.test_strategies import TestStrategyStore
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.factory import build_default_tool_registry
@@ -101,6 +104,113 @@ def test_task_registry_records_test_strategy(tmp_path: Path) -> None:
     assert result.success is True
     assert isinstance(result.output, dict)
     assert len(result.output["test_strategy_digest"]) == 64
+
+
+def test_task_registry_records_remediation_for_latest_failure(tmp_path: Path) -> None:
+    init_project_workspace(tmp_path, "project-001", "SE", "Harness")
+    task_root = init_task_workspace(tmp_path, "task-001", goal="Repair behavior.")
+    failure = build_test_failure_record(
+        task_id="task-001",
+        attempt_seq=1,
+        strategy_digest=None,
+        command_argv=None,
+        category=FailureCategory.ASSERTION_FAILURE,
+        exit_code=1,
+        timed_out=False,
+        passed_count=0,
+        failed_count=1,
+        output="FAILED tests/test_app.py::test_app\nAssertionError",
+        project_root=tmp_path,
+    )
+    TestRemediationStore(tmp_path).save_failure(failure)
+    save_state(
+        task_root,
+        replace(
+            load_state(task_root),
+            current_phase=Phase.REVIEW,
+            latest_test_status="failed",
+            latest_test_failure_digest=failure.digest,
+            test_attempt_seq=1,
+        ),
+    )
+    registry = build_default_tool_registry(load_config(tmp_path, "task-001"))
+
+    result = registry.dispatch(
+        _action(
+            "record_remediation",
+            {
+                "failure_digest": failure.digest,
+                "kind": "modify_source",
+                "diagnosis": "Implementation does not satisfy the assertion.",
+                "planned_paths": ["src/app.py"],
+                "question": None,
+            },
+        )
+    )
+
+    assert result.success is True
+    decision = TestRemediationStore(tmp_path).load_remediation("task-001")
+    assert decision.failure_digest == failure.digest
+    assert decision.planned_paths == ("src/app.py",)
+
+
+def test_task_registry_normalizes_remediation_paths_and_rejects_environment_source_fix(
+    tmp_path: Path,
+) -> None:
+    init_project_workspace(tmp_path, "project-001", "SE", "Harness")
+    task_root = init_task_workspace(tmp_path, "task-001", goal="Repair runner.")
+    failure = build_test_failure_record(
+        task_id="task-001",
+        attempt_seq=1,
+        strategy_digest=None,
+        command_argv=None,
+        category=FailureCategory.ENVIRONMENT_ERROR,
+        exit_code=1,
+        timed_out=False,
+        passed_count=0,
+        failed_count=0,
+        output="PermissionError: [WinError 5] Access is denied",
+        project_root=tmp_path,
+    )
+    TestRemediationStore(tmp_path).save_failure(failure)
+    save_state(
+        task_root,
+        replace(
+            load_state(task_root),
+            current_phase=Phase.REVIEW,
+            latest_test_status="failed",
+            latest_test_failure_digest=failure.digest,
+        ),
+    )
+    registry = build_default_tool_registry(load_config(tmp_path, "task-001"))
+
+    rejected = registry.dispatch(
+        _action(
+            "record_remediation",
+            {
+                "failure_digest": failure.digest,
+                "kind": "modify_source",
+                "diagnosis": "Attempt a source fix.",
+                "planned_paths": ["src\\app.py"],
+                "question": None,
+            },
+        )
+    )
+    accepted = registry.dispatch(
+        _action(
+            "record_remediation",
+            {
+                "failure_digest": failure.digest,
+                "kind": "replace_test_strategy",
+                "diagnosis": "Use an installed Python runner.",
+                "planned_paths": [],
+                "question": None,
+            },
+        )
+    )
+
+    assert rejected.success is False
+    assert accepted.success is True
 
 
 def test_task_registry_rejects_command_mismatch_without_dispatch(

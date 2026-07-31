@@ -89,8 +89,10 @@ def build_phase_gate(phase: Phase, state: TaskState) -> PhaseGate:
         requirements = (
             PhaseRequirement(
                 requirement_id="source_change_required",
-                description="At least one allowed source change is required.",
-                satisfied=state.source_edits_this_phase > 0,
+                description="An allowed source change or recorded remediation progress is required.",
+                satisfied=(
+                    state.source_edits_this_phase > 0 or state.remediation_applied
+                ),
             ),
             PhaseRequirement(
                 requirement_id="test_strategy_required",

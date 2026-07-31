@@ -94,6 +94,24 @@ class _ProtocolErrorThenParseErrorLLM:
         raise self._error
 
 
+class _ProtocolErrorThenReadLLM:
+    def __init__(self, error: ProviderError) -> None:
+        self._error = error
+        self.calls = 0
+
+    def next_action(self, context: dict[str, object]) -> dict[str, object]:
+        self.calls += 1
+        if self.calls == 1:
+            raise self._error
+        return {
+            "type": "tool_call",
+            "phase": context.get("phase", "spec"),
+            "tool_name": "read_file",
+            "args": {"path": "SPEC.md"},
+            "reason": "Inspect the specification.",
+        }
+
+
 class _ContextBuilder:
     def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]:
         return {"task_id": task_id, "phase": phase.value, "goal": state.goal or ""}
@@ -116,7 +134,11 @@ class _AllowedPolicy:
 
 class _NoopTools:
     def dispatch(self, action: object) -> ToolResult:
-        return ToolResult(success=True, action_name="noop")
+        tool_name = getattr(action, "tool_name", None)
+        return ToolResult(
+            success=True,
+            action_name=tool_name if isinstance(tool_name, str) else "noop",
+        )
 
 
 class _RecordingFeedback:
@@ -408,6 +430,27 @@ def test_parse_failure_does_not_reset_protocol_failure_count() -> None:
     assert provider.calls == 3
     assert result.error is not None
     assert result.error.error_code == "provider_invalid_response"
+
+
+def test_successful_action_clears_prior_provider_error_before_step_exhaustion() -> None:
+    error = ProviderError(
+        StructuredError(
+            error_code="provider_action_schema_invalid",
+            message="Provider action does not match the expected schema.",
+            phase="spec",
+            denied_rule="provider_action_schema_required",
+            suggested_fix="Return a valid action.",
+        ),
+        protocol_retryable=True,
+    )
+    provider = _ProtocolErrorThenReadLLM(error)
+    loop = _make_loop(provider, max_steps=3)
+
+    result = loop.run("task-001")
+
+    assert provider.calls == 3
+    assert result.error is not None
+    assert result.error.error_code == "max_steps_exceeded"
 
 
 @pytest.mark.parametrize(

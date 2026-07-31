@@ -25,6 +25,31 @@ def test_state_json_is_single_machine_source(tmp_path: Path) -> None:
     assert state.artifacts["SPEC.md"] is False
     assert state.files_changed == ()
     assert state.test_strategy_digest is None
+    assert state.latest_test_failure_digest is None
+    assert state.latest_remediation_digest is None
+    assert state.test_attempt_seq == 0
+    assert state.remediation_applied is False
+
+
+def test_state_loads_remediation_fields_backward_compatibly(tmp_path: Path) -> None:
+    task_root = _init_task(tmp_path)
+    state_file = task_root / "state.json"
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+    for field in (
+        "latest_test_failure_digest",
+        "latest_remediation_digest",
+        "test_attempt_seq",
+        "remediation_applied",
+    ):
+        data.pop(field, None)
+    state_file.write_text(json.dumps(data), encoding="utf-8")
+
+    state = load_state(task_root)
+
+    assert state.latest_test_failure_digest is None
+    assert state.latest_remediation_digest is None
+    assert state.test_attempt_seq == 0
+    assert state.remediation_applied is False
 
 
 def test_state_parse_error_blocks_task(tmp_path: Path) -> None:
