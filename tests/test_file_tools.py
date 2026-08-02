@@ -37,6 +37,7 @@ def test_read_file_rejects_missing_file_with_structured_error(tmp_path: Path) ->
         success=False,
         action_name="read_file",
         error_summary="File does not exist.",
+        error_code="file_not_found",
     )
 
 
@@ -49,6 +50,7 @@ def test_read_file_rejects_directory(tmp_path: Path) -> None:
         success=False,
         action_name="read_file",
         error_summary="Path is not a file.",
+        error_code="not_a_file",
     )
 
 
@@ -61,6 +63,7 @@ def test_read_file_rejects_non_utf8_content(tmp_path: Path) -> None:
         success=False,
         action_name="read_file",
         error_summary="File is not valid UTF-8.",
+        error_code="invalid_utf8",
     )
 
 
@@ -76,6 +79,7 @@ def test_read_file_rejects_credential_files(tmp_path: Path, path: str) -> None:
         success=False,
         action_name="read_file",
         error_summary="Credential files cannot be accessed.",
+        error_code="protected_resource",
     )
 
 
@@ -89,6 +93,7 @@ def test_read_file_rejects_absolute_path(tmp_path: Path) -> None:
         success=False,
         action_name="read_file",
         error_summary="Path must stay inside the project root.",
+        error_code="path_out_of_scope",
     )
 
 
@@ -103,6 +108,7 @@ def test_read_file_rejects_parent_traversal(tmp_path: Path) -> None:
         success=False,
         action_name="read_file",
         error_summary="Path must stay inside the project root.",
+        error_code="path_out_of_scope",
     )
 
 
@@ -139,6 +145,7 @@ def test_read_file_rejects_sensitive_path_resolving_to_ordinary_file(
         success=False,
         action_name="read_file",
         error_summary="Credential files cannot be accessed.",
+        error_code="protected_resource",
     )
 
 
@@ -255,6 +262,7 @@ def test_edit_file_reports_no_mutation_when_match_is_not_unique(tmp_path: Path) 
         action_name="edit_file",
         error_summary="Edit target must contain old_string exactly once.",
         mutation_applied=False,
+        error_code="edit_target_not_unique",
     )
     assert target.read_text(encoding="utf-8") == "old\nold\n"
 
@@ -310,6 +318,7 @@ def test_write_file_rejects_credential_files(tmp_path: Path, path: str) -> None:
         action_name="write_file",
         error_summary="Credential files cannot be accessed.",
         mutation_applied=False,
+        error_code="protected_resource",
     )
 
 
@@ -327,6 +336,7 @@ def test_write_file_rejects_sensitive_path_resolving_to_ordinary_file(
         action_name="write_file",
         error_summary="Credential files cannot be accessed.",
         mutation_applied=False,
+        error_code="protected_resource",
     )
     assert ordinary_file.read_text(encoding="utf-8") == "ordinary content\n"
 
@@ -361,6 +371,7 @@ def test_write_file_rejects_path_outside_workspace(tmp_path: Path) -> None:
         action_name="write_file",
         error_summary="Path must stay inside the project root.",
         mutation_applied=False,
+        error_code="path_out_of_scope",
     )
     assert not (tmp_path / "outside.txt").exists()
 
@@ -373,6 +384,7 @@ def test_write_file_rejects_content_that_cannot_be_encoded_as_utf8(tmp_path: Pat
         action_name="write_file",
         error_summary="Content is not valid UTF-8.",
         mutation_applied=False,
+        error_code="invalid_utf8",
     )
     assert not (tmp_path / "invalid.txt").exists()
 
@@ -470,6 +482,7 @@ def test_list_files_rejects_missing_directory(tmp_path: Path) -> None:
         success=False,
         action_name="list_files",
         error_summary="Directory does not exist.",
+        error_code="directory_not_found",
     )
 
 
@@ -567,6 +580,7 @@ def test_search_text_rejects_empty_query(tmp_path: Path, query: str) -> None:
         success=False,
         action_name="search_text",
         error_summary="Search query must be non-empty.",
+        error_code="invalid_argument",
     )
 
 
@@ -584,6 +598,7 @@ def test_read_file_converts_resolve_error_to_failed_result(
         success=False,
         action_name="read_file",
         error_summary="File operation failed: OSError.",
+        error_code="read_failed",
     )
 
 

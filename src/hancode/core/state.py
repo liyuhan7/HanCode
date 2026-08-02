@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Mapping, TypeGuard
 
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.failures import FailureRecord
 from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.approvals import is_valid_approval_id
 from hancode.core.models import Phase, TaskStatus
@@ -49,6 +50,7 @@ _STATE_FIELDS = frozenset(
         "test_attempt_seq",
         "remediation_applied",
         "test_strategy_digest",
+        "active_failure",
     }
 )
 _OPTIONAL_STATE_FIELDS = frozenset(
@@ -66,6 +68,7 @@ _OPTIONAL_STATE_FIELDS = frozenset(
         "latest_remediation_digest",
         "test_attempt_seq",
         "remediation_applied",
+        "active_failure",
     }
 )
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
@@ -116,6 +119,7 @@ class TaskState:
     latest_remediation_digest: str | None = None
     test_attempt_seq: int = 0
     remediation_applied: bool = False
+    active_failure: FailureRecord | None = None
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -274,6 +278,10 @@ class TaskState:
             raise _invalid_state_field("test_attempt_seq")
         if not isinstance(self.remediation_applied, bool):
             raise _invalid_state_field("remediation_applied")
+        if self.active_failure is not None and not isinstance(
+            self.active_failure, FailureRecord
+        ):
+            raise _invalid_state_field("active_failure")
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )
@@ -386,6 +394,11 @@ def load_state(task_root: Path) -> TaskState:
                 if "remediation_applied" not in data
                 else _required_bool(data, "remediation_applied")
             ),
+            active_failure=(
+                None
+                if "active_failure" not in data
+                else _optional_failure(data)
+            ),
         )
     except (OSError, UnicodeError, ValueError):
         raise _state_parse_error() from None
@@ -458,6 +471,9 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "latest_remediation_digest": state.latest_remediation_digest,
         "test_attempt_seq": state.test_attempt_seq,
         "remediation_applied": state.remediation_applied,
+        "active_failure": (
+            None if state.active_failure is None else state.active_failure.to_dict()
+        ),
     }
     state_file = task_root / "state.json"
     if _is_link(state_file):
@@ -566,6 +582,18 @@ def _required_interactions(
             )
         )
     return tuple(records)
+
+
+def _optional_failure(data: Mapping[str, object]) -> FailureRecord | None:
+    value = data.get("active_failure")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("Task state field is invalid: active_failure.")
+    try:
+        return FailureRecord.from_dict(value)
+    except ValueError:
+        raise ValueError("Task state field is invalid: active_failure.") from None
 
 
 def _state_parse_error() -> HanCodeError:

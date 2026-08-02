@@ -80,6 +80,8 @@ def read_file(project_root: Path, path: str) -> ToolResult:
 
 
 def write_file(project_root: Path, path: str, content: str) -> ToolResult:
+    if not isinstance(content, str):
+        return _write_failed("Content must be text.", error_code="invalid_argument")
     resolved = _resolve_path(project_root, path)
     if isinstance(resolved, str):
         return _write_failed(resolved)
@@ -134,9 +136,9 @@ def write_file(project_root: Path, path: str, content: str) -> ToolResult:
 
 def edit_file(project_root: Path, path: str, old_string: str, new_string: str) -> ToolResult:
     if not isinstance(old_string, str) or not old_string:
-        return _edit_failed("Edit old_string must be non-empty.")
+        return _edit_failed("Edit old_string must be non-empty.", error_code="invalid_argument")
     if not isinstance(new_string, str):
-        return _edit_failed("Edit new_string must be text.")
+        return _edit_failed("Edit new_string must be text.", error_code="invalid_argument")
     if old_string == new_string:
         return _edit_failed("Edit would not change the file.")
     resolved = _resolve_path(project_root, path)
@@ -227,8 +229,10 @@ def list_files(project_root: Path, path: str = ".") -> ToolResult:
 
 
 def search_text(project_root: Path, query: str) -> ToolResult:
-    if not query.strip():
-        return _failed("search_text", "Search query must be non-empty.")
+    if not isinstance(query, str) or not query.strip():
+        return _failed(
+            "search_text", "Search query must be non-empty.", error_code="invalid_argument"
+        )
     try:
         root = project_root.resolve()
     except (OSError, RuntimeError) as exc:
@@ -294,6 +298,8 @@ def search_text(project_root: Path, query: str) -> ToolResult:
 
 
 def _resolve_path(project_root: Path, path: str) -> _ResolvedPath | str:
+    if not isinstance(path, str) or not path:
+        return "Path must be a non-empty text value."
     requested = Path(path)
     if requested.is_absolute():
         return "Path must stay inside the project root."
@@ -353,31 +359,80 @@ def _redact_quoted_json(match: re.Match[str]) -> str:
     return f"{match.group(1)}{quoted_value[0]}[REDACTED]{quoted_value[0]}"
 
 
-def _failed(action_name: str, error_summary: str) -> ToolResult:
+def _failed(
+    action_name: str, error_summary: str, *, error_code: str | None = None
+) -> ToolResult:
     return ToolResult(
         success=False,
         action_name=action_name,
         error_summary=error_summary,
+        error_code=error_code or _error_code(action_name, error_summary),
     )
 
 
 def _edit_failed(
-    error_summary: str, *, mutation_applied: bool | None = False
+    error_summary: str,
+    *,
+    mutation_applied: bool | None = False,
+    error_code: str | None = None,
 ) -> ToolResult:
     return ToolResult(
         success=False,
         action_name="edit_file",
         error_summary=error_summary,
         mutation_applied=mutation_applied,
+        error_code=error_code or _error_code("edit_file", error_summary),
     )
 
 
 def _write_failed(
-    error_summary: str, *, mutation_applied: bool | None = False
+    error_summary: str,
+    *,
+    mutation_applied: bool | None = False,
+    error_code: str | None = None,
 ) -> ToolResult:
     return ToolResult(
         success=False,
         action_name="write_file",
         error_summary=error_summary,
         mutation_applied=mutation_applied,
+        error_code=error_code or _error_code("write_file", error_summary),
     )
+
+
+def _error_code(action_name: str, error_summary: str) -> str:
+    if error_summary == "Path must be a non-empty text value.":
+        return "invalid_argument"
+    if error_summary == "Search query must be non-empty.":
+        return "invalid_argument"
+    if error_summary == "Content must be text.":
+        return "invalid_argument"
+    if error_summary == "Credential files cannot be accessed.":
+        return "protected_resource"
+    if error_summary == "Path must stay inside the project root.":
+        return "path_out_of_scope"
+    if error_summary in {"File does not exist.", "Directory does not exist."}:
+        return "file_not_found" if action_name in {"read_file", "edit_file"} else "directory_not_found"
+    if error_summary == "Path is not a file.":
+        return "not_a_file"
+    if error_summary == "Path is not a directory.":
+        return "not_a_directory"
+    if error_summary == "Parent path is not a directory.":
+        return "not_a_directory"
+    if error_summary == "File is not valid UTF-8.":
+        return "invalid_utf8"
+    if error_summary in {"Content is not valid UTF-8.", "Edit content is not valid UTF-8."}:
+        return "invalid_utf8"
+    if error_summary == "Edit would not change the file.":
+        return "edit_no_change"
+    if error_summary == "Edit target must contain old_string exactly once.":
+        return "edit_target_not_unique"
+    if error_summary.startswith("Search query") or error_summary == "Project root is not a directory.":
+        return "invalid_argument" if error_summary.startswith("Search query") else "not_a_directory"
+    return {
+        "read_file": "read_failed",
+        "list_files": "list_failed",
+        "search_text": "search_failed",
+        "write_file": "write_failed",
+        "edit_file": "edit_failed",
+    }.get(action_name, "tool_failed")

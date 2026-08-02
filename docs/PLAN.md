@@ -7305,3 +7305,53 @@ S4-R2 Build       S4-R3 Test Report
 - 同一 failure fingerprint 第一次重复进入 REVIEW，第二次进入 WAITING_INPUT 或明确 BLOCKED，不无限读取证据。
 - task-001 fixture 可在不手工修改 state 的前提下完成 legacy 失败建档与恢复。
 - AgentLoop、Router、Phase Gate、Policy、Provider Schema、State、Context、TUI 只读投影、Mock Demo 和全量质量门均有新鲜验证证据。
+
+---
+
+## S11-R1：Action 与文件 Tool 通用失败恢复闭环
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；全量质量门与离线构建通过 |
+| 分支 | `codex/s11-recovery-core` |
+| 依赖 | S10-R1 |
+| 范围 | Action ParseError、白名单 Policy denial、五个文件 Tool 失败的持久化防循环 |
+| 开发方式 | 逐个行为 RED → GREEN → 回归验证 |
+
+### 行为契约
+
+- 首次同类失败允许修正，第二次强制更换 Action，第三次立即 `BLOCKED`；不同失败指纹开始新轮次，`max_steps` 仅作外层保险。
+- Action 摘要不包含 `reason`；活动失败和重复次数保存到 state v1 的可选字段，Resume 后不清零。
+- Provider 成功返回已解码对象后清零 Provider 连续失败计数；后续 `parse_action()` 失败只使用 S11 恢复阶梯。
+- 只为 `read_file`、`list_files`、`search_text`、`write_file`、`edit_file` 补充稳定错误码和恢复接入；写结果无法确定时继续立即 `INCONSISTENT`。
+- 修正后的普通 Action 必须重新经过 Phase Gate、Tool/Path Policy、Approval 和 Checkpoint；无关成功不清理活动失败。
+
+### 文件边界
+
+- 通用失败模型、TaskState 可选字段与恢复协调器。
+- AgentLoop 的 Parse、Policy、文件 Tool 失败入口、Policy 前 guard 与共享成功后处理。
+- ToolRegistry 和五个文件工具的稳定 `error_code`。
+- 相关单元/集成测试、`docs/PLAN.md` 与 `docs/AGENT_LOG.md`。
+
+### 非目标
+
+- 不引入 RecoveryDecision、Recovery Ledger、CAS/state revision、全局恢复预算、新配置项或完整 ProgressDetector。
+- 不迁移测试专用修复、RecoveryService、Approval 拒绝防循环或 Provider 错误类型。
+
+### 验收
+
+- 相同 Parse、Policy 或文件 Tool 失败第三次在 `max_steps=100` 下仍提前阻断，且被 guard 的 Action 零 Policy/零 dispatch。
+- 仅修改 `reason` 不能绕过 guard；合法新目标仍经过现有 Approval/Checkpoint 安全链。
+- 活动失败、重复次数和恢复模式可跨 AgentLoop Resume 重建；匹配的成功动作后清理。
+- 写入效果未知、State/Checkpoint 持久化异常不降级为自主重试。
+- 聚焦回归、全量 pytest、Ruff、MyPy、离线 build 和 `git diff --check` 均以本轮新鲜结果记录。
+
+### 实施结果（2026-08-02）
+
+- 新增不可变 `FailureRecord` 与 `RecoveryCoordinator`，统一 Action ParseError、白名单 Policy denial 和五个文件 Tool 失败的指纹、重复计数、恢复模式、活动状态与脱敏 Observation。
+- `TaskState` 保持 schema v1，新增可选 `active_failure` 并严格校验；Resume 可重建活动失败，`BLOCKED` 状态不会再次调用 LLM；成功动作按保守匹配清理活动失败。
+- Action digest 只包含 `type`、`phase`、`tool_name`、`args`，排除 `reason`；第二次重复 Action 在 Policy 前拦截，第三次同类失败提前阻塞。
+- `ToolResult.error_code` 向后兼容；Registry 与五个文件工具补充稳定错误码，未知写入效果继续沿用既有 `INCONSISTENT` fail-closed 路径。
+- AgentLoop 保留既有测试专用修复、Approval、Checkpoint、RecoveryService 与 Provider 协议重试路径，仅在 S11-R1 范围接入统一失败闭环。
+- 新鲜验证：聚焦回归 `244 passed, 2 skipped in 6.30s`；全量 `1465 passed, 17 skipped in 108.13s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 130 source files`；`git diff --check` 通过；`uv build --offline` 成功生成 sdist 与 wheel。
+- 验证临时目录、`dist/`、`build/` 和 `src/hancode.egg-info/` 按用户要求保留；未提交、未推送。

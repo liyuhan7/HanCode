@@ -22,6 +22,12 @@ from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.core.config import HanCodeConfig, load_config
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.failures import (
+    FailureCategory,
+    FailureRecord,
+    FailureSource,
+    RecoveryMode,
+)
 from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.runtime.feedback import FeedbackBuilder
 from hancode.providers.mock import MockLLM
@@ -333,6 +339,18 @@ class SpyToolRegistry:
         self.events.append("tool")
         self.actions.append(action)
         return ToolResult(success=True, action_name=action.tool_name or "unknown")
+
+
+class FailingToolRegistry(SpyToolRegistry):
+    def dispatch(self, action: Action) -> ToolResult:
+        self.events.append("tool")
+        self.actions.append(action)
+        return ToolResult(
+            success=False,
+            action_name=action.tool_name or "unknown",
+            error_summary="File does not exist.",
+            error_code="file_not_found",
+        )
 
 
 class SpyFeedbackBuilder:
@@ -1102,6 +1120,100 @@ def test_agent_loop_rejects_non_positive_max_steps() -> None:
         _build_loop([_finish_action()], max_steps=0)
 
 
+def test_same_parse_failure_blocks_before_max_steps_without_policy_or_tool() -> None:
+    loop, llm, _, policy, tools, _ = _build_loop([{}, {}, {}], max_steps=100)
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "recovery_no_progress"
+    assert len(llm.contexts) == 3
+    assert policy.actions == []
+    assert tools.actions == []
+    assert result.final_state.active_failure is not None
+    assert result.final_state.active_failure.repeat_count == 3
+    assert result.final_state.active_failure.recovery_mode is RecoveryMode.BLOCKED
+
+
+def test_same_policy_action_is_guarded_before_policy_on_second_and_third_attempt() -> None:
+    denied = StubPolicyDecision(
+        allowed=False,
+        reason="protected",
+        denied_rule="protected_path",
+        suggested_fix="Choose source.",
+        target_zone=None,
+    )
+    action = {
+        "type": "tool_call",
+        "phase": "code",
+        "tool_name": "write_file",
+        "args": {"path": "assignment.md", "content": "x"},
+        "reason": "change",
+    }
+    loop, llm, _, policy, tools, _ = _build_loop(
+        [action, action, action], max_steps=100, decision=denied
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "recovery_no_progress"
+    assert len(llm.contexts) == 3
+    assert len(policy.actions) == 1
+    assert tools.actions == []
+
+
+def test_same_missing_file_failure_dispatches_once_then_guards() -> None:
+    action = _read_file_action()
+    tools = FailingToolRegistry([])
+    loop, llm, _, policy, _, _ = _build_loop(
+        [action, action, action], max_steps=100, tool_registry=tools
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "recovery_no_progress"
+    assert len(llm.contexts) == 3
+    assert len(policy.actions) == 1
+    assert len(tools.actions) == 1
+    assert result.final_state.active_failure is not None
+    assert result.final_state.active_failure.error_code == "file_not_found"
+
+
+def test_blocked_active_failure_resume_does_not_call_llm() -> None:
+    digest = "c" * 64
+    failure = FailureRecord(
+        failure_id="fail-cccccccccccc",
+        source=FailureSource.ACTION_PARSE,
+        category=FailureCategory.INVALID_ACTION,
+        fingerprint=digest,
+        action_digest="d" * 64,
+        phase=Phase.CODE,
+        tool_name=None,
+        target=None,
+        error_code="invalid_action_payload",
+        safe_message="invalid",
+        suggested_fix="fix",
+        safe_details={},
+        repeat_count=3,
+        recovery_mode=RecoveryMode.BLOCKED,
+    )
+    state_store = StubStateStore(replace(_task_state(), active_failure=failure))
+    loop, llm, _, _, _, _ = _build_loop(
+        [_finish_action()], state=state_store.state, state_store=state_store
+    )
+
+    result = loop.run("task-001", resume=True)
+
+    assert result.status is TaskStatus.BLOCKED
+    assert llm.contexts == ()
+    assert result.final_state.active_failure == failure
+
+
 def _build_loop(
     actions: list[dict[str, object]],
     *,
@@ -1114,6 +1226,7 @@ def _build_loop(
     checkpoint_manager: StubCheckpointManager | None = None,
     rollback_manager: StubRollbackManager | None = None,
     state_store: StubStateStore | None = None,
+    tool_registry: SpyToolRegistry | None = None,
 ) -> tuple[
     AgentLoop,
     MockLLM,
@@ -1126,7 +1239,7 @@ def _build_loop(
     llm = MockLLM(actions)
     context_builder = SpyContextBuilder()
     policy = SpyPolicy(decision or StubPolicyDecision(allowed=True), recorded_events)
-    tools = SpyToolRegistry(recorded_events)
+    tools = tool_registry or SpyToolRegistry(recorded_events)
     feedback = SpyFeedbackBuilder()
     loop = AgentLoop(
         llm=llm,

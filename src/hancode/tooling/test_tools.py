@@ -60,13 +60,10 @@ def run_tests(
             command=redacted_command,
         )
     except OSError as exc:
+        winerror = getattr(exc, "winerror", None)
         stable_fields = [
             f"errno={exc.errno}" if exc.errno is not None else None,
-            (
-                f"winerror={exc.winerror}"
-                if getattr(exc, "winerror", None) is not None
-                else None
-            ),
+            f"winerror={winerror}" if winerror is not None else None,
         ]
         metadata = ", ".join(field for field in stable_fields if field is not None)
         return ToolResult(

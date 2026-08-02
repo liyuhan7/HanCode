@@ -854,6 +854,28 @@ def test_checkpointed_source_write_failure_marks_state_inconsistent_and_stops() 
     assert result.risks[0].level == "high"
 
 
+def test_artifact_write_unknown_mutation_effect_is_fail_closed() -> None:
+    state = _retry_code_state()
+    action = _artifact_write_action()
+    action["phase"] = Phase.CODE.value
+    state_store = MemoryStateStore(state)
+    loop = _loop(
+        llm=MockLLM([action]),
+        state_store=state_store,
+        context_builder=RecordingContextBuilder(),
+        feedback=RecordingFeedback(),
+        tools=ScriptedTools(write_success=False, write_mutation=None),
+        max_steps=100,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.INCONSISTENT
+    assert result.error is not None
+    assert result.error.error_code == "mutation_effect_unknown"
+    assert result.final_state.inconsistent is True
+
+
 def test_checkpointed_no_mutation_failure_aborts_and_reinjects_feedback() -> None:
     events: list[str] = []
     state_store = MemoryStateStore(_retry_code_state())

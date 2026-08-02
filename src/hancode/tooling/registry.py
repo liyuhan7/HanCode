@@ -18,6 +18,7 @@ class ToolResult:
     timed_out: bool = False
     command: str | None = None
     mutation_applied: bool | None = None
+    error_code: str | None = None
 
 
 Tool = Callable[..., ToolResult]
@@ -38,12 +39,20 @@ class ToolRegistry:
 
     def dispatch(self, action: Action) -> ToolResult:
         if action.type is not ActionType.TOOL_CALL:
-            return _failed_result(action.type.value, "Action is not a tool call.")
+            return _failed_result(
+                action.type.value,
+                "Action is not a tool call.",
+                error_code="tool_not_registered",
+            )
 
         assert action.tool_name is not None
         tool = self._tools.get(action.tool_name)
         if tool is None:
-            return _failed_result(action.tool_name, "Tool is not registered.")
+            return _failed_result(
+                action.tool_name,
+                "Tool is not registered.",
+                error_code="tool_not_registered",
+            )
 
         try:
             result = tool(**action.args)
@@ -51,21 +60,30 @@ class ToolRegistry:
             return _failed_result(
                 action.tool_name,
                 f"Tool execution failed: {type(exc).__name__}.",
+                error_code="tool_execution_exception",
             )
 
         if not isinstance(result, ToolResult):
-            return _failed_result(action.tool_name, "Tool returned an invalid result.")
+            return _failed_result(
+                action.tool_name,
+                "Tool returned an invalid result.",
+                error_code="tool_result_invalid",
+            )
         if result.action_name != action.tool_name:
             return _failed_result(
                 action.tool_name,
                 "Tool returned a result for a different action.",
+                error_code="tool_result_action_mismatch",
             )
         return result
 
 
-def _failed_result(action_name: str, error_summary: str) -> ToolResult:
+def _failed_result(
+    action_name: str, error_summary: str, *, error_code: str
+) -> ToolResult:
     return ToolResult(
         success=False,
         action_name=action_name,
         error_summary=error_summary,
+        error_code=error_code,
     )

@@ -411,7 +411,7 @@ def test_retryable_empty_provider_response_is_retried_before_blocking() -> None:
     assert result.final_state.status is TaskStatus.BLOCKED
 
 
-def test_parse_failure_does_not_reset_protocol_failure_count() -> None:
+def test_decoded_parse_failure_resets_protocol_failure_count() -> None:
     error = ProviderError(
         StructuredError(
             error_code="provider_invalid_response",
@@ -423,13 +423,15 @@ def test_parse_failure_does_not_reset_protocol_failure_count() -> None:
         protocol_retryable=True,
     )
     provider = _ProtocolErrorThenParseErrorLLM(error)
-    loop = _make_loop(provider, max_steps=4)
+    loop = _make_loop(provider, max_steps=5)
 
     result = loop.run("task-001")
 
-    assert provider.calls == 3
+    assert provider.calls == 5
     assert result.error is not None
     assert result.error.error_code == "provider_invalid_response"
+    assert result.final_state.active_failure is not None
+    assert result.final_state.active_failure.error_code == "missing_tool_name"
 
 
 def test_successful_action_clears_prior_provider_error_before_step_exhaustion() -> None:

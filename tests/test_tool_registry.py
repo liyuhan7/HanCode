@@ -39,6 +39,7 @@ def test_unknown_tool_returns_structured_error() -> None:
         success=False,
         action_name="read_file",
         error_summary="Tool is not registered.",
+        error_code="tool_not_registered",
     )
     assert called == []
 
@@ -56,6 +57,7 @@ def test_tool_exception_returns_failed_result_without_exception_message() -> Non
         success=False,
         action_name="read_file",
         error_summary="Tool execution failed: ValueError.",
+        error_code="tool_execution_exception",
     )
     assert "secret-value" not in (result.error_summary or "")
 
@@ -123,6 +125,7 @@ def test_dispatch_rejects_non_tool_action() -> None:
         success=False,
         action_name="finish_phase",
         error_summary="Action is not a tool call.",
+        error_code="tool_not_registered",
     )
 
 
@@ -139,6 +142,7 @@ def test_dispatch_converts_invalid_tool_return_to_failed_result() -> None:
         success=False,
         action_name="read_file",
         error_summary="Tool returned an invalid result.",
+        error_code="tool_result_invalid",
     )
 
 
@@ -155,6 +159,7 @@ def test_dispatch_rejects_result_for_a_different_action() -> None:
         success=False,
         action_name="read_file",
         error_summary="Tool returned a result for a different action.",
+        error_code="tool_result_action_mismatch",
     )
 
 

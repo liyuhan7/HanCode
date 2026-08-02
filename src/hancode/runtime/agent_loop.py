@@ -27,6 +27,7 @@ from hancode.storage.checkpoints import (
     rollback_last_checkpoint,
 )
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.failures import RecoveryMode
 from hancode.tooling.file_tools import redact_text
 from hancode.providers.base import LLMClient
 from hancode.providers.errors import ProviderError
@@ -44,6 +45,7 @@ from hancode.storage.task_lock import FilesystemTaskMutationGuard
 from hancode.storage.workspace import task_path
 from hancode.core.test_remediation import RemediationKind
 from hancode.runtime.test_remediation import build_test_failure_record
+from hancode.runtime.recovery import RecoveryCoordinator
 from hancode.storage.test_remediations import TestRemediationStore
 from hancode.storage.test_strategies import TestStrategyStore
 
@@ -400,6 +402,7 @@ class AgentLoop:
         project_root: Path | None = None,
         delivery_pipeline: DeliveryPipelinePort | None = None,
         build_required: bool = False,
+        recovery_coordinator: RecoveryCoordinator | None = None,
     ) -> None:
         if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps <= 0:
             raise ValueError("max_steps must be positive")
@@ -430,6 +433,7 @@ class AgentLoop:
         self._project_root = project_root or Path(".")
         self._delivery_pipeline = delivery_pipeline
         self._build_required = build_required
+        self._recovery_coordinator = recovery_coordinator or RecoveryCoordinator()
 
     def run(self, task_id: str, *, resume: bool = False) -> AgentRunResult:
         if not isinstance(resume, bool):
@@ -651,6 +655,38 @@ class AgentLoop:
                     state,
                 )
             state = reconciled_state
+
+        if state.active_failure is not None:
+            active_failure = state.active_failure
+            observation = self._recovery_coordinator.observation_from_state(state)
+            if active_failure.recovery_mode is RecoveryMode.BLOCKED:
+                state = self._save_if_changed(
+                    task_id, state, replace(state, status=TaskStatus.BLOCKED)
+                )
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="recovery_no_progress",
+                    phase=state.current_phase,
+                    status="failed",
+                    observation={
+                        "failure_id": active_failure.failure_id,
+                        "repeat_count": active_failure.repeat_count,
+                    },
+                )
+                return _result(
+                    TaskStatus.BLOCKED,
+                    0,
+                    (),
+                    observation,
+                    _recovery_no_progress_error(state.current_phase),
+                    state,
+                    risks=(
+                        (_trace_failure_risk(trace_error),)
+                        if trace_error is not None
+                        else ()
+                    ),
+                )
 
         if resume:
             if state.status is TaskStatus.BLOCKED and not state.inconsistent:
@@ -1035,6 +1071,13 @@ class AgentLoop:
                 )
                 if observation is not None:
                     context["observation"] = _observation_for_context(observation)
+                if state.active_failure is not None:
+                    context["active_failure"] = state.active_failure.to_dict()
+                    context["recovery_instruction"] = {
+                        "mode": state.active_failure.recovery_mode.value,
+                        "forbidden_action_digest": state.active_failure.action_digest,
+                        "required": True,
+                    }
             except HanCodeError as exc:
                 state = self._block(task_id, state)
                 return _result(
@@ -1126,6 +1169,11 @@ class AgentLoop:
                     state,
                 )
 
+            # A decoded provider object has already consumed the protocol
+            # boundary.  Subsequent parse failures belong to S11 recovery and
+            # must not consume the provider protocol retry budget.
+            consecutive_provider_failures = 0
+            last_recoverable_error = None
             action = parse_action(raw_action, routing.phase)
             if isinstance(action, ParseError):
                 parse_error = _structured_parse_error(action)
@@ -1150,19 +1198,12 @@ class AgentLoop:
                         state,
                         risks=(_trace_failure_risk(trace_error),),
                     )
-                if consecutive_provider_failures >= self._provider_protocol_retries:
-                    state = self._block(task_id, state)
-                    return _result(
-                        TaskStatus.BLOCKED,
-                        step,
-                        tuple(tool_calls),
-                        observation,
-                        parse_error,
-                        state,
-                    )
-                consecutive_provider_failures += 1
-                observation, feedback_error = self._build_feedback(
-                    lambda: self._feedback_builder.from_parse_error(action), routing.phase
+                # Preserve the existing FeedbackBuilder hook for adapters and
+                # observers; the persisted recovery observation below is the
+                # machine-facing S11 signal.
+                _, feedback_error = self._build_feedback(
+                    lambda: self._feedback_builder.from_parse_error(action),
+                    routing.phase,
                 )
                 if feedback_error is not None:
                     state = self._block(task_id, state)
@@ -1174,13 +1215,91 @@ class AgentLoop:
                         feedback_error,
                         state,
                     )
+                recovery = self._recovery_coordinator.record_parse_failure(
+                    state=state,
+                    raw_action=raw_action,
+                    parse_error=action,
+                    phase=routing.phase,
+                )
+                state = self._save_if_changed(task_id, state, recovery.state)
+                observation = recovery.observation
+                if recovery.should_block:
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="recovery_no_progress",
+                        phase=routing.phase,
+                        status="failed",
+                        observation={
+                            "failure_id": state.active_failure.failure_id
+                            if state.active_failure is not None
+                            else None,
+                            "repeat_count": (
+                                state.active_failure.repeat_count
+                                if state.active_failure is not None
+                                else None
+                            ),
+                        },
+                    )
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        _recovery_no_progress_error(routing.phase),
+                        state,
+                        risks=(
+                            (_trace_failure_risk(trace_error),)
+                            if trace_error is not None
+                            else ()
+                        ),
+                    )
                 continue
 
-            consecutive_provider_failures = 0
             # A valid action proves the provider recovered.  Do not let an older
             # retryable provider or parse error masquerade as the later terminal
             # error when this run eventually reaches its step limit.
             last_recoverable_error = None
+
+            recovery_guard = self._recovery_coordinator.guard_action(
+                state=state, action=action
+            )
+            if recovery_guard is not None:
+                state = self._save_if_changed(task_id, state, recovery_guard.state)
+                observation = recovery_guard.observation
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="recovery_action_rejected",
+                    phase=routing.phase,
+                    status="failed",
+                    action=_trace_action(action, None, include_path=True),
+                    observation={
+                        "failure_id": state.active_failure.failure_id
+                        if state.active_failure is not None
+                        else None,
+                        "repeat_count": (
+                            state.active_failure.repeat_count
+                            if state.active_failure is not None
+                            else None
+                        ),
+                    },
+                )
+                if recovery_guard.should_block:
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        _recovery_no_progress_error(routing.phase),
+                        state,
+                        risks=(
+                            (_trace_failure_risk(trace_error),)
+                            if trace_error is not None
+                            else ()
+                        ),
+                    )
+                continue
             test_discovery_key = _test_discovery_action_key(action, routing.phase)
             if (
                 state.latest_test_status == "none"
@@ -1318,6 +1437,61 @@ class AgentLoop:
                         state,
                         risks=(_trace_failure_risk(trace_error),),
                     )
+                if self._recovery_coordinator.supports_policy_denial(decision):
+                    _, feedback_error = self._build_feedback(
+                        lambda: self._feedback_builder.from_policy_denial(decision),
+                        routing.phase,
+                    )
+                    if feedback_error is not None:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            feedback_error,
+                            state,
+                        )
+                    recovery = self._recovery_coordinator.record_policy_failure(
+                        state=state,
+                        action=action,
+                        decision=decision,
+                        phase=routing.phase,
+                    )
+                    state = self._save_if_changed(task_id, state, recovery.state)
+                    observation = recovery.observation
+                    if recovery.should_block:
+                        trace_error = self._append_trace(
+                            task_id,
+                            trace_events,
+                            event_type="recovery_no_progress",
+                            phase=routing.phase,
+                            status="failed",
+                            observation={
+                                "failure_id": state.active_failure.failure_id
+                                if state.active_failure is not None
+                                else None,
+                                "repeat_count": (
+                                    state.active_failure.repeat_count
+                                    if state.active_failure is not None
+                                    else None
+                                ),
+                            },
+                        )
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            _recovery_no_progress_error(routing.phase),
+                            state,
+                            risks=(
+                                (_trace_failure_risk(trace_error),)
+                                if trace_error is not None
+                                else ()
+                            ),
+                        )
+                    continue
                 observation, feedback_error = self._build_feedback(
                     lambda: self._feedback_builder.from_policy_denial(decision),
                     routing.phase,
@@ -2219,6 +2393,26 @@ class AgentLoop:
                                 state,
                                 risks=(_checkpoint_failure_risk(),),
                             )
+                if (
+                    not tool_result.success
+                    and action.tool_name in {"write_file", "edit_file"}
+                    and tool_result.mutation_applied is not False
+                ):
+                    state, state_error = self._mark_inconsistent(
+                        task_id,
+                        state,
+                        _mutation_effect_unknown_error(routing.phase),
+                        rollback_required=True,
+                    )
+                    return _result(
+                        TaskStatus.INCONSISTENT,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        state_error,
+                        state,
+                        risks=(_checkpoint_failure_risk(),),
+                    )
                 previous_state = state
                 state, post_error = self._post_tool_execution(
                     task_id,
@@ -2245,6 +2439,83 @@ class AgentLoop:
                         state,
                         risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
                     )
+                if not tool_result.success and self._recovery_coordinator.supports_tool_failure(
+                    action, tool_result
+                ):
+                    recovery = self._recovery_coordinator.record_tool_failure(
+                        state=state,
+                        action=action,
+                        result=tool_result,
+                        phase=routing.phase,
+                    )
+                    state = self._save_if_changed(task_id, state, recovery.state)
+                    observation = recovery.observation
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="failure_observed",
+                        phase=routing.phase,
+                        status="failed",
+                        action=_trace_action(action, decision, include_path=True),
+                        observation={
+                            "failure_id": state.active_failure.failure_id
+                            if state.active_failure is not None
+                            else None,
+                            "fingerprint": (
+                                state.active_failure.fingerprint
+                                if state.active_failure is not None
+                                else None
+                            ),
+                            "error_code": tool_result.error_code,
+                        },
+                    )
+                    if trace_error is not None:
+                        pending_risks.append(_trace_failure_risk(trace_error))
+                    if recovery.should_block:
+                        trace_error = self._append_trace(
+                            task_id,
+                            trace_events,
+                            event_type="recovery_no_progress",
+                            phase=routing.phase,
+                            status="failed",
+                            observation={
+                                "failure_id": state.active_failure.failure_id
+                                if state.active_failure is not None
+                                else None,
+                                "repeat_count": (
+                                    state.active_failure.repeat_count
+                                    if state.active_failure is not None
+                                    else None
+                                ),
+                            },
+                        )
+                        if trace_error is not None:
+                            pending_risks.append(_trace_failure_risk(trace_error))
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            _recovery_no_progress_error(routing.phase),
+                            state,
+                        )
+                    continue
+                resolved_state = self._recovery_coordinator.resolve_after_success(
+                    state=state, action=action
+                )
+                if resolved_state != state:
+                    state = self._save_if_changed(task_id, state, resolved_state)
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="failure_resolved",
+                        phase=routing.phase,
+                        status="succeeded",
+                        action=_trace_action(action, decision, include_path=True),
+                        observation={"reason": "successful_alternative_action"},
+                    )
+                    if trace_error is not None:
+                        pending_risks.append(_trace_failure_risk(trace_error))
                 strategy_error = _test_strategy_error_code(tool_result)
                 semantic_test_report = (
                     _feedback_report_for_test_result(tool_result)
@@ -2748,8 +3019,12 @@ class AgentLoop:
                             state,
                         )
                 had_interactions = bool(state.interactions)
+                phase_finished_state = _state_after_phase_finish(state, routing.phase)
+                phase_finished_state = self._recovery_coordinator.resolve_after_success(
+                    state=phase_finished_state, action=action
+                )
                 state = self._save_if_changed(
-                    task_id, state, _state_after_phase_finish(state, routing.phase)
+                    task_id, state, phase_finished_state
                 )
                 if had_interactions:
                     trace_error = self._append_trace(
@@ -4429,6 +4704,25 @@ class AgentLoop:
             # cannot be replayed, then surface feedback to the loop.
             if checkpoint is not None:
                 self._abort_checkpoint_quietly(task_id, checkpoint)
+            if (
+                action.tool_name in {"write_file", "edit_file"}
+                and tool_result.mutation_applied is not False
+            ):
+                state, state_error = self._mark_inconsistent(
+                    task_id,
+                    state,
+                    _mutation_effect_unknown_error(phase),
+                    rollback_required=True,
+                )
+                return _make_result(
+                    TaskStatus.INCONSISTENT,
+                    1,
+                    tuple(tool_calls),
+                    None,
+                    state_error,
+                    state,
+                    risks=(_checkpoint_failure_risk(),),
+                )
             previous_state = state
             state, post_error = self._post_tool_execution(
                 task_id,
@@ -4559,6 +4853,21 @@ class AgentLoop:
                 None,
                 state_error,
                 state,
+            )
+
+        resolved_state = self._recovery_coordinator.resolve_after_success(
+            state=state, action=action
+        )
+        if resolved_state != state:
+            state = self._save_if_changed(task_id, state, resolved_state)
+            self._append_trace(
+                task_id,
+                trace_events,
+                event_type="failure_resolved",
+                phase=phase,
+                status="succeeded",
+                action=_trace_action(action, decision, include_path=True),
+                observation={"reason": "approved_action_succeeded"},
             )
 
         # Consume the approval (authoritative marker) BEFORE clearing state, so
@@ -5064,7 +5373,7 @@ def _mutation_lock_error(phase: Phase) -> StructuredError:
 
 def _trace_action(
     action: Action,
-    decision: PolicyDecisionLike,
+    decision: PolicyDecisionLike | None,
     *,
     include_path: bool,
 ) -> dict[str, object]:
@@ -5076,11 +5385,9 @@ def _trace_action(
         args["command"] = redact_text(command)
     target_zone = getattr(decision, "target_zone", None)
     reason = redact_text(action.reason or "Run the configured test command.")
-    return {
-        "tool_name": action.tool_name or "unknown",
-        "args": args,
-        "reason": reason,
-        "policy_decision": {
+    policy_decision = None
+    if decision is not None:
+        policy_decision = {
             "allowed": decision.allowed,
             "message": redact_text(decision.reason),
             "phase": action.phase.value,
@@ -5092,7 +5399,12 @@ def _trace_action(
             ),
             "denied_rule": decision.denied_rule,
             "suggested_fix": redact_text(decision.suggested_fix),
-        },
+        }
+    return {
+        "tool_name": action.tool_name or "unknown",
+        "args": args,
+        "reason": reason,
+        "policy_decision": policy_decision,
     }
 
 
@@ -5397,7 +5709,15 @@ def _is_valid_tool_result(result: object, action: Action) -> bool:
         return False
     if result.command is not None and not isinstance(result.command, str):
         return False
+    if not _is_json_safe(result.output):
+        return False
     if result.mutation_applied is not None and not isinstance(result.mutation_applied, bool):
+        return False
+    if result.error_code is not None and (
+        not isinstance(result.error_code, str)
+        or not result.error_code
+        or not re.fullmatch(r"[a-z0-9_]+", result.error_code)
+    ):
         return False
     return isinstance(result.timed_out, bool)
 
@@ -5405,6 +5725,7 @@ def _is_valid_tool_result(result: object, action: Action) -> bool:
 def _tool_trace_observation(result: ToolResult) -> dict[str, object]:
     return {
         "action_name": result.action_name,
+        "error_code": result.error_code,
         "exit_code": result.exit_code,
         "timed_out": result.timed_out,
         "command": None if result.command is None else redact_text(result.command),
@@ -5773,6 +6094,26 @@ def _test_remediation_no_progress_error(phase: Phase) -> StructuredError:
         phase=phase.value,
         denied_rule="remediation_progress_required",
         suggested_fix="Request human input or rollback to the latest checkpoint.",
+    )
+
+
+def _recovery_no_progress_error(phase: Phase) -> StructuredError:
+    return StructuredError(
+        error_code="recovery_no_progress",
+        message="The same Action or file-tool failure reached the recovery limit.",
+        phase=phase.value,
+        denied_rule="recovery_attempt_limit",
+        suggested_fix="Choose a different Action or provide human guidance before resuming.",
+    )
+
+
+def _mutation_effect_unknown_error(phase: Phase) -> StructuredError:
+    return StructuredError(
+        error_code="mutation_effect_unknown",
+        message="A write tool failed without a trustworthy mutation effect.",
+        phase=phase.value,
+        denied_rule="mutation_effect_must_be_known",
+        suggested_fix="Inspect the target and checkpoint manually before continuing.",
     )
 
 

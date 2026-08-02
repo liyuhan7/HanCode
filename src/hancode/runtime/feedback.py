@@ -11,6 +11,8 @@ from typing import Mapping
 
 from hancode.core.actions import ParseError
 from hancode.core.test_remediation import FailureCategory
+from hancode.core.failures import FailureCategory as RecoveryFailureCategory
+from hancode.core.failures import FailureRecord, RecoveryMode
 from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import Phase
@@ -26,6 +28,7 @@ class ObservationKind(str, Enum):
     PARSE_ERROR = "parse_error"
     CHECKPOINT_FEEDBACK = "checkpoint_feedback"
     ROLLBACK_FEEDBACK = "rollback_feedback"
+    FAILURE_OBSERVATION = "failure_observation"
 
 
 _SENSITIVE_KEY_MARKERS = (
@@ -60,7 +63,7 @@ class Observation:
     phase: Phase
     summary: str
     next_action_hint: str
-    failure_category: FailureCategory | None = None
+    failure_category: FailureCategory | RecoveryFailureCategory | None = None
     details: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -169,6 +172,37 @@ class FeedbackBuilder:
                     "denied_rule": error.denied_rule,
                     "error_code": error.error_code,
                 },
+            )
+        )
+
+    def from_failure_record(self, failure: FailureRecord) -> Observation:
+        forbidden_digest = failure.action_digest
+        details: dict[str, object] = {
+            "failure_id": failure.failure_id,
+            "fingerprint": failure.fingerprint,
+            "error_code": failure.error_code,
+            "failed_tool": failure.tool_name,
+            "target": failure.target,
+            "repeat_count": failure.repeat_count,
+            "recovery_mode": failure.recovery_mode.value,
+            "forbidden_action_digest": forbidden_digest,
+        }
+        details.update(dict(failure.safe_details))
+        if failure.recovery_mode is RecoveryMode.RETRY:
+            hint = "修正当前 Action 后重试，必须保持目标和参数可验证。"
+        elif failure.recovery_mode is RecoveryMode.CHANGE_ACTION:
+            hint = "必须更换 Action；不得再次提交被禁止的 Action 摘要。"
+        else:
+            hint = "同类失败已达到恢复上限，停止调用模型并请求人工处理。"
+        return self._fit(
+            Observation(
+                kind=ObservationKind.FAILURE_OBSERVATION,
+                success=False,
+                phase=failure.phase,
+                summary=redact_text(failure.safe_message),
+                next_action_hint=redact_text(hint + " " + failure.suggested_fix),
+                failure_category=failure.category,
+                details=details,
             )
         )
 

@@ -25,6 +25,7 @@ from hancode.runtime.approval_request import ApprovalRequestBuilder
 from hancode.runtime.context import ContextBuilder
 from hancode.runtime.delivery_pipeline import DeliveryPipeline
 from hancode.runtime.feedback import FeedbackBuilder
+from hancode.runtime.recovery import RecoveryCoordinator
 from hancode.runtime.observation import ObservedTraceAppender, TraceObserver
 from hancode.storage.approvals import ApprovalStore
 from hancode.storage.workspace import load_project_metadata
@@ -108,14 +109,13 @@ def create_agent_loop(
         ApprovalRequestBuilderPort, ApprovalRequestBuilder(config)
     )
 
+    feedback_builder = FeedbackBuilder(config.max_observation_bytes)
     return AgentLoop(
         llm=llm,
         context_builder=ContextBuilder(project_root, config),
         policy=cast(Policy, ToolPolicy(config)),
         tool_registry=registry,
-        feedback_builder=cast(
-            FeedbackBuilderPort, FeedbackBuilder(config.max_observation_bytes)
-        ),
+        feedback_builder=cast(FeedbackBuilderPort, feedback_builder),
         state_store=ports.state_store,
         trace_appender=selected_trace_appender,
         checkpoint_manager=ports.checkpoint_manager,
@@ -130,6 +130,7 @@ def create_agent_loop(
         project_root=project_root,
         delivery_pipeline=DeliveryPipeline(),
         build_required=config.build_command is not None,
+        recovery_coordinator=RecoveryCoordinator(feedback_builder=feedback_builder),
     )
 
 

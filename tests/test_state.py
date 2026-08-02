@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 
 from hancode.core.errors import HanCodeError
+from hancode.core.failures import (
+    FailureCategory,
+    FailureRecord,
+    FailureSource,
+    RecoveryMode,
+)
 from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import Phase, TaskStatus
 from hancode.core.state import TaskState, load_state, reconcile_state, save_state
@@ -29,6 +35,39 @@ def test_state_json_is_single_machine_source(tmp_path: Path) -> None:
     assert state.latest_remediation_digest is None
     assert state.test_attempt_seq == 0
     assert state.remediation_applied is False
+    assert state.active_failure is None
+
+
+def test_state_round_trips_active_failure_and_accepts_legacy_missing_field(
+    tmp_path: Path,
+) -> None:
+    task_root = _init_task(tmp_path)
+    digest = "a" * 64
+    failure = FailureRecord(
+        failure_id="fail-aaaaaaaaaaaa",
+        source=FailureSource.POLICY_DENIAL,
+        category=FailureCategory.PROTECTED_RESOURCE,
+        fingerprint=digest,
+        action_digest="b" * 64,
+        phase=Phase.CODE,
+        tool_name="write_file",
+        target="assignment.md",
+        error_code="protected_path",
+        safe_message="protected",
+        suggested_fix="choose source",
+        safe_details={"target_zone": "protected"},
+        repeat_count=2,
+        recovery_mode=RecoveryMode.CHANGE_ACTION,
+    )
+    state = replace(load_state(task_root), active_failure=failure)
+    save_state(task_root, state)
+    loaded = load_state(task_root)
+    assert loaded.active_failure == failure
+
+    data = json.loads((task_root / "state.json").read_text(encoding="utf-8"))
+    data.pop("active_failure")
+    (task_root / "state.json").write_text(json.dumps(data), encoding="utf-8")
+    assert load_state(task_root).active_failure is None
 
 
 def test_state_loads_remediation_fields_backward_compatibly(tmp_path: Path) -> None:

@@ -2206,3 +2206,13 @@
 - 已限制 `environment_error` 只允许换策略、请求输入或回滚；Mock Demo 改为从实时 REVIEW Context 注入 remediation 的 failure digest，静态 sentinel 与预运行 hydration 已移除。
 - 本轮定向核心回归：`155 passed in 1.56s`；Mock Demo 与 CLI 回归：`11 passed in 34.72s`。修复了 rollback 后阶段编排：自动 rollback 已将 Router 带回 CODE，Demo 现在直接进行受既有 `planned_paths` 约束的最终源码修复、登记策略复测，再进入最终 REVIEW 与 Deliver，不再伪造没有活动 failure 的 remediation。
 - 最终验证：全量 pytest `1454 passed, 17 skipped in 97.77s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 128 source files`；`git diff --check` 通过。`uv build --offline` 仍因本地离线 cache 没有 `setuptools>=68` 未进入构建；未联网安装依赖、未修改锁文件。未提交、未推送。
+
+### 2026-08-02 — S11-R1 Action 与文件 Tool 通用失败恢复闭环
+
+- 依据 `docs/PLAN.md` 的 S11-R1 任务卡，在独立 `codex/s11-recovery-core` worktree 中实现；主工作树中用户已有的 `test_tools.py` 修改和未跟踪 `docs/S11.md` 未改动。
+- 新增 `core/failures.py` 与 `runtime/recovery.py`：用稳定 Action digest、失败指纹和 `FailureRecord` 记录活动失败；重复阶梯为 RETRY→CHANGE_ACTION→BLOCKED，guard 在 Policy 前拦截重复摘要，Resume 从 state 重建且不重置 BLOCKED。
+- 扩展 TaskState v1 可选 `active_failure`、FeedbackBuilder Failure Observation、ToolResult `error_code`，并将 Registry 与 `read_file`/`list_files`/`search_text`/`write_file`/`edit_file` 的稳定失败码接入 AgentLoop。未知写入效果继续立即 `INCONSISTENT`，测试专用修复、Approval、Checkpoint、RecoveryService 和 Provider 错误类型保持原边界。
+- 工作树恢复说明：早期 stale copy 误被清理后，未覆盖主工作树；已重新创建带 Git 链接的 worktree，并按保留的实现清单恢复本轮代码与测试。之后未再执行递归清理。
+- 新鲜验证：S11 聚焦回归 `244 passed, 2 skipped in 6.30s`；全量 pytest `1465 passed, 17 skipped in 108.13s`；Ruff 全仓通过；MyPy `130` 个源码文件无错误；`git diff --check` 通过；`uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`。新增产物写入效果未知的 fail-closed 回归也通过。
+- 环境失败单独记录：一次使用新 worktree 空 `.venv` 的 `uv run --no-sync` 因缺少 `jsonschema` 在收集测试时失败；改用已有项目依赖环境重跑后通过，未将其归类为产品失败。
+- 按用户要求保留验证临时目录和构建产物；未提交、未推送。
