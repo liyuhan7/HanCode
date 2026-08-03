@@ -2976,6 +2976,9 @@ class AgentLoop:
                             task_path(self._project_root, task_id), task_id
                         )
                     except HanCodeError as exc:
+                        # finalize() may have persisted DELIVERABLES.md state
+                        # before failing; reload so _block() does not overwrite it.
+                        state = self._state_store.load(task_id)
                         state = self._block(task_id, state)
                         return _result(
                             TaskStatus.BLOCKED,
@@ -2988,6 +2991,11 @@ class AgentLoop:
                     delivery_status = getattr(delivery_result, "status", None)
                     if delivery_status is not TaskStatus.COMPLETED:
                         blockers = getattr(delivery_result, "blockers", ())
+                        # finalize() persisted the delivery summary (DELIVERABLES.md
+                        # present, coverage digest) before reporting a blocked gate.
+                        # Reload the authoritative state so _block() preserves it
+                        # instead of re-saving a stale snapshot.
+                        state = self._state_store.load(task_id)
                         state = self._block(task_id, state)
                         return _result(
                             TaskStatus.BLOCKED,

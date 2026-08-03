@@ -68,7 +68,20 @@ class PhaseGate:
         }
 
 
-def build_phase_gate(phase: Phase, state: TaskState) -> PhaseGate:
+def build_phase_gate(
+    phase: Phase,
+    state: TaskState,
+    *,
+    delivery_diff_present: bool | None = None,
+) -> PhaseGate:
+    """Build the phase gate.
+
+    ``delivery_diff_present`` opts the DELIVER gate into checking that the
+    latest diff evidence is recorded whenever a checkpoint exists, matching
+    the deterministic delivery pipeline's blockers.  When ``None`` (the
+    default) the legacy behavior is preserved and diff evidence is not
+    checked.
+    """
     if phase is Phase.SPEC:
         requirements: tuple[PhaseRequirement, ...] = (
             PhaseRequirement(
@@ -122,7 +135,7 @@ def build_phase_gate(phase: Phase, state: TaskState) -> PhaseGate:
             ),
         )
     else:
-        requirements = (
+        requirements = [
             PhaseRequirement(
                 requirement_id="knowledge_artifact_required",
                 description="KNOWLEDGE.md must exist.",
@@ -138,6 +151,21 @@ def build_phase_gate(phase: Phase, state: TaskState) -> PhaseGate:
                     or state.latest_test_status == "passed"
                 ),
             ),
-        )
+        ]
+        if delivery_diff_present is not None:
+            requirements.append(
+                PhaseRequirement(
+                    requirement_id="latest_diff_evidence_required",
+                    description=(
+                        "Latest diff evidence must be recorded (call get_diff) "
+                        "when a checkpoint exists."
+                    ),
+                    satisfied=(
+                        state.latest_checkpoint is None
+                        or delivery_diff_present is True
+                    ),
+                )
+            )
+        requirements = tuple(requirements)
 
     return PhaseGate(phase=phase, requirements=requirements)

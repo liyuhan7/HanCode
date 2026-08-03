@@ -318,6 +318,28 @@
 
 ---
 
+### 2026-08-03 — 交付阶段状态一致性修复 — AgentLoop blocked 分支复写旧状态
+
+- 使用的技能：`test-driven-development`、`verification-before-completion`、`systematic-debugging`；不使用真实 LLM、网络 API 或凭据。
+- 使用的智能体：GitHub Copilot。
+- 背景：交付阶段任务（`.hancode/tasks/task-001`）在 blocked 后出现 `state_inconsistent`。诊断确认两层原因：直接阻塞是"存在 Checkpoint 但缺少最新 Diff 证据"（`delivery/evidence.json` 的 `latest_diff_sha256` 为 null，交付门禁返回 BLOCKED）；真正丢失状态的代码缺陷是 AgentLoop 的 DELIVER `FINISH_PHASE` blocked 分支用旧的 in-memory `state` 调用 `_block()`，把 `finalize()` 刚通过 `_write_artifact` 持久化的状态（`DELIVERABLES.md` 存在、`delivery_coverage_digest`、`status`）复写回旧值，造成磁盘文件与 `state.json` 漂移，最终被 `reconcile_state` 判为 `state_inconsistent`。
+- TDD Red：新增两个回归测试均先失败——
+  - `tests/test_agent_loop.py::test_deliver_finalize_blocked_preserves_persisted_delivery_state`（单元级，stub delivery pipeline 通过共享 state store 写入状态）失败于 `persisted.artifacts["DELIVERABLES.md"] is True`；
+  - `tests/test_agent_loop.py::test_deliver_finalize_blocked_no_diff_keeps_state_consistent`（集成级，真实 `DeliveryPipeline` + `create_agent_loop` + 真实已提交 checkpoint，复现"checkpoint 存在 + 无 diff"场景）失败于 `final_state.artifacts["DELIVERABLES.md"] is True`。
+- 实现摘要：
+  - `src/hancode/runtime/agent_loop.py` 的 DELIVER `FINISH_PHASE` 两个 blocked 分支（`HanCodeError` 异常分支与 `delivery_status is not COMPLETED` 分支）在 `_block()` 前先 `state = self._state_store.load(task_id)` 重新加载权威状态，与成功分支已有的 reload 行为对齐，确保 finalize() 持久化的交付状态不被旧快照覆盖。
+  - 测试侧：为 `_build_loop` 增加 `delivery_pipeline` 注入；新增 `StubDeliveryPipeline`（实现完整 `DeliveryPipelinePort` 协议）与 `StubDeliveryResult`；`_finish_deliver_action()` helper；集成测试通过 `create_checkpoint` + `commit_checkpoint` 构造真实 checkpoint。
+- Green：两个回归测试通过。
+- 验证：
+  - 相关套件 `tests/test_agent_loop.py tests/test_delivery.py tests/test_s4_delivery_e2e.py tests/test_checkpoints.py`：`141 passed, 5 skipped`。
+  - 全量 pytest：`1467 passed, 17 skipped`。
+  - `ruff check src tests scripts`：`All checks passed!`。
+  - `mypy src`：`Success: no issues found in 130 source files`。
+- 提交：未提交；等待用户审阅。
+- 剩余风险：直接阻塞原因（缺失 Diff 证据）属于业务门禁，需模型在交付前成功执行 `get_diff` 才会解除；本轮仅修复状态被复写的代码缺陷，未改变 `_delivery_blockers` 判定逻辑。测试文件存在仓库既有的 mypy 类型债（不在 `mypy src` 门禁范围内），本轮未扩大范围清理。
+
+---
+
 ### 2026-07-13 — T16 — TraceLogger
 
 - 使用的技能：karpathy-guidelines；test-driven-development；verification-before-completion。

@@ -6468,6 +6468,16 @@ S4-R2 Build       S4-R3 Test Report
 - 未使用真实网络、凭据或第三方 Agent 框架；基线提交为 `f0f8989`，本轮 follow-up 改动尚未提交。
 - GitHub Actions 尚无本轮独立 run 证据；本地质量门与 Windows 平台既有 skip 需与远端 CI 分开记录。
 
+### 缺陷修复记录（2026-08-03）— 交付阻塞后 blocked 分支复写旧状态
+
+- 现象：交付阶段任务被门禁判定 BLOCKED 后，磁盘存在 `DELIVERABLES.md`，但 `state.json` 的 `artifacts["DELIVERABLES.md"]` 仍为 `false`、`delivery_coverage_digest` 为 `null`，随后 trace 记录 `state_inconsistent`。
+- 直接阻塞原因：存在 Checkpoint 但缺少最新 Diff 证据（`delivery/evidence.json` 的 `latest_diff_sha256` 为 `null`），交付门禁返回 BLOCKED。
+- 代码缺陷根因：`AgentLoop` 的 DELIVER `FINISH_PHASE` blocked 分支用旧的 in-memory `state` 调用 `_block()`，把 `DeliveryPipeline.finalize()` 经 `_write_artifact` 已持久化的交付状态复写回旧值，造成文件与 `state.json` 漂移。
+- 修复：两个 blocked 分支（异常分支与 `delivery_status is not COMPLETED` 分支）在 `_block()` 前先 `state = self._state_store.load(task_id)` 重新加载权威状态，与成功分支已有行为对齐。
+- 回归测试：`test_deliver_finalize_blocked_preserves_persisted_delivery_state`（单元级）与 `test_deliver_finalize_blocked_no_diff_keeps_state_consistent`（集成级，真实 Pipeline + 真实已提交 checkpoint）均先红后绿。
+- 验证：相关套件 `141 passed, 5 skipped`；全量 pytest `1467 passed, 17 skipped`；Ruff `All checks passed!`；`mypy src` `130 source files` 无错误。
+- 未改变 `_delivery_blockers` 门禁判定；解除直接阻塞仍需模型在交付前成功执行 `get_diff`。
+
 ### 非目标 / 边界
 
 - 不引入真实网络 LLM、真实凭据或新的第三方 Agent 框架。

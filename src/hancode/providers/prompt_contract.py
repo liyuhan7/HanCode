@@ -134,6 +134,10 @@ PHASE_CONTRACTS: dict[Phase, str] = {
         "Do not rerun tests in REVIEW; fixes must return through CODE and TEST."
     ),
     Phase.DELIVER: (
-        "Produce the required review, knowledge, and delivery evidence."
+        "Use record_review, record_knowledge, and get_diff to produce the required "
+        "review, knowledge, and delivery evidence. "
+        "Call get_diff (scope 'latest') first so the diff evidence is recorded; "
+        "the deterministic runtime requires it before the phase can complete. "
+        "Only return finish_phase when phase_gate.can_finish is true."
     ),
 }

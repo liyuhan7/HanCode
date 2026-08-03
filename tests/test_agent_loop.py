@@ -18,7 +18,12 @@ from hancode.runtime.agent_loop import (
     _state_after_tool,
 )
 from hancode.runtime.engine import create_agent_loop
-from hancode.storage.checkpoints import CheckpointManifest, RollbackResult
+from hancode.storage.checkpoints import (
+    CheckpointManifest,
+    RollbackResult,
+    commit_checkpoint,
+    create_checkpoint,
+)
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.core.config import HanCodeConfig, load_config
 from hancode.core.errors import HanCodeError, StructuredError
@@ -29,7 +34,13 @@ from hancode.core.failures import (
     RecoveryMode,
 )
 from hancode.core.interactions import InteractionRecord, InteractionStatus
-from hancode.runtime.feedback import FeedbackBuilder
+from hancode.delivery_support.result import RequirementCoverage, RequirementStatus
+from hancode.runtime.delivery_pipeline import DeliveryPipeline
+from hancode.runtime.feedback import (
+    FailureCategory as FeedbackFailureCategory,
+    FeedbackBuilder,
+    FeedbackReport,
+)
 from hancode.providers.mock import MockLLM
 from hancode.core.models import Phase, TaskStatus
 from hancode.policy.path_policy import PathZone
@@ -296,6 +307,62 @@ class StubRollbackManager:
     def rollback_last(self, task_id: str) -> RollbackResult:
         self.calls.append(task_id)
         raise AssertionError("T21 Task 1 must not roll back checkpoints.")
+
+
+class StubDeliveryResult:
+    def __init__(self, *, status: TaskStatus, blockers: tuple[str, ...]) -> None:
+        self.status = status
+        self.blockers = blockers
+
+
+class StubDeliveryPipeline:
+    """Simulate DeliveryPipeline.finalize() writing state behind the loop's back.
+
+    Mirrors result.py ``_write_artifact``: the persisted state is updated
+    (DELIVERABLES.md present, coverage digest, status) through the shared
+    state store, so the AgentLoop's in-memory ``state`` becomes stale after
+    finalize() returns.
+    """
+
+    def __init__(
+        self,
+        state_store: StubStateStore,
+        *,
+        status: TaskStatus,
+        blockers: tuple[str, ...] = (),
+    ) -> None:
+        self._state_store = state_store
+        self.status = status
+        self.blockers = blockers
+        self.finalized = False
+
+    def record_test(self, task_root: Path, report: object, command: str) -> object:
+        return None
+
+    def record_build(self, task_root: Path, task_id: str, status: str) -> None:
+        return None
+
+    def record_diff(
+        self,
+        task_root: Path,
+        task_id: str,
+        digest: str | None,
+        *,
+        drifted: bool = False,
+    ) -> None:
+        return None
+
+    def finalize(self, task_root: Path, task_id: str) -> StubDeliveryResult:
+        self.finalized = True
+        state = self._state_store.load(task_id)
+        updated = replace(
+            state,
+            status=self.status,
+            delivery_coverage_digest="d" * 64,
+            artifacts={**state.artifacts, "DELIVERABLES.md": True},
+        )
+        self._state_store.save(task_id, updated)
+        return StubDeliveryResult(status=self.status, blockers=self.blockers)
 
 
 class SpyContextBuilder:
@@ -899,6 +966,162 @@ def test_step_exhaustion_still_returns_completed_after_final_artifact_write() ->
     assert result.final_state.current_phase is Phase.DELIVER
 
 
+def test_deliver_finalize_blocked_preserves_persisted_delivery_state() -> None:
+    """Blocked delivery must not overwrite state written by finalize().
+
+    Regression: when the delivery gate blocks (e.g. missing latest diff), the
+    AgentLoop reused the stale in-memory state in ``_block()``, re-saving
+    artifacts["DELIVERABLES.md"]=False and delivery_coverage_digest=None on top
+    of the state finalize() had just persisted. That drift later surfaced as
+    ``state_inconsistent``.
+    """
+    store = StubStateStore(
+        replace(
+            _task_state(),
+            current_phase=Phase.DELIVER,
+            latest_checkpoint="ckpt-005",
+            latest_test_status="passed",
+            phase_completed={
+                phase.value: phase is not Phase.DELIVER for phase in Phase
+            },
+            artifacts={
+                "SPEC.md": True,
+                "PLAN.md": True,
+                "TEST_REPORT.md": True,
+                "REVIEW.md": True,
+                "KNOWLEDGE.md": True,
+                "DELIVERABLES.md": False,
+            },
+        )
+    )
+    pipeline = StubDeliveryPipeline(
+        store,
+        status=TaskStatus.BLOCKED,
+        blockers=("存在 Checkpoint，但缺少最新 Diff 证据。",),
+    )
+    loop, _, _, _, _, _ = _build_loop(
+        [_finish_deliver_action()],
+        max_steps=1,
+        state_store=store,
+        delivery_pipeline=pipeline,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert pipeline.finalized is True
+    persisted = store.state
+    assert persisted.artifacts["DELIVERABLES.md"] is True
+    assert persisted.delivery_coverage_digest == "d" * 64
+    assert persisted.status is TaskStatus.BLOCKED
+
+
+def test_deliver_finish_blocked_without_diff_evidence_keeps_state_consistent(
+    tmp_path: Path,
+) -> None:
+    """Real-pipeline E2E: missing diff evidence must not corrupt state.
+
+    With a committed checkpoint and no latest diff evidence, the DELIVER
+    phase gate rejects finish_phase (deliver_finish_requirements) before
+    finalize() is reached, so the loop must keep the task consistently
+    BLOCKED without persisting DELIVERABLES.md yet.
+    """
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    init_project_workspace(project_root, "project-001", "Course", "Assignment")
+    task_root = init_task_workspace(project_root, "task-001", goal="Deliver.")
+    state = load_state(task_root)
+    save_state(
+        task_root,
+        replace(
+            state,
+            current_phase=Phase.CODE,
+            artifacts={**state.artifacts, "SPEC.md": True, "PLAN.md": True},
+        ),
+    )
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    (project_root / "src").mkdir()
+    (project_root / "src" / "main.py").write_text(
+        "def main():\n    pass\n", encoding="utf-8"
+    )
+    # A committed checkpoint exists, but no diff evidence was recorded yet.
+    manifest = create_checkpoint(
+        task_root, [Path("src/main.py")], "Before delivery diff."
+    )
+    commit_checkpoint(task_root, manifest.checkpoint_id)
+
+    pipeline = DeliveryPipeline()
+    pipeline.record_test(
+        task_root,
+        FeedbackReport(
+            passed=True,
+            failure_category=FeedbackFailureCategory.NONE,
+            summary="Tests passed.",
+            next_action_hint="Proceed to review.",
+            passed_count=1,
+            failed_count=0,
+            raw_size_bytes=64,
+        ),
+        "python -m pytest -q",
+    )
+    pipeline.record_review(
+        task_root,
+        "task-001",
+        [
+            RequirementCoverage(
+                requirement_id="REQ-001",
+                status=RequirementStatus.COVERED,
+                evidence="tests/test_app.py",
+                risk=None,
+                is_core=True,
+            )
+        ],
+        [],
+    )
+    pipeline.record_knowledge(task_root, "task-001", [])
+
+    state = load_state(task_root)
+    save_state(
+        task_root,
+        replace(
+            state,
+            current_phase=Phase.DELIVER,
+            latest_test_status="passed",
+            phase_completed={
+                phase.value: phase is not Phase.DELIVER for phase in Phase
+            },
+        ),
+    )
+
+    provider = MockLLM([_finish_deliver_action()])
+    loop = create_agent_loop(
+        project_root,
+        "task-001",
+        provider=provider,
+        max_steps=1,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.denied_rule == "deliver_finish_requirements"
+    assert "get_diff" in (result.error.suggested_fix or "")
+    final_state = load_state(task_root)
+    assert final_state.status is TaskStatus.BLOCKED
+    assert final_state.inconsistent is False
+    assert final_state.phase_completed[Phase.DELIVER.value] is False
+    # finalize() was not reached: the phase gate rejects finish without diff
+    # evidence, so DELIVERABLES.md is not persisted yet.
+    assert final_state.artifacts["DELIVERABLES.md"] is False
+    assert not (task_root / "DELIVERABLES.md").is_file()
+    # A subsequent reconcile must not flag drift.
+    from hancode.core.state import reconcile_state
+
+    assert reconcile_state(task_root, final_state) == final_state
+
+
 def test_lifecycle_events_bracket_a_finished_phase() -> None:
     trace_appender = SpyTraceAppender()
     loop, _, _, _, _, _ = _build_loop(
@@ -1227,6 +1450,7 @@ def _build_loop(
     rollback_manager: StubRollbackManager | None = None,
     state_store: StubStateStore | None = None,
     tool_registry: SpyToolRegistry | None = None,
+    delivery_pipeline: StubDeliveryPipeline | None = None,
 ) -> tuple[
     AgentLoop,
     MockLLM,
@@ -1254,6 +1478,7 @@ def _build_loop(
         max_steps=max_steps,
         interaction_enabled=interaction_enabled,
         mutation_guard=InMemoryMutationGuard(),
+        delivery_pipeline=delivery_pipeline,
     )
     return loop, llm, context_builder, policy, tools, feedback
 
@@ -1341,6 +1566,16 @@ def _finish_action() -> dict[str, object]:
     return {
         "type": "finish_phase",
         "phase": "code",
+        "tool_name": None,
+        "args": {},
+        "reason": None,
+    }
+
+
+def _finish_deliver_action() -> dict[str, object]:
+    return {
+        "type": "finish_phase",
+        "phase": "deliver",
         "tool_name": None,
         "args": {},
         "reason": None,

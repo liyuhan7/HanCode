@@ -19,6 +19,8 @@ from hancode.storage.test_remediations import TestRemediationStore
 from hancode.runtime.test_remediation import build_test_failure_record
 from hancode.core.test_remediation import FailureCategory
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
+from hancode.storage.delivery_evidence import DeliveryEvidenceStore
+from hancode.core.delivery_evidence import DeliveryEvidence
 
 
 def test_context_builder_includes_course_context(tmp_path: Path) -> None:
@@ -558,6 +560,93 @@ def _write_trace(
     }
     with (task_root / "trace.jsonl").open("a", encoding="utf-8") as trace_file:
         trace_file.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def test_deliver_context_gate_blocks_without_diff_evidence(tmp_path: Path) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    for artifact_name in (
+        "SPEC.md",
+        "PLAN.md",
+        "TEST_REPORT.md",
+        "REVIEW.md",
+        "KNOWLEDGE.md",
+    ):
+        (task_root / artifact_name).write_text(f"# {artifact_name}\n", encoding="utf-8")
+    _write_trace(task_root, "task-001", 1, "phase_started", "running", None)
+    config = load_config(project_root, "task-001")
+    state = replace(
+        _state(
+            task_root,
+            goal="Deliver evidence.",
+            artifact_names=(
+                "SPEC.md",
+                "PLAN.md",
+                "TEST_REPORT.md",
+                "REVIEW.md",
+                "KNOWLEDGE.md",
+            ),
+        ),
+        latest_checkpoint="ckpt-001",
+        latest_test_status="passed",
+    )
+
+    context = build_context(
+        project_root, "task-001", Phase.DELIVER, config, state=state
+    )
+
+    gate = context["phase_gate"]
+    assert gate["can_finish"] is False
+    assert any(
+        r["id"] == "latest_diff_evidence_required" and r["satisfied"] is False
+        for r in gate["requirements"]
+    )
+
+
+def test_deliver_context_gate_allows_with_diff_evidence(tmp_path: Path) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    for artifact_name in (
+        "SPEC.md",
+        "PLAN.md",
+        "TEST_REPORT.md",
+        "REVIEW.md",
+        "KNOWLEDGE.md",
+    ):
+        (task_root / artifact_name).write_text(f"# {artifact_name}\n", encoding="utf-8")
+    _write_trace(task_root, "task-001", 1, "phase_started", "running", None)
+    DeliveryEvidenceStore().save(
+        task_root,
+        DeliveryEvidence(
+            task_id="task-001",
+            requirements=(),
+            knowledge_items=(),
+            review_risks=(),
+            latest_test_report_sha256=None,
+            latest_diff_sha256="d" * 64,
+            latest_build_status="none",
+        ),
+    )
+    config = load_config(project_root, "task-001")
+    state = replace(
+        _state(
+            task_root,
+            goal="Deliver evidence.",
+            artifact_names=(
+                "SPEC.md",
+                "PLAN.md",
+                "TEST_REPORT.md",
+                "REVIEW.md",
+                "KNOWLEDGE.md",
+            ),
+        ),
+        latest_checkpoint="ckpt-001",
+        latest_test_status="passed",
+    )
+
+    context = build_context(
+        project_root, "task-001", Phase.DELIVER, config, state=state
+    )
+
+    assert context["phase_gate"]["can_finish"] is True
 
 
 def _canonical_context(context: dict[str, object]) -> str:

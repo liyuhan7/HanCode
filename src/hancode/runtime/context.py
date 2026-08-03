@@ -13,6 +13,7 @@ from typing import Mapping
 from hancode.core.config import HanCodeConfig
 from hancode.core.interactions import InteractionStatus
 from hancode.storage.checkpoints import _load_manifest, _validate_manifest_identity
+from hancode.storage.delivery_evidence import DeliveryEvidenceStore
 from hancode.storage.test_strategies import TestStrategyStore
 from hancode.storage.test_remediations import TestRemediationStore
 from hancode.core.errors import HanCodeError, StructuredError
@@ -235,7 +236,21 @@ def build_context(
             risks,
         )
 
-    phase_gate = build_phase_gate(phase, current_state)
+    delivery_diff_present: bool | None = None
+    if phase is Phase.DELIVER:
+        try:
+            evidence = DeliveryEvidenceStore().load(task_root)
+        except HanCodeError:
+            evidence = None
+        delivery_diff_present = (
+            evidence is not None and evidence.latest_diff_sha256 is not None
+        )
+
+    phase_gate = build_phase_gate(
+        phase,
+        current_state,
+        delivery_diff_present=delivery_diff_present,
+    )
 
     context: dict[str, object] = {
         "task_id": task_id,

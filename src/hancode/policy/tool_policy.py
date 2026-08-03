@@ -19,6 +19,8 @@ from hancode.core.tool_specs import TOOL_SPEC_BY_NAME
 from hancode.core.errors import HanCodeError
 from hancode.core.test_remediation import RemediationKind
 from hancode.storage.test_remediations import TestRemediationStore
+from hancode.storage.delivery_evidence import DeliveryEvidenceStore
+from hancode.storage.workspace import task_path
 
 
 _ALLOWED_TOOL_PHASES = {
@@ -371,12 +373,28 @@ class ToolPolicy:
             target_zone=PathZone.SOURCE,
         )
 
-    @staticmethod
     def _evaluate_finish_phase(
+        self,
         phase: Phase,
         state: TaskState,
     ) -> PolicyDecision:
-        gate = build_phase_gate(phase, state)
+        delivery_diff_present: bool | None = None
+        if phase is Phase.DELIVER:
+            try:
+                task_root = task_path(self._config.project_root, state.task_id)
+                evidence = DeliveryEvidenceStore().load(task_root)
+            except HanCodeError:
+                delivery_diff_present = None
+            else:
+                delivery_diff_present = (
+                    evidence is not None
+                    and evidence.latest_diff_sha256 is not None
+                )
+        gate = build_phase_gate(
+            phase,
+            state,
+            delivery_diff_present=delivery_diff_present,
+        )
 
         if gate.can_finish:
             return _allowed(phase)

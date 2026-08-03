@@ -11,6 +11,7 @@ def _state(
     artifacts: dict[str, bool] | None = None,
     source_edits_this_phase: int = 0,
     latest_test_status: str = "none",
+    latest_checkpoint: str | None = None,
     rollback_required: bool = False,
     rollback_done: bool = False,
     test_strategy_digest: str | None = None,
@@ -32,7 +33,7 @@ def _state(
         status=TaskStatus.CREATED,
         current_phase=phase,
         files_changed=(),
-        latest_checkpoint=None,
+        latest_checkpoint=latest_checkpoint,
         checkpoint_seq=0,
         tests_run=(),
         latest_test_status=latest_test_status,
@@ -189,3 +190,59 @@ def test_phase_gate_serialization_is_deterministic() -> None:
             }
         ],
     }
+
+
+def test_deliver_gate_blocks_without_diff_when_checkpoint_exists() -> None:
+    state = _state(
+        Phase.DELIVER,
+        artifacts={"KNOWLEDGE.md": True, "DELIVERABLES.md": True},
+        latest_test_status="passed",
+        latest_checkpoint="ckpt-001",
+    )
+
+    gate = build_phase_gate(Phase.DELIVER, state, delivery_diff_present=False)
+
+    assert gate.can_finish is False
+    by_id = {r.requirement_id: r for r in gate.requirements}
+    assert by_id["latest_diff_evidence_required"].satisfied is False
+
+
+def test_deliver_gate_allows_when_diff_evidence_present() -> None:
+    state = _state(
+        Phase.DELIVER,
+        artifacts={"KNOWLEDGE.md": True, "DELIVERABLES.md": True},
+        latest_test_status="passed",
+        latest_checkpoint="ckpt-001",
+    )
+
+    gate = build_phase_gate(Phase.DELIVER, state, delivery_diff_present=True)
+
+    assert gate.can_finish is True
+
+
+def test_deliver_gate_ignores_diff_when_no_checkpoint() -> None:
+    state = _state(
+        Phase.DELIVER,
+        artifacts={"KNOWLEDGE.md": True, "DELIVERABLES.md": True},
+        latest_test_status="passed",
+    )
+
+    gate = build_phase_gate(Phase.DELIVER, state, delivery_diff_present=False)
+
+    assert gate.can_finish is True
+
+
+def test_deliver_gate_default_preserves_legacy_behavior() -> None:
+    state = _state(
+        Phase.DELIVER,
+        artifacts={"KNOWLEDGE.md": True, "DELIVERABLES.md": True},
+        latest_checkpoint="ckpt-001",
+    )
+
+    gate = build_phase_gate(Phase.DELIVER, state)
+
+    assert gate.can_finish is True
+    assert all(
+        r.requirement_id != "latest_diff_evidence_required"
+        for r in gate.requirements
+    )

@@ -14,6 +14,8 @@ from hancode.policy.path_policy import PathZone
 from hancode.policy.tool_policy import PolicyDecision, ToolPolicy, allowed_tools_for_phase
 from hancode.core.test_remediation import RemediationDecision, RemediationKind, digest_remediation
 from hancode.storage.test_remediations import TestRemediationStore
+from hancode.storage.delivery_evidence import DeliveryEvidenceStore
+from hancode.core.delivery_evidence import DeliveryEvidence
 
 
 @pytest.mark.parametrize(
@@ -548,6 +550,7 @@ def _state(
     inconsistent: bool = False,
     source_edits_this_phase: int = 0,
     latest_test_status: str = "none",
+    latest_checkpoint: str | None = None,
     rollback_required: bool = False,
     rollback_done: bool = False,
     test_strategy_digest: str | None = None,
@@ -569,7 +572,7 @@ def _state(
         status=TaskStatus.INCONSISTENT if inconsistent else TaskStatus.CREATED,
         current_phase=phase,
         files_changed=(),
-        latest_checkpoint=None,
+        latest_checkpoint=latest_checkpoint,
         checkpoint_seq=0,
         tests_run=(),
         latest_test_status=latest_test_status,
@@ -615,6 +618,58 @@ def _finish_action(phase: Phase) -> Action:
     )
     assert isinstance(action, Action)
     return action
+
+
+def test_deliver_finish_denied_without_diff_evidence_when_checkpoint_exists(
+    tmp_path: Path,
+) -> None:
+    state = _state(
+        Phase.DELIVER,
+        artifacts={"KNOWLEDGE.md": True, "DELIVERABLES.md": True},
+        latest_test_status="passed",
+        latest_checkpoint="ckpt-001",
+    )
+
+    decision = _policy(tmp_path).evaluate(
+        action=_finish_action(Phase.DELIVER),
+        phase=Phase.DELIVER,
+        state=state,
+    )
+
+    assert decision.allowed is False
+    assert decision.denied_rule == "deliver_finish_requirements"
+
+
+def test_deliver_finish_allowed_when_diff_evidence_present(tmp_path: Path) -> None:
+    state = _state(
+        Phase.DELIVER,
+        artifacts={"KNOWLEDGE.md": True, "DELIVERABLES.md": True},
+        latest_test_status="passed",
+        latest_checkpoint="ckpt-001",
+    )
+    task_root = tmp_path / ".hancode" / "tasks" / "task-001"
+    task_root.mkdir(parents=True)
+    DeliveryEvidenceStore().save(
+        task_root,
+        DeliveryEvidence(
+            task_id="task-001",
+            requirements=(),
+            knowledge_items=(),
+            review_risks=(),
+            latest_test_report_sha256=None,
+            latest_diff_sha256="d" * 64,
+            latest_build_status="none",
+        ),
+    )
+
+    decision = _policy(tmp_path).evaluate(
+        action=_finish_action(Phase.DELIVER),
+        phase=Phase.DELIVER,
+        state=state,
+    )
+
+    assert decision.allowed is True
+    assert decision.denied_rule is None
 
 
 def _ask_user_action(phase: Phase, *, question: str = "Continue?") -> Action:

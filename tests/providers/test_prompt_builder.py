@@ -455,3 +455,14 @@ def test_prompt_system_message_for_test_phase() -> None:
     )
     system_content = prompt.messages[0].content
     assert "test" in system_content.lower()
+
+
+def test_deliver_system_prompt_guides_get_diff_evidence() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(phase=Phase.DELIVER),
+        tool_catalog=_make_catalog(),
+    )
+    system_content = prompt.messages[0].content
+    assert "get_diff" in system_content
+    assert "diff evidence" in system_content
