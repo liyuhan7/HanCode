@@ -330,10 +330,12 @@ def _validate_record(record: MemoryRecord) -> None:
         and record.tool_name is None
     ):
         raise ValueError("Memory tool record requires a tool name.")
-    if record.kind is MemoryKind.MEMORY_ACCESS and record.invalidates:
-        raise ValueError("Memory access cannot invalidate records.")
-    if record.kind in {MemoryKind.INVALIDATION, MemoryKind.ROLLBACK} and not record.invalidates:
-        raise ValueError("Memory invalidation record requires targets.")
+    invalidating_kinds = {MemoryKind.INVALIDATION, MemoryKind.ROLLBACK}
+    if record.kind in invalidating_kinds:
+        if not record.paths:
+            raise ValueError("Memory invalidation record requires paths.")
+    elif record.invalidates:
+        raise ValueError("Only invalidation records can invalidate memory.")
     if record.record_digest != digest_memory_record(record):
         raise ValueError("Memory record digest does not match.")
 

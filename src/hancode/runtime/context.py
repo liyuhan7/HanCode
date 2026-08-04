@@ -22,6 +22,8 @@ from hancode.core.models import Phase
 from hancode.core.phases import build_phase_gate
 from hancode.policy.path_policy import PathClassifier, PathZone
 from hancode.core.state import TaskState, load_state, reconcile_state
+from hancode.runtime.memory import MemoryContextPacker
+from hancode.storage.memory import FilesystemMemoryStore
 from hancode.storage.workspace import load_project_metadata, task_path
 
 
@@ -78,11 +80,15 @@ class ContextBuilder:
 
     project_root: Path
     config: HanCodeConfig
+    memory_packer: MemoryContextPacker | None = None
 
     def build(
-        self, *, task_id: str, phase: Phase, state: TaskState
+        self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None
     ) -> dict[str, object]:
-        return build_context(self.project_root, task_id, phase, self.config, state=state)
+        return build_context(
+            self.project_root, task_id, phase, self.config, state=state,
+            observation=observation, memory_packer=self.memory_packer,
+        )
 
 
 def build_context(
@@ -92,6 +98,8 @@ def build_context(
     config: HanCodeConfig,
     *,
     state: TaskState | None = None,
+    observation: object | None = None,
+    memory_packer: MemoryContextPacker | None = None,
 ) -> dict[str, object]:
     """Build the minimum deterministic context for one task phase."""
     resolved_project_root = project_root.resolve()
@@ -298,6 +306,16 @@ def build_context(
             "truncated_sections": [],
         },
     }
+    normalized_observation = _normalize_observation(observation, phase)
+    if normalized_observation is not None:
+        context["observation"] = normalized_observation
+    if current_state.active_failure is not None:
+        context["active_failure"] = current_state.active_failure.to_dict()
+        context["recovery_instruction"] = {
+            "mode": current_state.active_failure.recovery_mode.value,
+            "forbidden_action_digest": current_state.active_failure.action_digest,
+            "required": True,
+        }
     interaction_history = [
         {
             "interaction_id": interaction.interaction_id,
@@ -310,6 +328,24 @@ def build_context(
     ]
     if interaction_history:
         context["interaction_history"] = interaction_history
+    source_snippets = sections.get("source_snippets", {})
+    if not isinstance(source_snippets, Mapping):
+        raise AssertionError("source snippets must remain a mapping")
+    packer = memory_packer or MemoryContextPacker(
+        project_root=resolved_project_root,
+        config=config,
+        store=FilesystemMemoryStore(resolved_project_root),
+    )
+    context["runtime_memory"] = packer.build(
+        task_id=task_id,
+        phase=phase,
+        state=current_state,
+        observation=normalized_observation,
+        source_snippets={
+            key: value for key, value in source_snippets.items()
+            if isinstance(key, str) and isinstance(value, str)
+        },
+    ).to_dict()
     return _apply_context_budget(context, phase, config.max_context_chars)
 
 
@@ -329,6 +365,9 @@ def _apply_context_budget(
     if not isinstance(omitted, list) or not isinstance(truncated, list):
         raise AssertionError("truncation shape must remain internal and deterministic")
     truncation["applied"] = True
+
+    if _trim_runtime_memory(context, max_context_chars, truncated):
+        return context
 
     interaction_history = context.get("interaction_history")
     if isinstance(interaction_history, list):
@@ -368,6 +407,15 @@ def _apply_context_budget(
         if len(_canonical_json(context)) <= max_context_chars:
             return context
 
+    if _truncate_observation(context, max_context_chars, truncated):
+        return context
+
+    if "artifact_targets" in context:
+        del context["artifact_targets"]
+        omitted.append("artifact_targets")
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
+
     if _truncate_source_snippets(sections, context, max_context_chars, truncated):
         return context
 
@@ -383,12 +431,6 @@ def _apply_context_budget(
             sections[section_name] = _TRUNCATION_MARKER
         else:
             sections[section_name] = value[:best_length] + _TRUNCATION_MARKER
-        if len(_canonical_json(context)) <= max_context_chars:
-            return context
-
-    if "artifact_targets" in context:
-        del context["artifact_targets"]
-        omitted.append("artifact_targets")
         if len(_canonical_json(context)) <= max_context_chars:
             return context
 
@@ -421,6 +463,49 @@ def _truncate_source_snippets(
     if not raw:
         sections.pop("source_snippets", None)
 
+    return len(_canonical_json(context)) <= max_context_chars
+
+
+def _trim_runtime_memory(
+    context: dict[str, object], max_context_chars: int, truncated: list[str]
+) -> bool:
+    memory = context.get("runtime_memory")
+    if not isinstance(memory, dict):
+        return len(_canonical_json(context)) <= max_context_chars
+    hot_contents = memory.get("hot_contents")
+    if isinstance(hot_contents, list):
+        while hot_contents and len(_canonical_json(context)) > max_context_chars:
+            removed = hot_contents.pop()
+            if isinstance(removed, Mapping):
+                truncated.append(
+                    f"runtime_memory.hot_contents:{removed.get('memory_id', 'unknown')}"
+                )
+    for key in ("recent_events", "file_index"):
+        values = memory.get(key)
+        if isinstance(values, list):
+            while values and len(_canonical_json(context)) > max_context_chars:
+                removed = values.pop(0 if key == "recent_events" else -1)
+                if isinstance(removed, Mapping):
+                    truncated.append(
+                        f"runtime_memory.{key}:{removed.get('memory_id', 'unknown')}"
+                    )
+    return len(_canonical_json(context)) <= max_context_chars
+
+
+def _truncate_observation(
+    context: dict[str, object], max_context_chars: int, truncated: list[str]
+) -> bool:
+    observation = context.get("observation")
+    if not isinstance(observation, dict) or len(_canonical_json(context)) <= max_context_chars:
+        return len(_canonical_json(context)) <= max_context_chars
+    for key in sorted(observation, key=str):
+        value = observation.get(key)
+        if not isinstance(value, str) or len(value) <= 64:
+            continue
+        observation[key] = value[:64] + _TRUNCATION_MARKER
+        truncated.append(f"observation:{key}")
+        if len(_canonical_json(context)) <= max_context_chars:
+            return True
     return len(_canonical_json(context)) <= max_context_chars
 
 
@@ -691,6 +776,24 @@ def _append_risk(
 
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_observation(observation: object | None, phase: Phase) -> object | None:
+    if observation is None:
+        return None
+    to_dict = getattr(observation, "to_dict", None)
+    try:
+        value = to_dict() if callable(to_dict) else observation
+        _canonical_json(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _context_error(
+            "context_observation_invalid",
+            "Feedback observation cannot be represented as JSON context.",
+            phase,
+            "context_observation_json_safe",
+            "Repair the feedback observation before retrying the task.",
+        ) from exc
+    return value
 
 
 def _validate_context_identity(

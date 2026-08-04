@@ -113,7 +113,7 @@ class _ProtocolErrorThenReadLLM:
 
 
 class _ContextBuilder:
-    def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]:
+    def build(self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None) -> dict[str, object]:
         return {"task_id": task_id, "phase": phase.value, "goal": state.goal or ""}
 
 
@@ -169,6 +169,30 @@ class _MemoryStateStore:
     def save(self, task_id: str, state: TaskState) -> None:
         self.state = state
         self.saves.append(state)
+
+
+@dataclass(frozen=True)
+class _MemoryRecordView:
+    memory_id: str = "mem-test-000001"
+    blob_ref: str | None = None
+    content_sha256: str | None = None
+    blob_bytes: int | None = None
+    workspace_generation: int = 0
+    kind: str = "tool_result"
+
+
+class _MemoryStore:
+    def ensure_capacity(self, task_id: str, *, reserved_bytes: int) -> None:
+        assert task_id == "task-001"
+        assert isinstance(reserved_bytes, int)
+
+    def record_tool_result(self, task_id: str, **_: object) -> _MemoryRecordView:
+        assert task_id == "task-001"
+        return _MemoryRecordView()
+
+    def record_rollback(self, task_id: str, **_: object) -> _MemoryRecordView:
+        assert task_id == "task-001"
+        return _MemoryRecordView(memory_id="mem-test-rollback", kind="rollback")
 
 
 class _RecordingTraceAppender:
@@ -275,6 +299,7 @@ def _make_loop(
         tool_registry=_NoopTools(),  # type: ignore[arg-type]
         feedback_builder=_RecordingFeedback(),  # type: ignore[arg-type]
         state_store=state_store,  # type: ignore[arg-type]
+        memory_store=_MemoryStore(),  # type: ignore[arg-type]
         trace_appender=trace or _RecordingTraceAppender(),  # type: ignore[arg-type]
         checkpoint_manager=cast(CheckpointManager, _NoopCheckpointManager()),
         rollback_manager=_NoopRollbackManager(),  # type: ignore[arg-type]

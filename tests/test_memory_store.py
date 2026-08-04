@@ -6,11 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from hancode.core.actions import Action, ActionType
 from hancode.core.errors import HanCodeError
 from hancode.core.memory import MemoryBlob, MemoryKind, MemoryRecordDraft
-from hancode.core.models import Phase
+from hancode.core.models import OperationStatus, Phase
+from hancode.core.state import load_state
+from hancode.storage.checkpoints import RollbackResult
 from hancode.storage.memory import FilesystemMemoryStore
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
+from hancode.tooling.registry import ToolResult
 
 
 def _initialize_task(project_root: Path, task_id: str = "task-001") -> Path:
@@ -70,6 +74,238 @@ def test_append_read_file_memory_is_restored_by_another_store(tmp_path: Path) ->
     assert restored.snapshot.latest_by_path == (("src/main.py", "mem-000001"),)
     blob_path = task_root / "memory" / appended.record.blob_ref  # type: ignore[operator]
     assert blob_path.read_bytes() == b"print('hello')\n"
+
+
+def test_record_tool_result_persists_a_read_file_snapshot(tmp_path: Path) -> None:
+    task_root = _initialize_task(tmp_path)
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name="read_file",
+        args={"path": "src/main.py"},
+        reason=None,
+    )
+    result = ToolResult(
+        success=True,
+        action_name="read_file",
+        output={"path": "src/main.py", "content": "print('hello')\n", "redacted": False},
+    )
+
+    record = FilesystemMemoryStore(tmp_path).record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=action,
+        result=result,
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+
+    assert record.kind is MemoryKind.TOOL_RESULT
+    assert record.paths == ("src/main.py",)
+    assert record.blob_ref is not None and record.blob_ref.endswith(".txt")
+    assert "print('hello')" not in record.summary
+    assert FilesystemMemoryStore(tmp_path).load("task-001").snapshot.latest_by_path == (
+        ("src/main.py", record.memory_id),
+    )
+
+
+def test_record_successful_write_invalidates_the_current_read_snapshot(
+    tmp_path: Path,
+) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    read_action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name="read_file",
+        args={"path": "src/main.py"},
+        reason=None,
+    )
+    read = store.record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=read_action,
+        result=ToolResult(
+            success=True,
+            action_name="read_file",
+            output={"path": "src/main.py", "content": "before\n", "redacted": False},
+        ),
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+    write_action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name="write_file",
+        args={"path": "src/main.py", "content": "after\n"},
+        reason="Replace the implementation.",
+    )
+
+    invalidation = store.record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=write_action,
+        result=ToolResult(
+            success=True,
+            action_name="write_file",
+            output={"path": "src/main.py", "bytes_written": 6},
+            mutation_applied=True,
+        ),
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+
+    assert invalidation.kind is MemoryKind.INVALIDATION
+    assert invalidation.invalidates == (read.memory_id,)
+    assert invalidation.workspace_generation == 1
+    assert store.load("task-001").snapshot.latest_by_path == ()
+
+
+def test_record_rollback_invalidates_the_current_read_snapshot(tmp_path: Path) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    read_action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.REVIEW,
+        tool_name="read_file",
+        args={"path": "src/main.py"},
+        reason=None,
+    )
+    read = store.record_tool_result(
+        "task-001",
+        phase=Phase.REVIEW,
+        action=read_action,
+        result=ToolResult(
+            success=True,
+            action_name="read_file",
+            output={"path": "src/main.py", "content": "after\n", "redacted": False},
+        ),
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+
+    rollback = store.record_rollback(
+        "task-001",
+        phase=Phase.REVIEW,
+        result=RollbackResult(
+            status=OperationStatus.SUCCEEDED,
+            checkpoint_id="cp-000001",
+            restored_files=("src/main.py",),
+            failed_files=(),
+            error=None,
+        ),
+        observation={"kind": "rollback_feedback"},
+        state=load_state(task_root),
+    )
+
+    assert rollback.kind is MemoryKind.ROLLBACK
+    assert rollback.invalidates == (read.memory_id,)
+    assert rollback.workspace_generation == 1
+
+
+def test_record_list_files_keeps_a_json_payload_without_file_snapshot(
+    tmp_path: Path,
+) -> None:
+    task_root = _initialize_task(tmp_path)
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name="list_files",
+        args={"path": "src"},
+        reason=None,
+    )
+
+    record = FilesystemMemoryStore(tmp_path).record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=action,
+        result=ToolResult(
+            success=True,
+            action_name="list_files",
+            output={"path": "src", "files": ["src/main.py"]},
+        ),
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+
+    assert record.blob_ref is not None and record.blob_ref.endswith(".json")
+    assert record.paths == ("src",)
+    assert FilesystemMemoryStore(tmp_path).load("task-001").snapshot.latest_by_path == ()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "args", "output", "expected_paths"),
+    [
+        (
+            "search_text",
+            {"query": "TODO"},
+            {"query": "TODO", "matches": [{"path": "src/a.py"}, {"path": "src/b.py"}]},
+            ("src/a.py", "src/b.py"),
+        ),
+        (
+            "get_diff",
+            {},
+            {"files": [{"path": "src/a.py", "diff": "@@"}]},
+            ("src/a.py",),
+        ),
+    ],
+)
+def test_record_search_and_diff_keep_json_payloads(
+    tmp_path: Path,
+    tool_name: str,
+    args: dict[str, object],
+    output: dict[str, object],
+    expected_paths: tuple[str, ...],
+) -> None:
+    task_root = _initialize_task(tmp_path)
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name=tool_name,
+        args=args,
+        reason=None,
+    )
+
+    record = FilesystemMemoryStore(tmp_path).record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=action,
+        result=ToolResult(success=True, action_name=tool_name, output=output),
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+
+    assert record.paths == expected_paths
+    assert record.blob_ref is not None and record.blob_ref.endswith(".json")
+    assert record.summary == '{"exit_code":null,"outcome":"succeeded","timed_out":false}'
+
+
+def test_record_successful_write_rejects_a_mismatched_output_path(tmp_path: Path) -> None:
+    task_root = _initialize_task(tmp_path)
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name="write_file",
+        args={"path": "src/main.py", "content": "after\n"},
+        reason="Replace the implementation.",
+    )
+
+    with pytest.raises(HanCodeError) as exc_info:
+        FilesystemMemoryStore(tmp_path).record_tool_result(
+            "task-001",
+            phase=Phase.CODE,
+            action=action,
+            result=ToolResult(
+                success=True,
+                action_name="write_file",
+                output={"path": "src/other.py", "bytes_written": 6},
+                mutation_applied=True,
+            ),
+            observation={"kind": "tool_feedback"},
+            state=load_state(task_root),
+        )
+
+    assert exc_info.value.structured_error.error_code == "memory_invalid_record"
 
 
 def test_same_content_creates_two_records_and_one_blob(tmp_path: Path) -> None:

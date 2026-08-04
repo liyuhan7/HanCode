@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import re
 import os
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import mkstemp
-from typing import cast
+from typing import Literal, cast
 
 from hancode.policy.path_security import is_sensitive_path
 from hancode.tooling.registry import ToolResult
@@ -49,6 +50,42 @@ class _ResolvedPath:
     root: Path
     target: Path
     relative: str
+
+
+@dataclass(frozen=True, slots=True)
+class FileFingerprintProbe:
+    """A safe, content-free fingerprint of a readable workspace file."""
+
+    path: str
+    status: Literal["available", "missing", "unsafe", "unreadable"]
+    content_sha256: str | None
+
+
+def probe_redacted_file_sha256(project_root: Path, path: str) -> FileFingerprintProbe:
+    """Fingerprint exactly the redacted UTF-8 value returned by ``read_file``."""
+    resolved = _resolve_path(project_root, path)
+    if isinstance(resolved, str):
+        return FileFingerprintProbe(path=path, status="unsafe", content_sha256=None)
+    if not resolved.target.exists():
+        return FileFingerprintProbe(
+            path=resolved.relative, status="missing", content_sha256=None
+        )
+    if not resolved.target.is_file():
+        return FileFingerprintProbe(
+            path=resolved.relative, status="unsafe", content_sha256=None
+        )
+    try:
+        content = resolved.target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return FileFingerprintProbe(
+            path=resolved.relative, status="unreadable", content_sha256=None
+        )
+    redacted = redact_text(content)
+    return FileFingerprintProbe(
+        path=resolved.relative,
+        status="available",
+        content_sha256=hashlib.sha256(redacted.encode("utf-8")).hexdigest(),
+    )
 
 
 def read_file(project_root: Path, path: str) -> ToolResult:

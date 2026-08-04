@@ -370,16 +370,20 @@ class SpyContextBuilder:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Phase, TaskState]] = []
 
-    def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]:
+    def build(self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None) -> dict[str, object]:
         self.calls.append((task_id, phase, state))
-        return {"task_id": task_id, "phase": phase.value}
+        context: dict[str, object] = {"task_id": task_id, "phase": phase.value}
+        if observation is not None:
+            to_dict = getattr(observation, "to_dict", None)
+            context["observation"] = to_dict() if callable(to_dict) else observation
+        return context
 
 
 class FailingContextBuilder:
     def __init__(self, error: HanCodeError) -> None:
         self.error = error
 
-    def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]:
+    def build(self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None) -> dict[str, object]:
         raise self.error
 
 
@@ -470,6 +474,70 @@ class SpyFeedbackBuilder:
         return {"kind": "rollback", "result": result, "phase": phase}
 
 
+@dataclass(frozen=True, slots=True)
+class _MemoryRecord:
+    memory_id: str = "mem-000001"
+    blob_ref: str | None = None
+    content_sha256: str | None = None
+    blob_bytes: int | None = None
+    workspace_generation: int = 0
+    kind: str = "tool_result"
+
+
+class SpyMemoryStore:
+    def __init__(self) -> None:
+        self.tool_records: list[tuple[Action, ToolResult]] = []
+
+    def ensure_capacity(self, task_id: str, *, reserved_bytes: int) -> None:
+        return None
+
+    def record_tool_result(
+        self,
+        task_id: str,
+        *,
+        phase: Phase,
+        action: Action,
+        result: ToolResult,
+        observation: object,
+        state: TaskState,
+    ) -> _MemoryRecord:
+        self.tool_records.append((action, result))
+        return _MemoryRecord()
+
+    def record_rollback(
+        self,
+        task_id: str,
+        *,
+        phase: Phase,
+        result: RollbackResult,
+        observation: object,
+        state: TaskState,
+    ) -> _MemoryRecord:
+        return _MemoryRecord(memory_id="mem-rollback", kind="rollback")
+
+
+class FailingMemoryStore(SpyMemoryStore):
+    def record_tool_result(
+        self,
+        task_id: str,
+        *,
+        phase: Phase,
+        action: Action,
+        result: ToolResult,
+        observation: object,
+        state: TaskState,
+    ) -> _MemoryRecord:
+        raise HanCodeError(
+            StructuredError(
+                error_code="memory_write_error",
+                message="Task runtime memory could not be persisted.",
+                phase=phase.value,
+                denied_rule="memory_persistence_required",
+                suggested_fix="Restore task memory storage before continuing.",
+            )
+        )
+
+
 def test_finish_action_routes_to_the_next_phase_with_context() -> None:
     loop, llm, context_builder, _, _, _ = _build_loop([_finish_action()])
 
@@ -498,6 +566,39 @@ def test_agent_loop_calls_policy_before_tool() -> None:
     loop.run("task-001")
 
     assert events == ["policy", "tool", "policy"]
+
+
+def test_agent_loop_persists_tool_feedback_before_completion_trace() -> None:
+    memory_store = SpyMemoryStore()
+    trace = SpyTraceAppender()
+    loop, _, _, _, _, _ = _build_loop(
+        [_read_file_action(), _finish_action()],
+        memory_store=memory_store,
+        trace_appender=trace,
+    )
+
+    result = loop.run("task-001")
+
+    assert memory_store.tool_records[0][0].tool_name == "read_file"
+    assert result.final_observation == {"kind": "tool_result", "result": memory_store.tool_records[0][1], "memory_ref": {"memory_id": "mem-000001", "persisted": True, "has_content": False, "workspace_generation": 0}}
+    completed = next(event for event in trace.events if event.event_type == "tool_completed")
+    assert completed.observation is not None
+    assert completed.observation["memory_id"] == "mem-000001"
+
+
+def test_read_memory_failure_blocks_without_a_second_provider_call() -> None:
+    loop, llm, _, _, tools, _ = _build_loop(
+        [_read_file_action(), _finish_action()],
+        memory_store=FailingMemoryStore(),
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "memory_write_error"
+    assert len(tools.actions) == 1
+    assert len(llm.contexts) == 1
 
 
 def test_policy_denial_does_not_execute_tool() -> None:
@@ -577,9 +678,10 @@ def test_real_tool_policy_denial_does_not_execute_tool(tmp_path: Path) -> None:
         feedback_builder=feedback,
         state_store=StubStateStore(_task_state()),
         trace_appender=SpyTraceAppender(),
-        checkpoint_manager=StubCheckpointManager(),
-        rollback_manager=StubRollbackManager(),
-        max_steps=1,
+            checkpoint_manager=StubCheckpointManager(),
+            rollback_manager=StubRollbackManager(),
+            memory_store=SpyMemoryStore(),
+            max_steps=1,
         mutation_guard=InMemoryMutationGuard(),
     )
 
@@ -630,9 +732,10 @@ def test_out_of_scope_task_file_is_policy_denied_without_inconsistent_state(
         feedback_builder=feedback,
         state_store=StubStateStore(_task_state()),
         trace_appender=trace,
-        checkpoint_manager=StubCheckpointManager(),
-        rollback_manager=StubRollbackManager(),
-        max_steps=1,
+            checkpoint_manager=StubCheckpointManager(),
+            rollback_manager=StubRollbackManager(),
+            memory_store=SpyMemoryStore(),
+            max_steps=1,
         mutation_guard=InMemoryMutationGuard(),
     )
 
@@ -780,6 +883,12 @@ def test_tool_observation_is_fed_into_next_context() -> None:
         "observation": {
             "kind": "tool_result",
             "result": ToolResult(success=True, action_name="read_file"),
+            "memory_ref": {
+                "memory_id": "mem-000001",
+                "persisted": True,
+                "has_content": False,
+                "workspace_generation": 0,
+            },
         },
     }
     assert feedback.tool_result_phases == [Phase.CODE]
@@ -1527,6 +1636,7 @@ def _build_loop(
     delivery_pipeline: StubDeliveryPipeline | None = None,
     pause_token: PauseToken | None = None,
     llm: MockLLM | None = None,
+    memory_store: SpyMemoryStore | FailingMemoryStore | None = None,
 ) -> tuple[
     AgentLoop,
     MockLLM,
@@ -1551,6 +1661,7 @@ def _build_loop(
         trace_appender=trace_appender or SpyTraceAppender(),
         checkpoint_manager=checkpoint_manager or StubCheckpointManager(),
         rollback_manager=rollback_manager or StubRollbackManager(),
+        memory_store=memory_store or SpyMemoryStore(),
         max_steps=max_steps,
         interaction_enabled=interaction_enabled,
         mutation_guard=InMemoryMutationGuard(),

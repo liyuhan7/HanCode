@@ -15,7 +15,6 @@
 - 提交哈希 / PR 链接
 - 人工干预
 - 经验教训
-
 ---
 
 ### 2026-07-27 — T21-R1 Task 9 — Agent 自生成测试命令与审批后续闭环
@@ -2284,3 +2283,22 @@
 - 配置：五项 Memory 默认值接入 `PROJECT_CONFIG_DEFAULT_ITEMS` 唯一真源、ConfigLoader、ConfigService 和 TUI“运行时记忆”分组。旧 `project.json` 缺字段时不自动改写；ConfigScreen 通用字段渲染足够，无需修改页面代码。
 - 新鲜验证：Memory/Config 聚焦 `127 passed in 16.35s`；全量 pytest `1518 passed, 17 skipped in 147.62s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 133 source files`；`git diff --check` 通过；沙箱外 `uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`。
 - 环境与保留产物：受限沙箱运行 pytest basetemp、读取默认 uv cache 时出现 `WinError 5`，相同命令在沙箱外通过。按用户要求不执行清理，保留 `.tmp/hancode-s13-r1/`、`dist/` 和 `src/hancode.egg-info/`，最终仅提供核验后清理指令。
+
+### 2026-08-04 — S13-R2 Recorder、Mutation 与 Rollback 一致性
+
+- 范围：在 `codex/task-runtime-memory` 上将 R1 的 FilesystemMemoryStore 接入 AgentLoop、Engine 和 approved-action/rollback 直接路径；未改 Provider、Phase Router、ContextBuilder、Tool Registry、ToolPolicy 或 state schema，R3/R4 的 Context Packer 与 Memory Tools 仍未实现。
+- 运行时顺序：工具 dispatch 后先构造既有 Feedback，再持久化 Memory，随后把稳定 `memory_ref` 附到 observation，最后记录不含正文的 Trace。RecoveryCoordinator 替换失败 observation 时保留该引用，避免持久化记录与下一轮反馈断链。
+- Recorder：安全元数据摘要不包含 ToolResult 正文、stdout/stderr、command、Action args/reason；`read_file` 记录文本快照，`list_files`/`search_text`/`get_diff` 记录 canonical JSON，write/edit 以 Action path 与成功回传 path 一致性为前提生成 invalidation。路径型 invalidation/rollback 在没有旧 snapshot 时合法且递增 generation。
+- 失败分流：写入/rollback 前预留最大失效事件空间；只读 Memory 写入失败 BLOCKED 且不会再调 Provider；成功写入或效果未知写入、成功 rollback 后写入失败均 INCONSISTENT。已知 `mutation_applied=False` 的 checkpointed write 若 Memory 写入失败，先验证 abort manifest 并 reload state，再 BLOCKED；abort 或 reload 异常改为 INCONSISTENT。
+- 验证：Memory/Store/AgentLoop/Feedback/Provider/保护路径回归 `189 passed`；全量 pytest `1528 passed, 17 skipped in 192.76s`；Ruff 全仓通过；MyPy `133 source files` 无错误；`uv build --offline` 成功，Memory 模块进入 sdist/wheel。
+- 环境与产物：首次全量 pytest 仅因 120 秒工具窗口中断，未作为失败结论；延长窗口用同一专属 basetemp 得到完整 Green。遵从用户要求，未清理 `.tmp/hancode-s13-r2/`、`dist/`、`build/` 或 `src/hancode.egg-info/`，未提交、未推送。
+
+### 2026-08-04 — S13-R3 Memory Context Packer 与统一预算（进行中）
+
+- 范围：补正 R3 任务卡的最小必要接线边界，允许 `runtime/engine.py` 装配 Packer，允许 `storage/memory.py` 仅提供按 task ID 与 memory ID 的已验证 blob 读取；未实现 R4 的 Memory Tool、分页或搜索。
+- 实现：新增不可变 Prompt 投影模型和 `MemoryContextPacker`。它从权威 Memory snapshot 选择最近事件、有效文件索引和热点 `read_file` 正文，使用现有 file-tool 路径治理、UTF-8 与脱敏规则重算 SHA-256；外部内容变化会以单条 append-only invalidation 持久化后重放，旧正文不再注入。
+- Context 接线：`ContextBuilder` 现在内部接收 observation、active failure/recovery 和 runtime memory，并在一个 canonical JSON 预算内处理；AgentLoop 移除了预算后的 observation/failure 追加，Engine 注入与 AgentLoop ports 相同的 MemoryStore。预算会完整移除热点、再缩减 Memory 摘要/索引，并对超大 observation 记录截断标记。
+- TDD/聚焦验证：先确认 Packer 模块缺失的 RED，再完成当前快照投影；继续以外部内容变化的失效和超大 observation + runtime memory 预算为行为用例。聚焦回归 `173 passed in 11.57s`；Ruff 通过；MyPy 6 个 R3 相邻源码文件无错误。
+- 全量门禁：两次全量 pytest 均达到 `1530 passed, 17 skipped` 后各有一条不同的 Mock Demo 用例因 Windows `WinError 5` 失败；第二次的真实堆栈位于既有 approval manifest 的 `os.replace`，并非 R3 Memory 实现。首次失败用例单独重跑通过。未将 R3 标记完成；后续需在稳定 Windows 文件系统条件下取得全量 Green 后再收尾。
+- 静态/构建：全仓 Ruff 通过；MyPy `134` 个源码文件无错误；`git diff --check` 未报告错误。`uv build --offline` 因当前离线 cache 缺少 `setuptools>=68` 无法解析 build-system 依赖，未联网安装或改动锁文件。
+- 保留：按用户要求不清理 `.tmp/hancode-s13-r3/` 及既有构建产物；未提交、未推送。

@@ -153,6 +153,7 @@ def test_protected_write_is_denied_before_registry_dispatch(
         tool_registry=registry,
         feedback_builder=StubFeedbackBuilder(),
         state_store=StubStateStore(_code_state()),
+        memory_store=StubMemoryStore(),
         trace_appender=StubTraceAppender(),
         checkpoint_manager=StubCheckpointManager(),
         rollback_manager=StubRollbackManager(),
@@ -185,6 +186,27 @@ class StubStateStore:
     def save(self, task_id: str, state: TaskState) -> None:
         assert task_id == state.task_id == "task-001"
         self._state = state
+
+
+@dataclass(frozen=True)
+class MemoryRecordView:
+    memory_id: str = "mem-test-000001"
+    blob_ref: str | None = None
+    content_sha256: str | None = None
+    blob_bytes: int | None = None
+    workspace_generation: int = 0
+    kind: str = "tool_result"
+
+
+class StubMemoryStore:
+    def ensure_capacity(self, task_id: str, *, reserved_bytes: int) -> None:
+        raise AssertionError("Protected write must not reserve Memory capacity.")
+
+    def record_tool_result(self, task_id: str, **_: object) -> MemoryRecordView:
+        raise AssertionError("Protected write must not record Memory.")
+
+    def record_rollback(self, task_id: str, **_: object) -> MemoryRecordView:
+        raise AssertionError("Protected write must not record rollback Memory.")
 
 
 class StubTraceAppender:
@@ -248,7 +270,7 @@ class RealToolPolicyAdapter:
 
 class StubContextBuilder:
     def build(
-        self, *, task_id: str, phase: Phase, state: TaskState
+        self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None
     ) -> dict[str, object]:
         return {"task_id": task_id, "phase": phase.value}
 

@@ -34,16 +34,18 @@ from hancode.providers.errors import ProviderError
 from hancode.providers.mock import MockLLMExhausted
 from hancode.runtime.pause import PauseToken
 from hancode.core.interactions import InteractionRecord, InteractionStatus
+from hancode.core.memory import MemoryRecord
 from hancode.core.models import OperationStatus, Phase, Risk, TaskStatus
 from hancode.policy.path_policy import PathZone, normalize_project_relative_path
 from hancode.core.phases import build_phase_gate
 from hancode.core.router import select_next_phase
 from hancode.core.state import TaskState, load_state, reconcile_state, save_state
-from hancode.runtime.feedback import FeedbackReport, classify_test_output
+from hancode.runtime.feedback import Observation, FeedbackReport, classify_test_output
 from hancode.tooling.registry import ToolResult
 from hancode.storage.trace import TraceEvent, append_trace
 from hancode.storage.task_lock import FilesystemTaskMutationGuard
 from hancode.storage.workspace import task_path
+from hancode.storage.memory import FilesystemMemoryStore
 from hancode.core.test_remediation import RemediationKind
 from hancode.runtime.test_remediation import build_test_failure_record
 from hancode.runtime.recovery import RecoveryCoordinator
@@ -55,6 +57,31 @@ class StateStore(Protocol):
     def load(self, task_id: str) -> TaskState: ...
 
     def save(self, task_id: str, state: TaskState) -> None: ...
+
+
+class MemoryStore(Protocol):
+    def ensure_capacity(self, task_id: str, *, reserved_bytes: int) -> None: ...
+
+    def record_tool_result(
+        self,
+        task_id: str,
+        *,
+        phase: Phase,
+        action: Action,
+        result: ToolResult,
+        observation: object,
+        state: TaskState,
+    ) -> MemoryRecord: ...
+
+    def record_rollback(
+        self,
+        task_id: str,
+        *,
+        phase: Phase,
+        result: RollbackResult,
+        observation: object,
+        state: TaskState,
+    ) -> MemoryRecord: ...
 
 
 class TraceAppender(Protocol):
@@ -88,7 +115,7 @@ class RollbackManager(Protocol):
 
 class ContextBuilder(Protocol):
     def build(
-        self, *, task_id: str, phase: Phase, state: TaskState
+        self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None
     ) -> dict[str, object]: ...
 
 
@@ -320,6 +347,7 @@ class FilesystemAgentLoopPorts:
     checkpoint_manager: FilesystemCheckpointManager
     rollback_manager: FilesystemRollbackManager
     mutation_guard: FilesystemMutationGuard
+    memory_store: FilesystemMemoryStore
 
     @classmethod
     def from_project_root(cls, project_root: Path) -> FilesystemAgentLoopPorts:
@@ -329,6 +357,7 @@ class FilesystemAgentLoopPorts:
             checkpoint_manager=FilesystemCheckpointManager(project_root),
             rollback_manager=FilesystemRollbackManager(project_root),
             mutation_guard=FilesystemMutationGuard(project_root),
+            memory_store=FilesystemMemoryStore(project_root),
         )
 
 
@@ -374,6 +403,7 @@ _TEST_DISCOVERY_TOOLS = frozenset(
     }
 )
 _REVIEW_EVIDENCE_TOOLS = _TEST_DISCOVERY_TOOLS
+_MEMORY_INVALIDATION_RESERVATION_BYTES = 65_536
 _TEST_COMMAND_QUESTION = (
     "No executable behavioral test command was found. "
     "Provide one exact command to run, or add a project test runner before resuming."
@@ -393,6 +423,7 @@ class AgentLoop:
         trace_appender: TraceAppender,
         checkpoint_manager: CheckpointManager,
         rollback_manager: RollbackManager,
+        memory_store: MemoryStore,
         max_steps: int,
         provider_protocol_retries: int = 2,
         interaction_enabled: bool = False,
@@ -425,6 +456,7 @@ class AgentLoop:
         self._trace_appender = trace_appender
         self._checkpoint_manager = checkpoint_manager
         self._rollback_manager = rollback_manager
+        self._memory_store = memory_store
         self._mutation_guard = mutation_guard or _FailClosedMutationGuard()
         self._max_steps = max_steps
         self._provider_protocol_retries = provider_protocol_retries
@@ -1143,17 +1175,9 @@ class AgentLoop:
                         task_id=task_id,
                         phase=routing.phase,
                         state=state,
+                        observation=observation,
                     )
                 )
-                if observation is not None:
-                    context["observation"] = _observation_for_context(observation)
-                if state.active_failure is not None:
-                    context["active_failure"] = state.active_failure.to_dict()
-                    context["recovery_instruction"] = {
-                        "mode": state.active_failure.recovery_mode.value,
-                        "forbidden_action_digest": state.active_failure.action_digest,
-                        "required": True,
-                    }
             except HanCodeError as exc:
                 state = self._block(task_id, state)
                 return _result(
@@ -1800,6 +1824,32 @@ class AgentLoop:
                         )
 
                 source_write = _is_source_write_action(action, decision, task_id)
+                if action.tool_name in {"write_file", "edit_file", "rollback_last_checkpoint"}:
+                    try:
+                        self._memory_store.ensure_capacity(
+                            task_id,
+                            reserved_bytes=_MEMORY_INVALIDATION_RESERVATION_BYTES,
+                        )
+                    except HanCodeError as exc:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            exc.structured_error,
+                            state,
+                        )
+                    except Exception:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            _memory_persistence_error(routing.phase),
+                            state,
+                        )
                 trace_error = self._append_trace(
                     task_id,
                     trace_events,
@@ -2179,6 +2229,145 @@ class AgentLoop:
                         state,
                         risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
                     )
+                observation, feedback_error = self._build_feedback(
+                    lambda: self._feedback_builder.from_tool_result(
+                        tool_result, phase=routing.phase
+                    ),
+                    routing.phase,
+                )
+                if feedback_error is not None:
+                    if _memory_failure_requires_inconsistent(action, tool_result):
+                        state, state_error = self._mark_inconsistent(
+                            task_id,
+                            state,
+                            feedback_error,
+                            rollback_required=requires_checkpoint,
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        feedback_error,
+                        state,
+                    )
+                try:
+                    memory_record = self._memory_store.record_tool_result(
+                        task_id,
+                        phase=routing.phase,
+                        action=action,
+                        result=tool_result,
+                        observation=observation,
+                        state=state,
+                    )
+                except HanCodeError as exc:
+                    if _memory_failure_requires_inconsistent(action, tool_result):
+                        state, state_error = self._mark_inconsistent(
+                            task_id,
+                            state,
+                            exc.structured_error,
+                            rollback_required=requires_checkpoint,
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    if _memory_failure_needs_checkpoint_abort(
+                        action, tool_result, requires_checkpoint
+                    ):
+                        path_value = action.args.get("path")
+                        assert isinstance(path_value, str)
+                        state, abort_error = self._abort_checkpoint_after_no_mutation_failure(
+                            task_id, state, checkpoint, routing.phase, path_value
+                        )
+                        if abort_error is not None:
+                            state, state_error = self._mark_inconsistent(
+                                task_id,
+                                state,
+                                abort_error,
+                                rollback_required=True,
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                                risks=(_checkpoint_failure_risk(),),
+                            )
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        exc.structured_error,
+                        state,
+                    )
+                except Exception:
+                    if _memory_failure_requires_inconsistent(action, tool_result):
+                        state, state_error = self._mark_inconsistent(
+                            task_id,
+                            state,
+                            _memory_persistence_error(routing.phase),
+                            rollback_required=requires_checkpoint,
+                        )
+                        return _result(
+                            TaskStatus.INCONSISTENT,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            state_error,
+                            state,
+                        )
+                    if _memory_failure_needs_checkpoint_abort(
+                        action, tool_result, requires_checkpoint
+                    ):
+                        path_value = action.args.get("path")
+                        assert isinstance(path_value, str)
+                        state, abort_error = self._abort_checkpoint_after_no_mutation_failure(
+                            task_id, state, checkpoint, routing.phase, path_value
+                        )
+                        if abort_error is not None:
+                            state, state_error = self._mark_inconsistent(
+                                task_id,
+                                state,
+                                abort_error,
+                                rollback_required=True,
+                            )
+                            return _result(
+                                TaskStatus.INCONSISTENT,
+                                step,
+                                tuple(tool_calls),
+                                observation,
+                                state_error,
+                                state,
+                                risks=(_checkpoint_failure_risk(),),
+                            )
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        _memory_persistence_error(routing.phase),
+                        state,
+                    )
+                observation = _attach_memory_reference(observation, memory_record)
                 tool_event_type = "tool_completed" if tool_result.success else "tool_failed"
                 tool_event_status = "succeeded" if tool_result.success else "failed"
                 trace_error = self._append_trace(
@@ -2188,7 +2377,7 @@ class AgentLoop:
                     phase=routing.phase,
                     status=tool_event_status,
                     action=_trace_action(action, decision, include_path=True),
-                    observation=_tool_trace_observation(tool_result),
+                    observation=_tool_trace_observation(tool_result, memory_record),
                     error_summary=(
                         None
                         if tool_result.success
@@ -2532,7 +2721,9 @@ class AgentLoop:
                         phase=routing.phase,
                     )
                     state = self._save_if_changed(task_id, state, recovery.state)
-                    observation = recovery.observation
+                    observation = _attach_memory_reference(
+                        recovery.observation, memory_record
+                    )
                     trace_error = self._append_trace(
                         task_id,
                         trace_events,
@@ -3021,35 +3212,6 @@ class AgentLoop:
                             state,
                             risks=(_checkpoint_failure_risk(),),
                         )
-                observation, feedback_error = self._build_feedback(
-                    lambda: self._feedback_builder.from_tool_result(
-                        tool_result, phase=routing.phase
-                    ),
-                    routing.phase,
-                )
-                if feedback_error is not None:
-                    if requires_checkpoint:
-                        state, state_error = self._mark_inconsistent(
-                            task_id, state, feedback_error
-                        )
-                        return _result(
-                            TaskStatus.INCONSISTENT,
-                            step,
-                            tuple(tool_calls),
-                            observation,
-                            state_error,
-                            state,
-                            risks=(_checkpoint_failure_risk(),),
-                        )
-                    state = self._block(task_id, state)
-                    return _result(
-                        TaskStatus.BLOCKED,
-                        step,
-                        tuple(tool_calls),
-                        observation,
-                        feedback_error,
-                        state,
-                    )
                 continue
 
             if action.type is ActionType.FINISH_PHASE:
@@ -3491,6 +3653,29 @@ class AgentLoop:
                 task_id, state, phase, trace_events, feedback_error, observation
             )
         if rollback.status is OperationStatus.SUCCEEDED:
+            memory_state = state
+            try:
+                memory_state = self._state_store.load(task_id)
+                memory_record = self._memory_store.record_rollback(
+                    task_id,
+                    phase=phase,
+                    result=rollback,
+                    observation=observation,
+                    state=memory_state,
+                )
+            except HanCodeError as exc:
+                state, state_error = self._mark_inconsistent(
+                    task_id, memory_state, exc.structured_error
+                )
+                return state, observation, state_error, TaskStatus.INCONSISTENT
+            except Exception:
+                state, state_error = self._mark_inconsistent(
+                    task_id,
+                    memory_state,
+                    _memory_persistence_error(phase),
+                )
+                return state, observation, state_error, TaskStatus.INCONSISTENT
+            observation = _attach_memory_reference(observation, memory_record)
             loaded: TaskState | None = None
             try:
                 loaded = self._state_store.load(task_id)
@@ -3541,7 +3726,7 @@ class AgentLoop:
                 event_type="rollback_performed",
                 phase=phase,
                 status="succeeded",
-                observation=_rollback_trace_observation(rollback),
+                observation=_rollback_trace_observation(rollback, memory_record),
                 state_transition={"rollback_done": [state.rollback_done, True]},
             )
             if trace_error is not None:
@@ -4663,6 +4848,28 @@ class AgentLoop:
         tool_calls: list[str] = []
         source_write = _is_source_write_action(action, decision, task_id)
 
+        if action.tool_name in {"write_file", "edit_file"}:
+            try:
+                self._memory_store.ensure_capacity(
+                    task_id,
+                    reserved_bytes=_MEMORY_INVALIDATION_RESERVATION_BYTES,
+                )
+            except HanCodeError as exc:
+                state = self._block(task_id, state)
+                return _make_result(
+                    TaskStatus.BLOCKED, 0, (), None, exc.structured_error, state
+                )
+            except Exception:
+                state = self._block(task_id, state)
+                return _make_result(
+                    TaskStatus.BLOCKED,
+                    0,
+                    (),
+                    None,
+                    _memory_persistence_error(phase),
+                    state,
+                )
+
         # Trace
         trace_error = self._append_trace(
             task_id,
@@ -4761,6 +4968,91 @@ class AgentLoop:
 
         tool_calls.append(action.tool_name or "unknown")
 
+        if not _is_valid_tool_result(tool_result, action):
+            if checkpoint is not None:
+                self._abort_checkpoint_quietly(task_id, checkpoint)
+            state, state_error = self._mark_inconsistent(
+                task_id,
+                state,
+                _checkpoint_guard_error(
+                    "tool_result_invalid",
+                    "Tool dispatch returned a result that does not match the tool protocol.",
+                    phase,
+                    "structured_tool_result_required",
+                    "Repair the tool adapter so it returns a validated ToolResult.",
+                ),
+                rollback_required=requires_checkpoint,
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                1,
+                tuple(tool_calls),
+                None,
+                state_error,
+                state,
+                risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
+            )
+
+        observation, feedback_error = self._build_feedback(
+            lambda: self._feedback_builder.from_tool_result(tool_result, phase=phase),
+            phase,
+        )
+        if feedback_error is not None:
+            state, state_error = self._mark_inconsistent(
+                task_id,
+                state,
+                feedback_error,
+                rollback_required=requires_checkpoint,
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                1,
+                tuple(tool_calls),
+                observation,
+                state_error,
+                state,
+            )
+        try:
+            memory_record = self._memory_store.record_tool_result(
+                task_id,
+                phase=phase,
+                action=action,
+                result=tool_result,
+                observation=observation,
+                state=state,
+            )
+        except HanCodeError as exc:
+            state, state_error = self._mark_inconsistent(
+                task_id,
+                state,
+                exc.structured_error,
+                rollback_required=requires_checkpoint,
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                1,
+                tuple(tool_calls),
+                observation,
+                state_error,
+                state,
+            )
+        except Exception:
+            state, state_error = self._mark_inconsistent(
+                task_id,
+                state,
+                _memory_persistence_error(phase),
+                rollback_required=requires_checkpoint,
+            )
+            return _make_result(
+                TaskStatus.INCONSISTENT,
+                1,
+                tuple(tool_calls),
+                observation,
+                state_error,
+                state,
+            )
+        observation = _attach_memory_reference(observation, memory_record)
+
         # Trace completion
         tool_event_type = "tool_completed" if tool_result.success else "tool_failed"
         tool_event_status = "succeeded" if tool_result.success else "failed"
@@ -4771,7 +5063,7 @@ class AgentLoop:
             phase=phase,
             status=tool_event_status,
             action=_trace_action(action, decision, include_path=True),
-            observation={"tool_name": action.tool_name},
+            observation=_tool_trace_observation(tool_result, memory_record),
             error_summary=(
                 None
                 if tool_result.success
@@ -4862,19 +5154,7 @@ class AgentLoop:
                     state,
                 )
             self._consume_and_clear(task_id, state, approval_id, None)
-            observation, feedback_error = self._build_feedback(
-                lambda: self._feedback_builder.from_tool_result(
-                    tool_result, phase=phase
-                ),
-                phase,
-            )
             reloaded = self._state_store.load(task_id)
-            if feedback_error is not None:
-                reloaded = self._block(task_id, reloaded)
-                return _make_result(
-                    TaskStatus.BLOCKED, 1, tuple(tool_calls), observation,
-                    feedback_error, reloaded,
-                )
             return _make_result(
                 reloaded.status, 1, tuple(tool_calls), observation, None, reloaded
             )
@@ -4970,23 +5250,6 @@ class AgentLoop:
             phase=phase, status="succeeded",
             observation={"tool_name": action.tool_name},
         )
-        observation, feedback_error = self._build_feedback(
-            lambda: self._feedback_builder.from_tool_result(
-                tool_result,
-                phase=phase,
-            ),
-            phase,
-        )
-        if feedback_error is not None:
-            state = self._block(task_id, state)
-            return _make_result(
-                TaskStatus.BLOCKED,
-                1,
-                tuple(tool_calls),
-                observation,
-                feedback_error,
-                state,
-            )
         return _make_result(
             state.status, 1, tuple(tool_calls),
             observation,
@@ -5076,6 +5339,63 @@ class AgentLoop:
             )
         except Exception:
             pass
+
+    def _abort_checkpoint_after_no_mutation_failure(
+        self,
+        task_id: str,
+        state: TaskState,
+        checkpoint: CheckpointManifest | None,
+        phase: Phase,
+        path: str,
+    ) -> tuple[TaskState, StructuredError | None]:
+        """Abort a pending checkpoint before blocking a known no-op write."""
+        if checkpoint is None:
+            return state, _checkpoint_guard_error(
+                "checkpoint_manifest_missing",
+                "A checkpoint manifest is required before aborting the source write.",
+                phase,
+                "checkpoint_manifest_required",
+                "Repair checkpoint creation before retrying the source write.",
+            )
+        try:
+            aborted = self._checkpoint_manager.abort(
+                task_id, checkpoint.checkpoint_id, restore_files=False
+            )
+        except HanCodeError as exc:
+            return state, exc.structured_error
+        except Exception:
+            return state, _checkpoint_guard_error(
+                "pending_checkpoint_abort_failed",
+                "Pending checkpoint could not be safely aborted.",
+                phase,
+                "pending_checkpoint_abort_persistence_required",
+                "Repair checkpoint storage before retrying the source write.",
+            )
+        if not _is_aborted_checkpoint_for(
+            aborted, task_id, phase, Path(path), checkpoint.checkpoint_id
+        ):
+            return state, _checkpoint_guard_error(
+                "checkpoint_manifest_invalid",
+                "Checkpoint manager returned an invalid aborted manifest.",
+                phase,
+                "aborted_checkpoint_manifest_required",
+                "Repair checkpoint abort persistence before retrying the source write.",
+            )
+        try:
+            reloaded = self._state_store.load(task_id)
+        except HanCodeError as exc:
+            return state, exc.structured_error
+        except Exception:
+            return state, _state_persistence_error(phase)
+        if not _is_valid_task_state(reloaded, task_id):
+            return state, _checkpoint_guard_error(
+                "checkpoint_state_invalid",
+                "Task state is invalid after aborting the pending checkpoint.",
+                phase,
+                "consistent_checkpoint_state_required",
+                "Reconcile task state before retrying the source write.",
+            )
+        return reloaded, None
 
 
 def _sync_trace_events_from_storage(
@@ -5343,12 +5663,27 @@ def _trace_failure_risk(error: StructuredError) -> Risk:
     )
 
 
-def _rollback_trace_observation(rollback: RollbackResult) -> dict[str, object]:
-    return {
+def _rollback_trace_observation(
+    rollback: RollbackResult, memory_record: object | None = None
+) -> dict[str, object]:
+    observation: dict[str, object] = {
         "checkpoint_id": rollback.checkpoint_id,
         "restored_files": list(rollback.restored_files),
         "failed_files": list(rollback.failed_files),
     }
+    if memory_record is not None:
+        observation.update(
+            {
+                "memory_id": getattr(memory_record, "memory_id", None),
+                "content_sha256": getattr(memory_record, "content_sha256", None),
+                "blob_bytes": getattr(memory_record, "blob_bytes", None),
+                "workspace_generation": getattr(
+                    memory_record, "workspace_generation", None
+                ),
+                "invalidation_reason": "rollback",
+            }
+        )
+    return observation
 
 
 def _is_valid_rollback_result(result: object, state: TaskState) -> bool:
@@ -5813,8 +6148,10 @@ def _is_valid_tool_result(result: object, action: Action) -> bool:
     return isinstance(result.timed_out, bool)
 
 
-def _tool_trace_observation(result: ToolResult) -> dict[str, object]:
-    return {
+def _tool_trace_observation(
+    result: ToolResult, memory_record: MemoryRecord | object | None = None
+) -> dict[str, object]:
+    observation: dict[str, object] = {
         "action_name": result.action_name,
         "error_code": result.error_code,
         "exit_code": result.exit_code,
@@ -5824,6 +6161,29 @@ def _tool_trace_observation(result: ToolResult) -> dict[str, object]:
         "stdout_chars": None if result.stdout is None else len(result.stdout),
         "stderr_chars": None if result.stderr is None else len(result.stderr),
     }
+    if memory_record is not None:
+        memory_kind = getattr(memory_record, "kind", None)
+        invalidation_reason = (
+            None
+            if getattr(memory_kind, "value", memory_kind) != "invalidation"
+            else (
+                "mutation_effect_unknown"
+                if not result.success and result.mutation_applied is None
+                else result.action_name
+            )
+        )
+        observation.update(
+            {
+                "memory_id": getattr(memory_record, "memory_id", None),
+                "content_sha256": getattr(memory_record, "content_sha256", None),
+                "blob_bytes": getattr(memory_record, "blob_bytes", None),
+                "workspace_generation": getattr(
+                    memory_record, "workspace_generation", None
+                ),
+                "invalidation_reason": invalidation_reason,
+            }
+        )
+    return observation
 
 
 def _tool_error_summary(result: ToolResult) -> str:
@@ -5832,6 +6192,51 @@ def _tool_error_summary(result: ToolResult) -> str:
     if result.timed_out:
         return "Tool action timed out."
     return "Tool action failed."
+
+
+def _attach_memory_reference(observation: object, record: object) -> object:
+    reference = {
+        "memory_id": getattr(record, "memory_id", None),
+        "persisted": True,
+        "has_content": getattr(record, "blob_ref", None) is not None,
+        "workspace_generation": getattr(record, "workspace_generation", None),
+    }
+    if isinstance(observation, Observation):
+        details = dict(observation.details)
+        details["memory_ref"] = reference
+        return replace(observation, details=details)
+    if isinstance(observation, Mapping):
+        attached = dict(observation)
+        attached["memory_ref"] = reference
+        return attached
+    return {"observation": _context_value(observation), "memory_ref": reference}
+
+
+def _memory_persistence_error(phase: Phase) -> StructuredError:
+    return StructuredError(
+        error_code="memory_write_error",
+        message="Task runtime memory could not be persisted.",
+        phase=phase.value,
+        denied_rule="memory_persistence_required",
+        suggested_fix="Restore task memory storage before continuing.",
+    )
+
+
+def _memory_failure_requires_inconsistent(action: Action, result: ToolResult) -> bool:
+    return action.tool_name in {"write_file", "edit_file"} and (
+        result.success or result.mutation_applied is None
+    )
+
+
+def _memory_failure_needs_checkpoint_abort(
+    action: Action, result: ToolResult, requires_checkpoint: bool
+) -> bool:
+    return (
+        requires_checkpoint
+        and action.tool_name in {"write_file", "edit_file"}
+        and not result.success
+        and result.mutation_applied is False
+    )
 
 
 def _is_valid_trace_event(

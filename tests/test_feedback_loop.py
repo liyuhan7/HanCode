@@ -58,6 +58,30 @@ class MemoryStateStore:
         self.saves.append(state)
 
 
+@dataclass(frozen=True)
+class MemoryRecordView:
+    memory_id: str = "mem-test-000001"
+    blob_ref: str | None = None
+    content_sha256: str | None = None
+    blob_bytes: int | None = None
+    workspace_generation: int = 0
+    kind: str = "tool_result"
+
+
+class RecordingMemoryStore:
+    def ensure_capacity(self, task_id: str, *, reserved_bytes: int) -> None:
+        assert task_id == "task-001"
+        assert isinstance(reserved_bytes, int)
+
+    def record_tool_result(self, task_id: str, **_: object) -> MemoryRecordView:
+        assert task_id == "task-001"
+        return MemoryRecordView()
+
+    def record_rollback(self, task_id: str, **_: object) -> MemoryRecordView:
+        assert task_id == "task-001"
+        return MemoryRecordView(memory_id="mem-test-rollback", kind="rollback")
+
+
 class FailingSaveAfterFirstSaveStore(MemoryStateStore):
     def __init__(self, state: TaskState) -> None:
         super().__init__(state)
@@ -633,8 +657,11 @@ class RecordingContextBuilder:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def build(self, *, task_id: str, phase: Phase, state: TaskState) -> dict[str, object]:
+    def build(self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None) -> dict[str, object]:
         context: dict[str, object] = {"task_id": task_id, "phase": phase.value}
+        if observation is not None:
+            to_dict = getattr(observation, "to_dict", None)
+            context["observation"] = to_dict() if callable(to_dict) else observation
         self.calls.append(context)
         return context
 
@@ -1057,6 +1084,12 @@ def test_failed_test_retries_through_review_then_decrements_once_on_retry_write(
             exit_code=1,
             stderr="E   AssertionError: expected retry\n1 failed",
         ),
+        "memory_ref": {
+            "memory_id": "mem-test-000001",
+            "persisted": True,
+            "has_content": False,
+            "workspace_generation": 0,
+        },
     }
     assert result.retry_budget_remaining == 1
     assert result.final_state.source_edits_this_phase == 2
@@ -1440,7 +1473,15 @@ def test_retry_budget_exhaustion_forces_rollback_and_returns_feedback_observatio
     assert result.final_state.current_phase is Phase.REVIEW
     assert result.final_state.rollback_required is False
     assert result.final_state.rollback_done is True
-    assert result.final_observation == {"kind": "rollback"}
+    assert result.final_observation == {
+        "kind": "rollback",
+        "memory_ref": {
+            "memory_id": "mem-test-rollback",
+            "persisted": True,
+            "has_content": False,
+            "workspace_generation": 0,
+        },
+    }
     assert tools.actions == []
     assert rollback_manager.calls == ["task-001"]
     assert [event.event_type for event in trace_appender.events] == [
@@ -1495,7 +1536,15 @@ def test_explicit_rollback_action_is_dispatched_once_and_returns_observation() -
 
     assert result.status is TaskStatus.RUNNING
     assert result.tool_calls == ("rollback_last_checkpoint",)
-    assert result.final_observation == {"kind": "rollback"}
+    assert result.final_observation == {
+        "kind": "rollback",
+        "memory_ref": {
+            "memory_id": "mem-test-rollback",
+            "persisted": True,
+            "has_content": False,
+            "workspace_generation": 0,
+        },
+    }
     assert rollback_manager.calls == ["task-001"]
     assert guard.acquisitions == 1
     assert guard.active == 0
@@ -1769,6 +1818,7 @@ def _loop(
         tool_registry=tools or ScriptedTools(),
         feedback_builder=feedback,
         state_store=state_store,
+        memory_store=RecordingMemoryStore(),
         trace_appender=trace_appender or RecordingTraceAppender(),
         checkpoint_manager=cast(
             CheckpointManager,

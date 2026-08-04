@@ -6,12 +6,14 @@ import hashlib
 import json
 import os
 import stat
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from tempfile import mkstemp
 
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.config import load_config
+from hancode.core.actions import Action
 from hancode.core.memory import (
     MemoryAppendResult,
     MemoryBlob,
@@ -24,9 +26,11 @@ from hancode.core.memory import (
     digest_memory_index,
     digest_memory_record,
 )
-from hancode.core.models import Phase
-from hancode.core.state import load_state
+from hancode.core.models import OperationStatus, Phase
+from hancode.core.state import TaskState, load_state
+from hancode.storage.checkpoints import RollbackResult
 from hancode.storage.workspace import task_path
+from hancode.tooling.registry import ToolResult
 
 
 class FilesystemMemoryStore:
@@ -110,6 +114,169 @@ class FilesystemMemoryStore:
         if loaded.snapshot.total_bytes + reserved_bytes > config.max_memory_task_bytes:
             raise _memory_quota_exceeded(state.current_phase)
 
+    def read_blob_bytes(self, task_id: str, memory_id: str) -> bytes:
+        """Return one verified blob without exposing the memory filesystem layout."""
+        state = load_state(task_path(self._project_root, task_id))
+        loaded = self.load(task_id)
+        if not isinstance(memory_id, str) or not memory_id:
+            raise _memory_invalid_record(state.current_phase)
+        record = next(
+            (
+                candidate
+                for candidate in loaded.snapshot.records
+                if candidate.memory_id == memory_id
+            ),
+            None,
+        )
+        if record is None or record.blob_ref is None:
+            raise _memory_invalid_record(state.current_phase)
+        blobs_root = task_path(self._project_root, task_id) / "memory" / "blobs"
+        _validate_blob(record, blobs_root, state.current_phase)
+        try:
+            return (blobs_root.parent / record.blob_ref).read_bytes()
+        except OSError as exc:
+            raise _memory_corrupt(state.current_phase) from exc
+
+    def record_tool_result(
+        self,
+        task_id: str,
+        *,
+        phase: Phase,
+        action: Action,
+        result: ToolResult,
+        observation: object,
+        state: TaskState,
+    ) -> MemoryRecord:
+        del observation
+        if (
+            not isinstance(action, Action)
+            or not isinstance(result, ToolResult)
+            or not isinstance(state, TaskState)
+            or state.task_id != task_id
+            or action.phase is not phase
+            or action.tool_name != result.action_name
+        ):
+            raise _memory_invalid_record(phase)
+        paths: tuple[str, ...] = ()
+        blob: MemoryBlob | None = None
+        kind = MemoryKind.TOOL_RESULT
+        invalidates: tuple[str, ...] = ()
+        if action.tool_name == "read_file" and result.success:
+            if not isinstance(result.output, Mapping):
+                raise _memory_invalid_record(phase)
+            path = result.output.get("path")
+            content = result.output.get("content")
+            if not isinstance(path, str) or not isinstance(content, str):
+                raise _memory_invalid_record(phase)
+            paths = (path,)
+            blob = MemoryBlob.text(content)
+        elif action.tool_name == "list_files" and result.success:
+            if not isinstance(result.output, Mapping):
+                raise _memory_invalid_record(phase)
+            path = result.output.get("path")
+            if not isinstance(path, str):
+                raise _memory_invalid_record(phase)
+            paths = () if path == "." else (path,)
+            try:
+                blob = MemoryBlob.json(result.output)
+            except ValueError as exc:
+                raise _memory_invalid_record(phase) from exc
+        elif action.tool_name in {"search_text", "get_diff"} and result.success:
+            if not isinstance(result.output, Mapping):
+                raise _memory_invalid_record(phase)
+            entries = result.output.get(
+                "matches" if action.tool_name == "search_text" else "files"
+            )
+            if not isinstance(entries, list):
+                raise _memory_invalid_record(phase)
+            extracted_paths: list[str] = []
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    raise _memory_invalid_record(phase)
+                path = entry.get("path")
+                if not isinstance(path, str):
+                    raise _memory_invalid_record(phase)
+                extracted_paths.append(path)
+            paths = tuple(sorted(set(extracted_paths)))
+            try:
+                blob = MemoryBlob.json(result.output)
+            except ValueError as exc:
+                raise _memory_invalid_record(phase) from exc
+        elif action.tool_name in {"write_file", "edit_file"}:
+            target = action.args.get("path")
+            if not isinstance(target, str):
+                raise _memory_invalid_record(phase)
+            if result.success:
+                if not isinstance(result.output, Mapping) or result.output.get("path") != target:
+                    raise _memory_invalid_record(phase)
+            paths = (target,)
+            if result.success or result.mutation_applied is None:
+                kind = MemoryKind.INVALIDATION
+                latest_by_path = dict(self.load(task_id).snapshot.latest_by_path)
+                target_id = latest_by_path.get(target)
+                invalidates = () if target_id is None else (target_id,)
+        draft = MemoryRecordDraft(
+            phase=phase,
+            kind=kind,
+            tool_name=action.tool_name,
+            success=result.success,
+            summary=_tool_result_summary(result),
+            error_code=result.error_code,
+            paths=paths,
+            checkpoint_id=state.latest_checkpoint,
+            invalidates=invalidates,
+            blob=blob,
+        )
+        return self.append(task_id, draft).record
+
+    def record_rollback(
+        self,
+        task_id: str,
+        *,
+        phase: Phase,
+        result: RollbackResult,
+        observation: object,
+        state: TaskState,
+    ) -> MemoryRecord:
+        del observation
+        if (
+            not isinstance(result, RollbackResult)
+            or not isinstance(state, TaskState)
+            or state.task_id != task_id
+            or result.status is not OperationStatus.SUCCEEDED
+            or not isinstance(result.checkpoint_id, str)
+            or not result.checkpoint_id
+            or not result.restored_files
+            or result.failed_files
+            or result.error is not None
+        ):
+            raise _memory_invalid_record(phase)
+        paths = tuple(sorted(result.restored_files))
+        latest_by_path = dict(self.load(task_id).snapshot.latest_by_path)
+        invalidates = tuple(
+            memory_id
+            for path, memory_id in sorted(latest_by_path.items())
+            if path in paths
+        )
+        return self.append(
+            task_id,
+            MemoryRecordDraft(
+                phase=phase,
+                kind=MemoryKind.ROLLBACK,
+                tool_name="rollback_last_checkpoint",
+                success=True,
+                summary=json.dumps(
+                    {"outcome": "succeeded", "restored_file_count": len(paths)},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                paths=paths,
+                checkpoint_id=result.checkpoint_id,
+                invalidates=invalidates,
+            ),
+        ).record
+
     def append(
         self, task_id: str, draft: MemoryRecordDraft
     ) -> MemoryAppendResult:
@@ -120,7 +287,7 @@ class FilesystemMemoryStore:
         records = loaded.snapshot.records
         seq = len(records) + 1
         generation = loaded.snapshot.workspace_generation + (
-            1 if draft.invalidates else 0
+            1 if draft.kind in {MemoryKind.INVALIDATION, MemoryKind.ROLLBACK} else 0
         )
         blob = draft.blob
         record = MemoryRecord(
@@ -265,7 +432,11 @@ def _validate_replay(
             or record.task_id != task_id
         ):
             raise ValueError("Memory record sequence or identity is invalid.")
-        expected_generation = generation + (1 if record.invalidates else 0)
+        expected_generation = generation + (
+            1
+            if record.kind in {MemoryKind.INVALIDATION, MemoryKind.ROLLBACK}
+            else 0
+        )
         if record.workspace_generation != expected_generation:
             raise ValueError("Memory generation is invalid.")
         for target in record.invalidates:
@@ -427,6 +598,19 @@ def _event_bytes(record: MemoryRecord) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _tool_result_summary(result: ToolResult) -> str:
+    return json.dumps(
+        {
+            "exit_code": result.exit_code,
+            "outcome": "succeeded" if result.success else "failed",
+            "timed_out": result.timed_out,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _json_document_bytes(value: dict[str, object]) -> bytes:

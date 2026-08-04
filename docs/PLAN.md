@@ -7415,7 +7415,7 @@ S4-R2 Build       S4-R3 Test Report
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [~] R0–R1 完成；R2–R5 待实现 |
+| 状态 | [~] R0–R2 完成；R3–R5 待实现 |
 | 目标分支 | `codex/task-runtime-memory` |
 | 依赖 | S11-R1 通用失败恢复、S12-R1 安全暂停、T19 ContextBuilder |
 | 主贡献 | Task-scoped runtime memory + deterministic feedback + reversible coding state |
@@ -7528,7 +7528,7 @@ Red 测试至少覆盖：严格 round trip、相同内容两事件一 blob、旧
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [ ] 待实现 |
+| 状态 | [x] 已实现；全量质量门与离线构建通过 |
 | 依赖 | S13-R1 |
 | 开发方式 | RED → GREEN → REFACTOR |
 
@@ -7540,17 +7540,27 @@ Red 测试至少覆盖：严格 round trip、相同内容两事件一 blob、旧
 
 Red 测试至少覆盖：全工具摘要、四类 blob allow-list、memory_ref、无正文 Trace、write/edit 失效、未知写入效果、rollback 失效、Approval resume exactly-once、持久化异常的 BLOCKED/INCONSISTENT 分流以及 Memory 故障后零 Provider 继续调用。
 
+实施结果（2026-08-04）：
+
+- `FilesystemAgentLoopPorts` 与 `Engine` 注入单一 `FilesystemMemoryStore`；AgentLoop 和 approved Action 均要求显式 MemoryStore，不引入静默 no-op 实现。
+- 正常工具执行固定为 dispatch → FeedbackBuilder → `record_tool_result()` → observation `memory_ref` → Trace；恢复后的失败 observation 继续保留同一 memory_ref。
+- Recorder 仅从已完成的 ToolResult 生成安全摘要：`read_file` 写文本快照并更新文件映射，`list_files`、`search_text`、`get_diff` 写 canonical JSON payload；普通工具只写元数据。Trace 只保留计数、状态、Memory ID、摘要和 generation，绝不写正文、stdout/stderr、命令或 Action 参数。
+- 成功 write/edit 与 `mutation_applied=None` 生成失效事件；路径型失效在没有已有 read 快照时仍增加 generation。成功 rollback 按已恢复路径失效当前快照并写 rollback 审计字段。
+- 写入前按固定保留额预检 Memory 配额；只读记录失败进入 BLOCKED 并停止 Provider；成功或效果未知的写入、成功 rollback 的失效记录失败进入 INCONSISTENT。已知无 mutation 的 checkpointed write 在阻断前严格 abort/reload checkpoint 状态。
+- 新增/更新 Memory Store、AgentLoop、反馈、Provider 失败和课程保护回归；聚焦回归 `189 passed`，全量 pytest `1528 passed, 17 skipped in 192.76s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 133 source files`；`uv build --offline` 成功生成 sdist/wheel。
+- Windows 受限 sandbox 的短窗口曾在 120 秒前终止全量 pytest；使用同一专属 basetemp 与延长窗口重跑后通过。按用户要求保留 `.tmp/hancode-s13-r2/` 及本轮构建产物，清理由用户自行执行。
+
 ### S13-R3：Memory Context Packer 与统一预算
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [ ] 待实现 |
+| 状态 | [~] 核心实现完成；全量 pytest 受 Windows `WinError 5` 阻断 |
 | 依赖 | S13-R2 |
 | 开发方式 | RED → GREEN → REFACTOR |
 
 自动注入最近事件摘要、最新有效文件索引和最多两个 `read_file` 热点正文。热点排序固定为 `state.files_changed` 路径优先、同 phase、较新 seq、路径字典序；当前 observation 或 `source_snippets` 已包含的正文不得重复注入。
 
-允许修改：新增 `src/hancode/runtime/memory.py`；修改 `src/hancode/runtime/context.py`、`src/hancode/runtime/agent_loop.py`、`src/hancode/tooling/file_tools.py` 和对应 context/file-tool/AgentLoop 测试；同步 `docs/PLAN.md`、`docs/AGENT_LOG.md`。安全指纹探针只返回摘要，不新增任意文件读取接口。
+允许修改：新增 `src/hancode/runtime/memory.py`；修改 `src/hancode/runtime/context.py`、`src/hancode/runtime/agent_loop.py`、`src/hancode/runtime/engine.py`、`src/hancode/tooling/file_tools.py`、`src/hancode/storage/memory.py` 和对应 context/file-tool/AgentLoop/Memory Store 测试；同步 `docs/PLAN.md`、`docs/AGENT_LOG.md`。`engine.py` 负责装配 Packer，`storage/memory.py` 只新增按 task ID 与 memory ID 的已验证 blob 读取，二者均为 R3 接线所必需的最小边界。为修复本任务全量验证中稳定复现的 Windows approval manifest `os.replace` 短暂锁竞争，额外允许最小修改 `src/hancode/storage/approvals.py` 及其直接回归测试；只重试 Windows `PermissionError`，不改变其他 approval 语义。安全指纹探针只返回摘要，不新增任意文件读取接口。
 
 在热点注入及后续有效检索前，复用 file tool 的路径/敏感文件边界，只计算当前脱敏内容 SHA-256。缺失、摘要变化或路径变为不安全时追加 invalidation；探针不把正文返回给 Memory 层。
 

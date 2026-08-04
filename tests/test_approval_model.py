@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+
+import hancode.storage.approvals as approvals_module
 
 from hancode.core.approvals import (
     ApprovalActionSnapshot,
@@ -19,6 +23,8 @@ from hancode.core.actions import ActionType
 from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import Phase, TaskStatus
 from hancode.core.state import TaskState
+from hancode.storage.approvals import save_approval_manifest
+from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +299,28 @@ def _valid_record(**overrides: object) -> ApprovalRecord:
     }
     kwargs.update(overrides)
     return ApprovalRecord(**kwargs)
+
+
+def test_save_approval_manifest_retries_a_transient_windows_replace_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_project_workspace(tmp_path, "proj-001", "Course", "Assignment")
+    init_task_workspace(tmp_path, "task-001", goal="g")
+    original_replace = approvals_module.os.replace
+    attempts = 0
+
+    def locked_once(source: str, target: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(5, "Access is denied")
+        original_replace(source, target)
+
+    monkeypatch.setattr(approvals_module.os, "replace", locked_once)
+
+    save_approval_manifest(tmp_path, "task-001", _valid_record())
+
+    assert attempts == 2
 
 
 def test_record_is_valid_with_minimal_data() -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import mkstemp
@@ -26,6 +27,10 @@ from dataclasses import replace as state_replace
 
 from hancode.core.state import TaskState, save_state
 from hancode.storage.workspace import task_path
+
+
+_WINDOWS_REPLACE_RETRIES = 3
+_WINDOWS_REPLACE_RETRY_DELAY_SECONDS = 0.025
 
 
 def _approvals_dir(project_root: Path, task_id: str) -> Path:
@@ -47,7 +52,14 @@ def _atomic_write_json(path: Path, data: Mapping[str, object]) -> None:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, str(path))
+        for attempt in range(_WINDOWS_REPLACE_RETRIES):
+            try:
+                os.replace(tmp_path, str(path))
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == _WINDOWS_REPLACE_RETRIES - 1:
+                    raise
+                time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_SECONDS * (attempt + 1))
     except Exception:
         try:
             os.unlink(tmp_path)

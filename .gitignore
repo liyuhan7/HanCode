@@ -46,3 +46,6 @@ Thumbs.db
 
 # 本地隔离 worktree
 .worktrees/
+
+.agents/
+.tmp/

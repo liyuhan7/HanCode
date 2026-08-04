@@ -23,6 +23,7 @@ from hancode.runtime.agent_loop import (
 )
 from hancode.runtime.approval_request import ApprovalRequestBuilder
 from hancode.runtime.context import ContextBuilder
+from hancode.runtime.memory import MemoryContextPacker
 from hancode.runtime.delivery_pipeline import DeliveryPipeline
 from hancode.runtime.feedback import FeedbackBuilder
 from hancode.runtime.recovery import RecoveryCoordinator
@@ -114,7 +115,11 @@ def create_agent_loop(
     feedback_builder = FeedbackBuilder(config.max_observation_bytes)
     return AgentLoop(
         llm=llm,
-        context_builder=ContextBuilder(project_root, config),
+        context_builder=ContextBuilder(
+            project_root,
+            config,
+            MemoryContextPacker(project_root, config, ports.memory_store),
+        ),
         policy=cast(Policy, ToolPolicy(config)),
         tool_registry=registry,
         feedback_builder=cast(FeedbackBuilderPort, feedback_builder),
@@ -122,6 +127,7 @@ def create_agent_loop(
         trace_appender=selected_trace_appender,
         checkpoint_manager=ports.checkpoint_manager,
         rollback_manager=ports.rollback_manager,
+        memory_store=ports.memory_store,
         mutation_guard=selected_mutation_guard,
         max_steps=selected_max_steps,
         provider_protocol_retries=config.provider_protocol_retries,

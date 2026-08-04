@@ -9,6 +9,7 @@ import pytest
 import hancode.runtime.context as context_module
 from hancode.core.config import load_config
 from hancode.core.interactions import InteractionRecord, InteractionStatus
+from hancode.core.memory import MemoryBlob, MemoryKind, MemoryRecordDraft
 from hancode.runtime.context import ContextBuilder, build_context
 from hancode.core.errors import HanCodeError
 from hancode.core.models import Phase
@@ -20,6 +21,7 @@ from hancode.runtime.test_remediation import build_test_failure_record
 from hancode.core.test_remediation import FailureCategory
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.storage.delivery_evidence import DeliveryEvidenceStore
+from hancode.storage.memory import FilesystemMemoryStore
 from hancode.core.delivery_evidence import DeliveryEvidence
 
 
@@ -52,6 +54,81 @@ def test_context_builder_includes_course_context(tmp_path: Path) -> None:
         "omitted_sections": [],
         "truncated_sections": [],
     }
+
+
+def test_context_builder_budgets_observation_and_runtime_memory_together(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    _set_project_config(project_root, max_context_chars=1600)
+    config = load_config(project_root, "task-001")
+
+    context = build_context(
+        project_root,
+        "task-001",
+        Phase.SPEC,
+        config,
+        state=_state(task_root, goal="Implement the assignment."),
+        observation={"kind": "tool_result", "content": "x" * 10_000},
+    )
+
+    assert len(_canonical_context(context)) <= config.max_context_chars
+    assert context["observation"]["content"].endswith("[TRUNCATED]")
+    assert context["runtime_memory"] == {
+        "workspace_generation": 0,
+        "recent_events": [],
+        "file_index": [],
+        "hot_contents": [],
+    }
+
+
+def test_context_builder_drops_optional_project_context_before_memory(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    (project_root / "src").mkdir()
+    content = "IMPORTANT = 'runtime memory'\n"
+    (project_root / "src" / "main.py").write_text(content, encoding="utf-8")
+    (project_root / ".hancode" / "project_memory.md").write_text(
+        "M" * 800, encoding="utf-8"
+    )
+    (project_root / ".hancode" / "experience.md").write_text(
+        "E" * 800, encoding="utf-8"
+    )
+    _set_project_config(project_root, max_context_chars=1800)
+    store = FilesystemMemoryStore(project_root)
+    record = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.SPEC,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/main.py.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text(content),
+        ),
+    ).record
+
+    context = build_context(
+        project_root,
+        "task-001",
+        Phase.SPEC,
+        load_config(project_root, "task-001"),
+        state=_state(task_root, goal="Implement the assignment."),
+    )
+
+    assert len(_canonical_context(context)) <= 1800
+    assert "project_memory" not in context["sections"]
+    assert context["runtime_memory"]["hot_contents"] == [
+        {
+            "path": "src/main.py",
+            "memory_id": record.memory_id,
+            "content_sha256": record.content_sha256,
+            "workspace_generation": 0,
+            "content": content,
+        }
+    ]
 
 
 def test_review_context_projects_passed_failure_as_resolved_audit(tmp_path: Path) -> None:
