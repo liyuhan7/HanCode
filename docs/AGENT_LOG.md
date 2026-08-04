@@ -2272,3 +2272,15 @@
 - 后续任务：PLAN 将实现拆为 R1 模型/存储/配置、R2 Recorder/失效、R3 Context/预算、R4 检索工具、R5 Demo/文档/门禁；R1–R5 恢复 RED → GREEN → REFACTOR。
 - 工作区保护：开始前确认 `main` 上存在用户已有的测试修改与删除，本轮未触碰这些路径、未提交、未推送。
 - 文档验证：必需术语/配置/工具/存储路径逐项扫描通过，活动 SPEC/PLAN 未残留“Memory 只是最低支撑维度”的冲突口径；`git diff --check -- docs/SPEC.md docs/PLAN.md docs/AGENT_LOG.md` 通过；最终 `git diff --name-only -- docs` 仅列出三份目标文档。按用户要求未运行产品测试。
+
+### 2026-08-04 — S13-R1 Memory 领域模型、配置与 Filesystem Store
+
+- 分支与边界：从 `main@22bf781` 创建 `codex/task-runtime-memory`；只实现 R1 模型、Filesystem Store、配置和直接测试，不接入 AgentLoop、Context、Memory Tool、Trace 或 state schema；未提交、未推送。
+- TDD 证据：依次确认 memory 模块缺失、Store append/ensure_capacity 缺失、旧配置字段缺失、配置中心分组缺失、配额未拒绝、event 失败遗留 blob、index 首次替换无法恢复、权威日志缺失被静默重建及 forged blob 未拒绝等 RED，再逐条完成最小 GREEN；未采用“先写完全部测试”的横向切片。
+- 领域模型：新增不可变、严格 schema 的 Blob/Draft/Record/Index/Snapshot/Result；文本保留原 UTF-8 bytes，JSON 使用 canonical 编码；record/index 摘要排除自身摘要字段后计算 SHA-256，集合使用 tuple，stale 由事件重放派生。
+- Filesystem Store：惰性创建 `memory/events.jsonl`、`index.json` 和 `blobs/`；每次 load 完整重放权威事件，校验身份、连续 seq、generation、失效目标和 blob；轻量 index 保存 next seq、generation、尾摘要、最近 ID 和当前文件映射。
+- 原子与恢复：写入顺序为 blob 临时文件+fsync+replace → event append+fsync → index 临时文件+fsync+replace。未提交 event 的新 blob 会补偿；已提交 event 的 index 首次失败会同步重放并返回 `memory_index_recovered`；非法 index 不自动覆盖。
+- 安全与容量：Memory 关键路径拒绝 symlink、junction/reparse point；单 blob 使用 UTF-8 实际字节，task 配额使用 prospective events/index/blob 实际字节且忽略原子临时文件；内容寻址去重不重复计费，历史不自动淘汰。
+- 配置：五项 Memory 默认值接入 `PROJECT_CONFIG_DEFAULT_ITEMS` 唯一真源、ConfigLoader、ConfigService 和 TUI“运行时记忆”分组。旧 `project.json` 缺字段时不自动改写；ConfigScreen 通用字段渲染足够，无需修改页面代码。
+- 新鲜验证：Memory/Config 聚焦 `127 passed in 16.35s`；全量 pytest `1518 passed, 17 skipped in 147.62s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 133 source files`；`git diff --check` 通过；沙箱外 `uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`。
+- 环境与保留产物：受限沙箱运行 pytest basetemp、读取默认 uv cache 时出现 `WinError 5`，相同命令在沙箱外通过。按用户要求不执行清理，保留 `.tmp/hancode-s13-r1/`、`dist/` 和 `src/hancode.egg-info/`，最终仅提供核验后清理指令。

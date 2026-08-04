@@ -20,6 +20,40 @@ def test_config_loads_defaults(tmp_path: Path) -> None:
         assignment_name="Coding Agent Harness",
     )
 
+
+def test_legacy_config_loads_runtime_memory_defaults_without_rewriting(
+    tmp_path: Path,
+) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    project_data = json.loads(project_file.read_text(encoding="utf-8"))
+    for key in (
+        "max_memory_blob_bytes",
+        "max_memory_task_bytes",
+        "max_memory_recent_events",
+        "max_memory_file_entries",
+        "max_memory_hot_contents",
+    ):
+        project_data.pop(key, None)
+    project_file.write_text(json.dumps(project_data), encoding="utf-8")
+    before = project_file.read_bytes()
+
+    config = load_config(tmp_path)
+
+    assert (
+        config.max_memory_blob_bytes,
+        config.max_memory_task_bytes,
+        config.max_memory_recent_events,
+        config.max_memory_file_entries,
+        config.max_memory_hot_contents,
+    ) == (1_048_576, 33_554_432, 8, 32, 2)
+    assert project_file.read_bytes() == before
+
     config = load_config(tmp_path)
 
     assert config == HanCodeConfig(
@@ -383,6 +417,11 @@ def test_config_rejects_invalid_project_config(
         ("max_observation_bytes", 0),
         ("max_context_chars", 0),
         ("max_trace_events", 0),
+        ("max_memory_blob_bytes", 0),
+        ("max_memory_task_bytes", 0),
+        ("max_memory_recent_events", 0),
+        ("max_memory_file_entries", 0),
+        ("max_memory_hot_contents", 0),
         ("max_steps", True),
     ],
 )

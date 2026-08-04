@@ -76,6 +76,11 @@ _INTEGER_FIELDS = (
     "max_observation_bytes",
     "max_context_chars",
     "max_trace_events",
+    "max_memory_blob_bytes",
+    "max_memory_task_bytes",
+    "max_memory_recent_events",
+    "max_memory_file_entries",
+    "max_memory_hot_contents",
     "provider_timeout_seconds",
     "provider_max_retries",
     "provider_protocol_retries",
@@ -156,6 +161,11 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "max_observation_bytes",
         "max_context_chars",
         "max_trace_events",
+        "max_memory_blob_bytes",
+        "max_memory_task_bytes",
+        "max_memory_recent_events",
+        "max_memory_file_entries",
+        "max_memory_hot_contents",
         "protected_patterns",
         "writable_roots",
         "provider_base_url",
@@ -205,6 +215,11 @@ class HanCodeConfig:
     max_trace_events: int
     protected_patterns: tuple[str, ...]
     writable_roots: tuple[Path, ...]
+    max_memory_blob_bytes: int = 1_048_576
+    max_memory_task_bytes: int = 33_554_432
+    max_memory_recent_events: int = 8
+    max_memory_file_entries: int = 32
+    max_memory_hot_contents: int = 2
     provider_base_url: str | None = None
     provider_timeout_seconds: int = 60
     provider_max_retries: int = 2
@@ -292,6 +307,11 @@ def _build_config(
         max_observation_bytes=cast(int, project_data["max_observation_bytes"]),
         max_context_chars=cast(int, project_data["max_context_chars"]),
         max_trace_events=cast(int, project_data["max_trace_events"]),
+        max_memory_blob_bytes=cast(int, project_data["max_memory_blob_bytes"]),
+        max_memory_task_bytes=cast(int, project_data["max_memory_task_bytes"]),
+        max_memory_recent_events=cast(int, project_data["max_memory_recent_events"]),
+        max_memory_file_entries=cast(int, project_data["max_memory_file_entries"]),
+        max_memory_hot_contents=cast(int, project_data["max_memory_hot_contents"]),
         protected_patterns=tuple(
             _merge_protected_patterns(cast(list[str], project_data["protected_patterns"]))
         ),

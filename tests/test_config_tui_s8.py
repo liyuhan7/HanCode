@@ -13,6 +13,11 @@ from hancode.app.credentials import CredentialProvider
 from hancode.interfaces.tui.config_dialogs import ConfigConfirmDialog
 from hancode.interfaces.tui.config_dialogs import CredentialEditorDialog
 from hancode.interfaces.tui.config_app import ConfigTuiApp
+from hancode.interfaces.tui.config_presenters import (
+    CONFIG_GROUPS,
+    FIELDS_BY_GROUP,
+    ConfigFieldKind,
+)
 from hancode.interfaces.tui.app import HanCodeTuiApp
 from hancode.interfaces.tui.command_actions import available_actions
 from hancode.interfaces.tui.commands import parse_command
@@ -59,6 +64,20 @@ def _configure_remote_provider(project_root: Path, source: str = "keyring") -> N
     service.save(project_root, values)
 
 
+def test_config_presenter_exposes_runtime_memory_limits() -> None:
+    assert any(group.group_id == "memory" and group.label == "运行时记忆" for group in CONFIG_GROUPS)
+    fields = FIELDS_BY_GROUP["memory"]
+
+    assert tuple(field.key for field in fields) == (
+        "max_memory_blob_bytes",
+        "max_memory_task_bytes",
+        "max_memory_recent_events",
+        "max_memory_file_entries",
+        "max_memory_hot_contents",
+    )
+    assert all(field.kind is ConfigFieldKind.INTEGER for field in fields)
+
+
 def test_config_tui_mounts_all_groups_in_wide_layout(tmp_path: Path) -> None:
     _initialize(tmp_path)
     app = ConfigTuiApp(project_root=tmp_path)
@@ -68,7 +87,7 @@ def test_config_tui_mounts_all_groups_in_wide_layout(tmp_path: Path) -> None:
             await pilot.pause()
 
             assert isinstance(app.screen, ConfigScreen)
-            assert len(app.screen.query(".config-group")) == 6
+            assert len(app.screen.query(".config-group")) == 7
             assert app.screen.query_one("#config-navigation").display is True
             assert app.screen.query_one("#config-help").display is True
             assert app.screen.query_one("#config-narrow-tabs", Tabs).display is False

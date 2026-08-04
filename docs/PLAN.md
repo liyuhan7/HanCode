@@ -7415,7 +7415,7 @@ S4-R2 Build       S4-R3 Test Report
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [~] R0 文档契约完成；R1–R5 待实现 |
+| 状态 | [~] R0–R1 完成；R2–R5 待实现 |
 | 目标分支 | `codex/task-runtime-memory` |
 | 依赖 | S11-R1 通用失败恢复、S12-R1 安全暂停、T19 ContextBuilder |
 | 主贡献 | Task-scoped runtime memory + deterministic feedback + reversible coding state |
@@ -7502,7 +7502,7 @@ class MemoryContextPacker(Protocol):
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [ ] 待实现 |
+| 状态 | [x] 已实现；全量质量门与离线构建通过 |
 | 依赖 | S13-R0 |
 | 开发方式 | RED → GREEN → REFACTOR |
 
@@ -7513,6 +7513,16 @@ class MemoryContextPacker(Protocol):
 原子顺序固定为 blob 临时写入/替换 → event append + flush/fsync → index 同目录原子替换。崩溃留下的新建未引用 blob应在本次失败补偿中删除；合法事件比 index 更新时允许补建并产生 `memory_index_recovered` 审计信号；非法 index、损坏事件、缺失 blob 或摘要不符返回 `memory_corrupt`。
 
 Red 测试至少覆盖：严格 round trip、相同内容两事件一 blob、旧 task 惰性初始化、合法落后 index 恢复、非法身份/序号/摘要、缺失 blob、symlink/junction、单 blob 和总配额、旧配置兼容及模板/UI 默认值一致。
+
+实施结果（2026-08-04）：
+
+- 新增不可变 `MemoryBlob`、`MemoryRecordDraft`、`MemoryRecord`、`MemoryIndex`、`MemorySnapshot` 与 Load/Append Result；严格校验 schema、ID/seq、POSIX 相对路径、blob 四元组、generation、失效目标和 canonical SHA-256。
+- 新增 `FilesystemMemoryStore.load/append/ensure_capacity`；以 `events.jsonl` 为权威重放，使用轻量派生 index、内容寻址 `.txt/.json` blob、flush/fsync 与同目录原子替换，支持跨实例恢复和 `memory_index_recovered`。
+- 新 blob 已写但 event 未提交时补偿未引用 blob；event 已提交而 index 首次替换失败时立即重放恢复。非法 index、缺失/篡改 blob、事件身份/序号/摘要漂移和权威日志缺失统一 fail-closed。
+- task Memory 路径逐层拒绝 symlink、junction/reparse point；配额按 UTF-8 blob 字节及 prospective events/index/blob 实际字节计算，去重内容不重复计费，既有超限数据仍可只读加载。
+- 五项配置接入 `PROJECT_CONFIG_DEFAULT_ITEMS`、`HanCodeConfig`、ConfigLoader 与“运行时记忆”配置分组；旧配置只在内存补默认值，ConfigScreen 复用通用 presenter，无需相邻页面改动。
+- TDD 聚焦回归 `127 passed`；全量 pytest `1518 passed, 17 skipped in 147.62s`；Ruff 全仓通过；MyPy `133` 个源码文件无错误；`uv build --offline` 成功生成 sdist/wheel；`git diff --check` 通过。
+- Windows 受限沙箱的 pytest basetemp 和默认 uv cache 曾分别触发 `WinError 5`；使用同一命令在沙箱外重跑后通过。按用户要求未清理 `.tmp/hancode-s13-r1/`、`dist/` 或 `src/hancode.egg-info/`，清理由用户自行执行。
 
 ### S13-R2：Recorder、Mutation 与 Rollback 一致性
 

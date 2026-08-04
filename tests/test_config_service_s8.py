@@ -7,7 +7,11 @@ import pytest
 
 from hancode.app.config_service import ConfigService
 from hancode.core.errors import HanCodeError
-from hancode.core.project_config import PROJECT_CONFIG_KEYS, build_project_config
+from hancode.core.project_config import (
+    PROJECT_CONFIG_KEYS,
+    PROJECT_METADATA_KEYS,
+    build_project_config,
+)
 from hancode.storage.workspace import init_project_workspace
 
 
@@ -52,7 +56,7 @@ def test_config_service_expands_legacy_minimal_config_only_on_save(
 
     view = service.load(tmp_path)
 
-    assert len(view.to_dict()) == 40
+    assert len(view.to_dict()) == len(PROJECT_METADATA_KEYS) + len(PROJECT_CONFIG_KEYS)
     assert json.loads(path.read_text(encoding="utf-8")) == minimal
 
     result = service.save(tmp_path, view.to_dict())

@@ -43,6 +43,7 @@ CONFIG_GROUPS = (
     ConfigGroupView("execution", "命令与执行", "测试、构建、步骤、重试与检查点。"),
     ConfigGroupView("workspace", "工作区与保护", "可写目录与追加保护规则。"),
     ConfigGroupView("hitl", "交互与审批", "人工输入、审批门和确认负载限制。"),
+    ConfigGroupView("memory", "运行时记忆", "单任务记忆容量、注入数量与热点正文上限。"),
     ConfigGroupView("limits", "上下文与 Diff", "观察、Trace 与变更预览上限。"),
 )
 
@@ -127,6 +128,11 @@ CONFIG_FIELDS = (
     ConfigFieldView("max_approval_payload_bytes", "hitl", "审批负载字节上限", "审批快照的持久化大小上限。", ConfigFieldKind.INTEGER),
     ConfigFieldView("max_approval_preview_chars", "hitl", "审批预览字符上限", "Diff/命令证据的安全预览上限。", ConfigFieldKind.INTEGER),
     ConfigFieldView("max_rejection_reason_chars", "hitl", "拒绝理由字符上限", "人工拒绝原因的持久化长度上限。", ConfigFieldKind.INTEGER),
+    ConfigFieldView("max_memory_blob_bytes", "memory", "单 Blob 字节上限", "单个运行时记忆正文的 UTF-8 字节上限。", ConfigFieldKind.INTEGER),
+    ConfigFieldView("max_memory_task_bytes", "memory", "单任务记忆字节上限", "events、index 与 blobs 的实际总字节上限。", ConfigFieldKind.INTEGER),
+    ConfigFieldView("max_memory_recent_events", "memory", "最近事件数量", "每轮上下文最多注入的最近 Memory 摘要数。", ConfigFieldKind.INTEGER),
+    ConfigFieldView("max_memory_file_entries", "memory", "文件索引数量", "每轮上下文最多注入的有效文件索引数。", ConfigFieldKind.INTEGER),
+    ConfigFieldView("max_memory_hot_contents", "memory", "热点正文数量", "每轮上下文最多注入的热点文件正文数。", ConfigFieldKind.INTEGER),
     ConfigFieldView("max_observation_bytes", "limits", "Observation 字节上限", "单次工具反馈进入 Agent 上下文前的上限。", ConfigFieldKind.INTEGER),
     ConfigFieldView("max_context_chars", "limits", "上下文字符上限", "PromptBuilder 汇总任务证据的字符上限。", ConfigFieldKind.INTEGER),
     ConfigFieldView("max_trace_events", "limits", "Trace 事件上限", "单次 Prompt 可投影的最近 Trace 数量。", ConfigFieldKind.INTEGER),
