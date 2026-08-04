@@ -120,11 +120,11 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 
 ##### FR-6：ContextBuilder 与记忆选择
 
-- 输入：Project Workspace、Task Workspace、当前 phase、配置、最近执行状态和关键产物。
-- 行为：按 phase 选择最小必要上下文，向 LLM 提供课程背景、任务产物、测试结果、审查信息或 trace 摘要。
-- 输出：结构化 prompt context。
-- 边界条件：不得无条件加载全部历史；不同 task 的 history、trace 和 checkpoint 不得混用。
-- 错误处理：当前 phase 所需关键上下文缺失时返回错误，并阻止进入依赖该上下文的操作。
+- 输入：Project Workspace、Task Workspace、当前 phase、配置、最近执行状态、当前 observation、关键产物和当前 task 的持久化运行时记忆。
+- 行为：按 phase 选择最小必要上下文；在同一次预算处理中组合当前 observation、最近工具摘要、有效文件索引、确定性选择的热点文件正文以及课程背景和阶段产物。
+- 输出：整体受 `max_context_chars` 约束的结构化 prompt context。
+- 边界条件：不得无条件加载全部历史；不同 task 的 memory、history、trace 和 checkpoint 不得混用；Provider 保持无状态，不在 Provider 内累积 conversation history。
+- 错误处理：当前 phase 所需关键上下文缺失、Memory 身份或完整性校验失败、或最小必要上下文无法放入预算时，返回结构化错误并在调用 Provider 前停止。
 
 ##### FR-7：反馈回灌机制
 
@@ -155,10 +155,10 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 ##### FR-10：Project Workspace 与 Task Workspace
 
 - 输入：课程项目目录、项目元数据和 task ID。
-- 行为：Project Workspace 管理课程项目级上下文和长期经验；Task Workspace 管理单次任务的 SPEC、PLAN、trace、checkpoint 和学习产物。
+- 行为：Project Workspace 管理人工维护的项目级上下文和长期经验；Task Workspace 管理单次任务的 SPEC、PLAN、trace、checkpoint、学习产物，以及由 Harness 自动记录的 task-scoped runtime memory。
 - 输出：`.hancode/` 下的项目级文件与 task 级目录。
-- 边界条件：任务之间的执行历史、trace 和 checkpoint 必须隔离；项目级经验只按需进入上下文。
-- 错误处理：workspace 缺失时创建必要结构；元数据损坏时停止执行并提示修复。
+- 边界条件：任务之间的 runtime memory、执行历史、trace 和 checkpoint 必须隔离；项目级经验只按需进入上下文，不能自动晋升或覆盖当前 task 证据。
+- 错误处理：旧 task 缺少 `memory/` 时按空记忆惰性初始化；Memory 元数据损坏、身份不符或越界时停止执行并提示修复。
 
 ##### FR-11：课程项目 Phase Gate
 
@@ -232,6 +232,14 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 - 边界条件：不依赖 Git；二进制文件标记 `binary=true` 且不生成 text diff；Diff 内容受大小上限约束（文件数、字符数、单文件字节数）；Diff 内容不进入 Trace（Trace 只记录摘要计数）。
 - 错误处理：checkpoint manifest 损坏、snapshot 缺失、hash 不匹配时失败关闭，不返回部分可信结果。
 
+##### FR-21：Task-scoped Persistent Runtime Memory
+
+- 输入：当前 task ID、phase、已通过治理并完成 dispatch 的 Action/ToolResult、脱敏 observation、TaskState、rollback 结果和 Memory 配置。
+- 行为：自动追加工具摘要；为 `read_file`、`list_files`、`search_text`、`get_diff` 保存内容寻址 blob；维护有效文件索引、workspace generation 和失效事件；向 ContextBuilder 提供最近摘要、文件目录和热点正文；提供只读 `memory_read`、`memory_search`。
+- 输出：`MemoryRecord`、`MemoryContext`、`MemorySlice`、`MemorySearchHit` 和 observation 中的 `memory_ref`。
+- 边界条件：只记录当前 task；不保存完整聊天历史；不重新读取原始文件生成 blob；不把 Memory 正文写入 trace、state 或导出包；`state.json` schema v1 不因本机制增加大字段。
+- 错误处理：读取类结果无法持久化时进入 `blocked`；mutation 前必须预留失效元数据容量，成功 mutation/rollback 后仍无法记录失效时进入 `inconsistent`；损坏、越界、配额超限和身份不符返回稳定错误码。
+
 ## 5. 非功能性需求
 
 HanCode 的非功能性需求覆盖性能、安全、可用性、可观测性、可靠性与可恢复性。由于 HanCode 是面向学生课程项目的轻量级 Coding Agent Harness，本节不以高并发或企业级平台能力为目标，而以本地可运行、机制可验证、过程可复盘、失败可恢复为核心质量标准。
@@ -240,6 +248,7 @@ HanCode 的非功能性需求覆盖性能、安全、可用性、可观测性、
 
 - HanCode 应能在小型课程项目规模下稳定运行，目标项目规模为单人课程作业、命令行工具、数据处理脚本或小型应用；MVP 测试基准项目规模定义为不超过 200 个文件或不超过 20k LOC。
 - 单次 context 构造应在秒级完成，ContextBuilder 必须按 phase 选择最小必要上下文，避免无差别加载全部历史；在测试 fixture 下单次构造目标为 1 秒内完成。
+- Memory 检索只扫描当前 task 的有界索引和 blob，不访问网络；相同脱敏内容必须按 SHA-256 去重，避免重复读取线性放大磁盘占用。
 - 单次 context 构造中，不同 task 的 history、trace 和 checkpoint 不得混入当前 context。
 - `trace.jsonl`、checkpoint manifest、workspace 元数据应采用轻量文本或 JSON 格式，支持快速追加、读取和调试。
 - MockLLM 测试应快速、确定、可一键运行，不依赖网络、真实 LLM 或外部服务；MockLLM full demo 目标为 10 秒内完成。
@@ -410,9 +419,9 @@ Persistence Layer
 | --- | --- |
 | Presentation Layer | 接收学生输入，展示 phase、trace、checkpoint、测试结果和交付物状态。 |
 | Application Layer | 管理 task 生命周期，启动 AgentLoop，统一 TUI 与 Headless CLI 行为。 |
-| Core Harness Layer | 实现配置与凭据状态读取、阶段路由、上下文构造、Action 解析、工具策略、反馈回灌、checkpoint、trace 和最终结果生成。 |
+| Core Harness Layer | 实现配置与凭据状态读取、阶段路由、task runtime memory、上下文构造、Action 解析、工具策略、反馈回灌、checkpoint、trace 和最终结果生成。 |
 | Tool and Model Layer | 封装本地工具、测试工具、rollback 工具、真实 LLM provider 适配和 MockLLM。 |
-| Persistence Layer | 以文件系统保存项目记忆、任务产物、运行状态、trace 和 checkpoint。 |
+| Persistence Layer | 以文件系统保存人工项目记忆、task runtime memory、任务产物、运行状态、trace 和 checkpoint。 |
 
 ### 6.4 核心组件图
 
@@ -435,6 +444,7 @@ flowchart TD
     Loop --> Policy["ToolPolicy"]
     Loop --> Tools["ToolRegistry / ToolExecutor"]
     Loop --> Feedback["FeedbackBuilder"]
+    Loop --> Recorder["MemoryRecorder"]
     Loop --> State["StateStore"]
     Loop --> Result["ResultBuilder"]
     Loop --> Trace["TraceLogger"]
@@ -443,12 +453,18 @@ flowchart TD
     Policy --> Checkpoint["CheckpointManager"]
     Policy --> PathCls["PathClassifier"]
     Tools --> FileTools["File / Search / Test / Rollback Tools"]
+    Recorder --> MemoryStore["FilesystemMemoryStore"]
+    MemoryStore --> Packer["MemoryContextPacker"]
+    Packer --> Context
+    Tools --> MemoryTools["memory_read / memory_search"]
+    MemoryTools --> MemoryStore
 
     Router --> Workspace[".hancode Workspace"]
     Context --> Workspace
     State --> Workspace
     Checkpoint --> Workspace
     Trace --> TraceFile["trace.jsonl"]
+    MemoryStore --> MemoryFiles["memory/index.json / events.jsonl / blobs"]
     Result --> Artifacts["SPEC / PLAN / TEST_REPORT / REVIEW / KNOWLEDGE / DELIVERABLES"]
 
     LLM --> Adapter["ProviderAdapter"]
@@ -473,8 +489,10 @@ flowchart TD
 → ToolPolicy 校验 phase、路径、reason、checkpoint 和保护文件规则
 → ToolExecutor 执行已允许的工具
 → FeedbackBuilder 生成 observation
+→ MemoryRecorder 自动持久化工具摘要、安全 payload 和必要失效事件
 → TraceLogger 记录事件
 → StateStore 更新 task 状态
+→ 下一轮由 MemoryContextPacker 选择最近摘要、文件索引和热点正文
 → AgentLoop 判断继续、阻塞、失败或完成
 → ResultBuilder 生成结构化结果
 ```
@@ -566,6 +584,7 @@ HanCode 的数据模型遵循以下原则：
 - `state.json` 是唯一机器状态源；状态机、PhaseGate、WorkspaceRouter 和 ToolPolicy 只读取 `state.json` 中的机器可读状态，不解析 Markdown 内容。
 - Markdown 阶段产物是对应 phase 内的可更新文档，学生可以阅读、修改和补充，但不作为状态机判断的唯一依据。
 - `trace.jsonl` 只追加，不修改，用于审计、复盘、测试证明和最终交付摘要。
+- `memory/events.jsonl` 只追加、不原地修改；`memory/index.json` 是派生索引，不成为状态机权威；正文 blob 只保存既有工具已经校验和脱敏的输出。
 - checkpoint 只保存业务代码修改前的必要快照，不保存凭据、受保护课程文件、老师测试、评分脚本或样例数据。
 - MockLLM 测试可以直接构造 `state.json` 和必要的 trace/checkpoint 元数据来验证 Harness 控制流，不需要依赖真实 LLM 或完整 Markdown 内容。
 
@@ -588,6 +607,11 @@ classDiagram
         +max_steps: int
         +retry_budget: int
         +max_checkpoints_per_task: int
+        +max_memory_blob_bytes: int
+        +max_memory_task_bytes: int
+        +max_memory_recent_events: int
+        +max_memory_file_entries: int
+        +max_memory_hot_contents: int
     }
 
     class Task {
@@ -651,10 +675,30 @@ classDiagram
         +source_trace_id: str
     }
 
+    class MemoryRecord {
+        +memory_id: str
+        +seq: int
+        +task_id: str
+        +phase: Phase
+        +kind: str
+        +tool_name: str | null
+        +success: bool
+        +summary: str
+        +error_code: str | null
+        +paths: list[str]
+        +content_sha256: str | null
+        +blob_ref: str | null
+        +workspace_generation: int
+        +checkpoint_id: str | null
+        +invalidates: list[str]
+        +record_digest: str
+    }
+
     Project "1" --> "0..*" Task : 包含
     Task "1" --> "1" PhaseState : 拥有
     Task "1" --> "0..*" TraceEvent : 记录
     Task "1" --> "0..*" Checkpoint : 保存
+    Task "1" --> "0..*" MemoryRecord : 持久化运行时记忆
     Action ..> Task : 由 LLM/MockLLM 产生，经 ActionParser 解析
     KnowledgeItem ..> Task : 由 deliver phase 聚合写入 KNOWLEDGE.md
 ```
@@ -670,6 +714,9 @@ classDiagram
 | Task + PhaseState | `.hancode/tasks/<task_id>/state.json` | JSON | 保存当前任务的唯一机器状态源。 |
 | TraceEvent | `.hancode/tasks/<task_id>/trace.jsonl` | JSONL | 保存事件级执行轨迹，只追加，不修改。 |
 | Checkpoint | `.hancode/tasks/<task_id>/checkpoints/<checkpoint_id>/manifest.json` + `files/` | JSON + file snapshots | 保存业务代码修改前的文件快照和 rollback 元数据。 |
+| Runtime Memory Event | `.hancode/tasks/<task_id>/memory/events.jsonl` | JSONL | 保存当前 task 的工具摘要、快照引用、访问和失效事件，只追加不原地修改。 |
+| Runtime Memory Index | `.hancode/tasks/<task_id>/memory/index.json` | JSON | 保存可由合法事件前缀恢复的派生索引、容量、generation 和当前文件映射。 |
+| Runtime Memory Blob | `.hancode/tasks/<task_id>/memory/blobs/<sha256>.txt\|json` | UTF-8 text / JSON | 保存经过既有工具安全处理后的内容寻址 payload；同内容只保存一份。 |
 | 阶段产物 | `.hancode/tasks/<task_id>/{SPEC,PLAN,TEST_REPORT,REVIEW,KNOWLEDGE,DELIVERABLES}.md` | Markdown | 保存课程项目任务的需求、计划、测试、审查、知识沉淀和交付清单。 |
 | KnowledgeItem | `.hancode/tasks/<task_id>/KNOWLEDGE.md` | Markdown | 由 deliver phase 聚合本次任务的课程知识点、设计决策和错误修复经验。 |
 
@@ -1489,8 +1536,9 @@ HanCode MVP 完成的总体标准是：
 功能完成判定：
 
 - 能读取 `.hancode/project.json`。
-- 能加载 `test_command`、`build_command`、`max_steps`、`retry_budget`、`max_checkpoints_per_task`、`protected_patterns`。
+- 能加载 `test_command`、`build_command`、`max_steps`、`retry_budget`、`max_checkpoints_per_task`、`protected_patterns` 以及五个 `max_memory_*` 配额/注入配置。
 - 缺省配置能使用明确默认值。
+- 旧配置缺少 Memory 字段时使用向后兼容默认值；新建项目模板和配置中心共享同一默认值真源。
 - 非法配置会被拒绝并给出可读错误。
 - 配置中不得包含明文 API key。
 - ConfigLoader 不返回明文凭据，只返回 provider、模型名和凭据来源类型。
@@ -1531,8 +1579,23 @@ HanCode MVP 完成的总体标准是：
 - test phase 上下文包含测试命令、changed files 和计划中的验证步骤。
 - review phase 上下文包含 `TEST_REPORT.md`、changed files、checkpoint 信息和需求覆盖依据。
 - deliver phase 上下文包含 SPEC、PLAN、TEST_REPORT、REVIEW 和 trace 摘要。
-- 不同 task 的 history、trace 和 checkpoint 不混入当前上下文。
+- 当前 observation、runtime memory 和原有 phase context 在同一次预算处理中完成，最终 canonical JSON 长度不超过 `max_context_chars`。
+- 自动注入最近工具摘要、有效文件索引和预算允许的热点文件正文；旧 generation 或已失效快照不得作为当前正文自动注入。
+- 不同 task 的 memory、history、trace 和 checkpoint 不混入当前上下文。
 - `.env`、凭据文件、老师测试答案、评分脚本敏感内容不得进入上下文。
+
+### 10.7.1 Task Runtime Memory 验收标准
+
+功能完成判定：
+
+- 每个 task 的运行时记忆独立持久化在 `.hancode/tasks/<task_id>/memory/`，并可在 AgentLoop 实例销毁后恢复。
+- `events.jsonl` 是 append-only 权威记录；`index.json` 只作为可校验的派生索引；内容 blob 按脱敏后内容 SHA-256 去重。
+- 所有真正 dispatch 的工具结果都产生不含正文、stdout、stderr、命令参数和模型 reason 的结构化摘要；只有 `read_file`、`list_files`、`search_text`、`get_diff` 的安全输出允许写入 blob。
+- `read_file` 快照进入当前文件索引；写入、未知写入效果、rollback 或外部文件指纹变化必须追加失效记录，历史 blob 保留但不得冒充当前内容。
+- `memory_read` 能按当前 task 的 memory ID 分页读取历史内容；`memory_search` 能按关键词、路径、phase、stale 状态和最近性确定性检索；两者均不得接受任意磁盘路径。
+- 单 blob 和单 task 总存储量受配置约束，超限不自动淘汰历史；读取结果持久化失败进入 `blocked`，成功 mutation 后失效记录失败进入 `inconsistent`。
+- Memory 目录、事件、索引和 blob 必须拒绝 symlink、junction、reparse point、task identity 漂移、序号漂移、摘要不匹配和越界引用。
+- Trace 只记录 memory ID、内容摘要、字节数、generation 和失效原因，不记录 blob 正文。
 
 ### 10.8 ActionParser 验收标准
 
@@ -1601,6 +1664,7 @@ HanCode MVP 完成的总体标准是：
 - LLM / MockLLM action 写入 trace 摘要。
 - policy allowed / denied 写入 trace。
 - tool called / completed / failed 写入 trace。
+- Memory 记录与失效只在 trace 中写入 ID、摘要、字节数、generation 和原因，绝不写入 blob 正文。
 - checkpoint created / committed / aborted / recovery_required / recovery_failed / abort_failed / pruned 写入 trace。
 - test completed 写入 trace。
 - rollback performed 写入 trace。
@@ -1940,7 +2004,7 @@ HanCode 使用确定性反馈信号驱动 AgentLoop，而不是依赖 LLM 自我
 
 ### 11.5 记忆与上下文机制
 
-HanCode 的记忆机制分为 Project Workspace 和 Task Workspace。
+HanCode 的记忆机制分为人工维护的 Project Memory 和 Harness 自动维护的 Task Runtime Memory。二者职责不同，不得互相冒充。
 
 Project Workspace 保存课程项目级长期上下文：
 
@@ -1950,7 +2014,7 @@ Project Workspace 保存课程项目级长期上下文：
 | `course_context.md` | 课程名称、作业说明、评分标准、提交格式、课程知识点、老师限制。 |
 | `experience.md` | 长期经验、常见错误和可复用模式。 |
 
-Task Workspace 保存单次任务上下文：
+Task Workspace 除阶段产物外，还保存单次任务的运行时记忆：
 
 | 文件或目录 | 内容 |
 | --- | --- |
@@ -1963,27 +2027,43 @@ Task Workspace 保存单次任务上下文：
 | `state.json` | 当前 task 的唯一机器状态源。 |
 | `trace.jsonl` | 事件级执行轨迹。 |
 | `checkpoints/` | 代码修改前快照与 rollback 元数据。 |
+| `memory/events.jsonl` | append-only 的工具摘要、文件快照、访问和失效事件。 |
+| `memory/index.json` | 可由合法事件前缀恢复的派生索引，保存 next seq、generation、最近记录和当前文件映射。 |
+| `memory/blobs/<sha256>.txt\|json` | 对既有安全工具已校验、已脱敏输出进行内容寻址保存。 |
 
-ContextBuilder 按 phase 选择最小必要上下文，不加载全部历史，不混入其他 task 的 trace、history 或 checkpoint。code phase 必须看到 SPEC 和 PLAN；review phase 必须看到测试结果、changed files 和 checkpoint 信息；deliver phase 必须看到 SPEC、PLAN、TEST_REPORT、REVIEW 和 trace 摘要。
+Task Runtime Memory 不是完整聊天历史。Provider 继续采用无状态调用，每轮由 ContextBuilder 根据当前 task 的持久化证据重新构造 context。Memory 写入由 Harness 自动完成，模型不能决定是否记录；模型只能通过只读 `memory_read` 和 `memory_search` 按需恢复未自动注入的历史内容。
 
-记忆与上下文是 HanCode 的基础维度，按最低可运行标准实现：记忆以文件系统 workspace 分层保存，检索采用 phase-based include/exclude 加字符预算截断（`max_context_chars`、`max_trace_events`），课程规则优先于长期经验。HanCode 不引入向量检索、嵌入相似度或上下文压缩模型；记忆维度的价值在于为反馈回路提供隔离、可复盘的运行边界，而不在于检索算法深度。深度投入集中在反馈回路与可回退编码状态（见 §11.6）。
+Memory 分为三层：
+
+1. 当前 observation：刚发生的客观结果，优先级最高，只代表当前一步。
+2. Working Memory：最近已执行工具的元数据摘要、错误码、phase、路径和 memory ID；不保存原始 stdout/stderr 或模型 reason。
+3. File Snapshot Memory：`read_file` 返回的完整脱敏正文及其路径、内容摘要、generation 和 checkpoint 绑定；`list_files`、`search_text`、`get_diff` 保存为可检索 payload，但不进入当前文件映射。
+
+每轮自动注入最近 `max_memory_recent_events` 条工具摘要、最多 `max_memory_file_entries` 条有效文件索引和最多 `max_memory_hot_contents` 个热点 `read_file` 正文。热点按 changed-file、同 phase、较新 seq、路径字典序确定性排序；已出现在当前 observation 或 source snippets 中的内容不重复注入。其余内容通过 Memory Tool 按需读取。
+
+ContextBuilder 必须把 observation 和 memory 纳入最终 `max_context_chars` 预算，而不是在预算完成后由 AgentLoop 追加。保留顺序依次为：最小必要骨架和 phase 必需证据、当前 observation、活动失败与最近人工回答、memory 摘要与文件索引、热点正文、其他可选项目上下文；无法容纳最小必要骨架时返回 `context_budget_too_small`。
+
+写入与 rollback 不删除历史 blob，而是追加 invalidation 并增加 `workspace_generation`。跨进程恢复时，在热点注入、`memory_read` 或有效结果搜索前，必须复用文件工具的安全路径边界，只计算当前脱敏内容摘要；摘要不匹配、文件缺失或路径变为不安全时追加失效事件。失效失败不能继续使用可能过期的正文。
+
+Memory 使用有界、append-only、不自动淘汰的文件系统实现；默认单 blob 1 MiB、单 task 32 MiB，task 配额统计 `events.jsonl`、`index.json` 和全部 blob 的实际文件字节，不计原子临时文件。HanCode 不引入数据库、向量检索、embedding、跨项目共享记忆、自动长期事实总结或逐步 LLM 压缩。
 
 ### 11.6 主贡献维度
 
-HanCode 的主贡献维度是：
+HanCode 的主贡献维度是三个相互连接、但可分别用 MockLLM 和临时文件系统验证的机制：
 
 ```text
-deterministic feedback loop + reversible coding state
+task-scoped persistent runtime memory
++ deterministic feedback loop
++ reversible coding state
 ```
 
-该贡献由两个部分组成：
+三部分职责如下：
 
-1. Deterministic feedback loop：`run_tests` 产生客观测试信号，`FeedbackBuilder` 将原始输出解析为带失败分类的结构化 observation，AgentLoop 据此确定性切换到 review 并驱动下一轮针对性修复。反馈来自工具结果和系统判定，不依赖 LLM 自我评价。
-2. Reversible coding state：通过 code phase 前 checkpoint、review phase 回退决策、retry budget 和 rollback feedback，让 Agent 的代码尝试具备可恢复边界。
+1. Task-scoped persistent runtime memory：自动保存已执行工具摘要和安全文件快照，在多轮及跨进程 resume 后通过确定性选择与只读检索恢复相关上下文。
+2. Deterministic feedback loop：`run_tests` 产生客观测试信号，`FeedbackBuilder` 将原始输出解析为带失败分类的结构化 observation，AgentLoop 据此确定性切换到 review 并驱动下一轮针对性修复。
+3. Reversible coding state：通过 code phase 前 checkpoint、review phase 回退决策、retry budget 和 rollback feedback，让 Agent 的代码尝试具备可恢复边界。
 
-这两部分构成一条完整的编码控制回路：改动前建立 checkpoint，改动后运行测试获得客观信号，失败时分类并回灌，重试超限时强制 rollback。回路的每一环都是确定性代码，移除真实 LLM 后仍可用 MockLLM 和临时文件系统单独验证。
-
-Workspace-scoped memory 是该回路的支撑维度而非主贡献：Project Workspace 和 Task Workspace 隔离课程项目长期上下文、单次任务状态、阶段产物、trace 和 checkpoint，为反馈回路提供隔离且可复盘的运行边界。它按基础维度的最低可运行标准实现（见 §11.5），不引入向量检索或上下文压缩。
+三者构成一条跨轮次、跨进程仍可复盘的编码控制回路：工具结果先形成客观反馈并自动记录为 task memory；ContextBuilder 在下一轮恢复必要证据；代码修改前建立 checkpoint；测试失败时分类并回灌；写入与 rollback 同步使旧快照失效；重试超限时强制回退。每一环都由确定性代码完成，不依赖 LLM 自我声明“记住了”或“已经修复”。
 
 面向学生课程场景，该回路被具体调校为：失败分类附带学习导向提示（见 §11.3），危险动作集包含课程文件保护（见 §11.4），阶段门禁强制先理解需求再编码。该贡献同时服务三个目标：
 
@@ -2001,7 +2081,7 @@ HanCode 的机制必须落到代码模块，而不是停留在提示词或文档
 | --- | --- | --- |
 | 主循环 | `AgentLoop` | MockLLM action 序列可驱动完整循环。 |
 | LLM 抽象 | `LLMClient`、`ProviderAdapter`、`MockLLM` | 替换真实 LLM 后核心测试仍可运行。 |
-| 上下文与记忆 | `WorkspaceManager`、`ContextBuilder`、`StateStore` | 可构造临时 workspace 验证 phase-specific context。 |
+| 上下文与记忆 | `FilesystemMemoryStore`、`MemoryContextPacker`、`ContextBuilder` | 可验证跨轮次/跨进程恢复、内容去重、失效、确定性检索和完整 context 预算。 |
 | 阶段路由 | `WorkspaceRouter`、Phase Gate | 可直接构造 state 验证路由结果。 |
 | 工具解析与分发 | `ActionParser`、`ToolRegistry`、`ToolExecutor` | 可用结构化 Action 验证执行与错误处理。 |
 | 治理护栏 | `ToolPolicy`、`PathClassifier` | 可用危险 Action 验证 deterministic denial。 |
@@ -2020,9 +2100,9 @@ HanCode 的机制演示至少包含三条路径。
 | --- | --- | --- |
 | 治理护栏演示 | MockLLM 在 spec phase 尝试调用 `edit_file`。 | ToolPolicy 拒绝该动作，拒绝原因写入 trace，并作为 observation 回灌。 |
 | 反馈闭环演示 | MockLLM 按计划修改代码后触发测试失败。 | `run_tests` 结果写入 `TEST_REPORT.md`，AgentLoop 进入 review，FeedbackBuilder 分类失败并回灌带纠正建议的 observation，AgentLoop 下一步动作据此改变。 |
-| 主贡献演示 | MockLLM 修改代码后连续两轮测试失败，耗尽 retry budget。 | 每轮失败经 FeedbackBuilder 分类回灌；retry budget 归零后强制 rollback 到 code phase 前 checkpoint，恢复文件与失败摘要写入 trace 和 `REVIEW.md`，控制流保持在 review。完整反馈—回退回路在无真实 LLM 下确定性复现。 |
+| 主贡献演示 | MockLLM 读取文件后跨进程恢复，随后修改文件、触发测试失败并 rollback。 | 恢复后的 context 仍能取得文件索引与热点正文；写入和 rollback 使旧 generation 失效；测试反馈与回退继续沿既有确定性状态机运行。完整 memory—反馈—回退回路可在无真实 LLM 下复现。 |
 
-三条演示分别对应 Coding Agent Harness 要求的：① 治理护栏拦截危险动作；② 注入失败后反馈闭环使 Agent 改变下一步动作；③ 主贡献维度（反馈驱动的可回退编码）的确定性行为。
+三条演示分别对应 Coding Agent Harness 要求的：① 治理护栏拦截危险动作；② 注入失败后反馈闭环使 Agent 改变下一步动作；③ task runtime memory、反馈与可回退状态共同构成的确定性主贡献。
 
 机制演示必须可以在无网络、无真实 API key、无真实 LLM 的环境下重复运行。演示结果应能通过 trace 证明控制流真实发生，包括策略拦截、失败分类反馈回灌、checkpoint 创建、强制 rollback 和最终结构化结果生成。
 
@@ -2047,6 +2127,9 @@ HanCode 的主要风险不在于单个功能是否能写出来，而在于 Agent
 | ContextBuilder 加载过多历史 | 上下文膨胀，LLM 被旧信息干扰 | 按 phase 选择最小必要上下文；不同 task 的 trace、history、checkpoint 不混入当前任务。 |
 | ContextBuilder 加载过少信息 | code / review / deliver 阶段缺少关键依据 | code 必须包含 SPEC 和 PLAN；review 必须包含 TEST_REPORT、changed files、checkpoint；deliver 必须包含 SPEC、PLAN、TEST_REPORT、REVIEW 和 trace 摘要。 |
 | Project Memory 与 Task Workspace 边界不清 | 长期经验污染单次任务判断 | project 级经验只作为辅助上下文，课程要求和当前 task 产物优先。 |
+| 文件在 HanCode 外部被修改 | 旧快照被当作当前正文注入 | 在注入和检索有效快照前复用安全路径边界校验脱敏内容摘要，不匹配即追加失效事件。 |
+| Memory 写入或失效记录失败 | 跨轮次证据丢失或旧正文污染决策 | 读取类持久化失败进入 `blocked`；成功 mutation/rollback 后失效失败进入 `inconsistent`。 |
+| append-only blob 无限增长 | 长任务占满磁盘 | 单 blob 和单 task 配额；内容寻址去重；超限结构化停止，不静默淘汰历史。 |
 | 学生手动编辑 Markdown 后 state 不一致 | 状态机判断和实际文件内容产生偏差 | Markdown 不作为状态机权威；启动检查不一致时标记 `inconsistent` 并提示处理。 |
 
 ### 12.3 工具与文件安全风险
@@ -2117,6 +2200,7 @@ P0 风险必须在实现计划中优先处理：
 
 - ToolPolicy 无法稳定拦截危险动作。
 - ContextBuilder 混入其他 task 或泄露凭据。
+- Task Runtime Memory 混入其他 task、注入 stale 快照或泄露 blob 正文到 trace。
 - Checkpoint / rollback 不能可靠恢复文件。
 - MockLLM 无法驱动核心机制测试。
 - Trace 无法证明关键控制流发生。

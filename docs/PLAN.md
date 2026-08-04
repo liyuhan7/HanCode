@@ -147,6 +147,14 @@ M7 CLI / 凭据 / CI
     -> T25 CredentialProvider
     -> T26 Package Build 与 CI
     -> T27 README 运行与分发文档
+
+M8 Task Runtime Memory
+  S13-R0 文档契约
+    -> S13-R1 模型 / Store / 配置
+    -> S13-R2 Recorder / 失效
+    -> S13-R3 Context / 统一预算
+    -> S13-R4 Memory Tools
+    -> S13-R5 Demo / 全量门禁
 ```
 
 ### 5.1 并行建议
@@ -170,9 +178,10 @@ T24 CLI 可先实现 --help / init 骨架，demo 命令等 T23 后接入。
 | M1 骨架可跑       | workspace、config、state、phase、router、action schema 可独立测试；缺 SPEC / PLAN 时拒绝进入 code | T1-T7   |
 | M2 最小 loop 可跑 | MockLLM 能驱动 parse -> policy -> tool -> observation 的受控链路                | T8-T15  |
 | M3 可恢复状态成立    | trace、checkpoint、rollback 可独立测试，secret 不泄露                              | T16-T18 |
-| M4 主贡献闭环成立    | 测试失败 -> feedback -> retry -> rollback 可在 MockLLM 下确定性复现                 | T19-T21 |
+| M4 反馈与回退闭环成立 | 测试失败 -> feedback -> retry -> rollback 可在 MockLLM 下确定性复现                 | T19-T21 |
 | M5 Demo 可证明机制 | MockLLM demo 生成 trace、TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES         | T22-T23 |
 | M6 可交付        | CLI、凭据边界、package build、CI、README 完成                                     | T24-T27 |
+| M8 Runtime Memory 成立 | 工具摘要与文件快照可跨进程恢复，stale 不自动注入，Context 总预算和 Memory Tool 可确定性验证 | S13-R0-R5 |
 
 ---
 
@@ -363,7 +372,7 @@ python -m mypy src/hancode/models.py src/hancode/errors.py
 | 依赖            | T1                      |
 | 可并行           | 不并行；后续任务依赖 workspace 结构 |
 | Worktree / PR | `feature/M1`              |
-| 主贡献相关         | 否，支撑维度                  |
+| 主贡献相关         | 是，S13 Project/Task workspace 基础 |
 | Commit        | 已合并到 `main`              |
 
 ### 目标
@@ -465,7 +474,7 @@ uv run mypy src/hancode/workspace.py
 | 依赖            | T1, T2                |
 | 可并行           | 可与 T4 并行              |
 | Worktree / PR | `feature/M1`          |
-| 主贡献相关         | 否，支撑维度                |
+| 主贡献相关         | 是，S13 Memory 配额配置基础 |
 | Commit        | `e7fcee3` + `e3ddce9` — T3 初版与安全返工 |
 
 ### 目标
@@ -2086,7 +2095,7 @@ git diff --check
 | 依赖            | T2, T3, T4, T5, T16     |
 | 可并行           | 可与 T20 并行               |
 | Worktree / PR | `feature/M5`             |
-| 主贡献相关         | 否，支撑维度                  |
+| 主贡献相关         | 是，S13 统一 Context 预算基础 |
 | Commit        | TODO                    |
 
 ### 目标
@@ -2314,9 +2323,9 @@ uv run mypy src/hancode/feedback.py
 | ------------- | --------------------------------- |
 | 状态            | [x] 已完成                              |
 | 依赖            | T10, T14, T16, T18, T20           |
-| 可并行           | 不并行；主贡献闭环任务                       |
+| 可并行           | 不并行；反馈与回退闭环任务                     |
 | Worktree / PR | `feature/M5`                         |
-| 主贡献相关         | 是，主贡献闭环核心                         |
+| 主贡献相关         | 是，三项主贡献中的反馈与回退闭环核心               |
 | Commit        | `375f735b535c115b2d897adc52da9ae7371bf1c8` |
 
 ### 目标
@@ -2391,7 +2400,7 @@ uv run --no-sync mypy src
 
 ### 完成判定
 
-* 主贡献闭环可在 MockLLM 下确定性复现。
+* 反馈与回退闭环可在 MockLLM 下确定性复现。
 * 测试失败不会直接 completed。
 * retry 超限会强制 rollback。
 * blocked 恢复必须显式传入 `resume=True`，完成态不会因状态漂移再次执行工具。
@@ -2405,7 +2414,7 @@ uv run --no-sync mypy src
 * 不接真实 LLM。
 * 不做 CLI demo。
 * checkpoint 采用“单次 source write 前”粒度；一次 loop 内的多文件事务聚合、checkpoint pruning、跨进程锁和外部攻击者级 TOCTOU 防护留给后续任务。
-* resume 不跨会话持久化上一次 observation，也不重放完整生命周期 trace；当前仅复用持久化 state、checkpoint 与已有 trace 序列。
+* T21 当时的边界是不跨会话持久化上一次 observation，也不重放完整生命周期 trace，仅复用 state、checkpoint 与已有 trace；该缺口由后续 S13-R2/R3 的 task runtime memory 和统一 Context 预算显式补齐。
 * T21 补齐 feedback / retry / rollback 相关 trace 与边界事件；T21-R1 Task 2 追加 `phase_started` / `phase_completed` / `run_completed` 阶段生命周期事件。完整的 context / action 级生命周期事件矩阵仍不在本卡内重构。
 
 ---
@@ -5686,24 +5695,25 @@ runtime.engine → AgentLoop → ObservedTraceAppender
 | FR-3 Action 解析与校验                        | T7, T8                       | [x] |
 | FR-4 ToolRegistry 与工具分发                  | T11, T12                     | [x] |
 | FR-5 ToolPolicy 治理护栏                     | T13, T14, T15                | [x] |
-| FR-6 ContextBuilder 与记忆选择                | T19                          | [x] |
+| FR-6 ContextBuilder 与记忆选择                | T19, S13-R3                  | [~] |
 | FR-7 反馈回灌机制                              | T20, T21                     | [x] |
 | FR-8 TraceLogger                         | T16                          | [x] |
-| FR-9 配置加载与运行约束                           | T3, T26                      | [x] |
-| FR-10 Project Workspace 与 Task Workspace | T2                           | [x] |
+| FR-9 配置加载与运行约束                           | T3, T26, S13-R1              | [~] |
+| FR-10 Project Workspace 与 Task Workspace | T2, S13-R1                   | [~] |
 | FR-11 课程项目 Phase Gate                    | T5, T6                       | [x] |
 | FR-12 课程项目上下文构造                          | T19                          | [x] |
 | FR-13 课程文件保护策略                           | T13, T14, T15                | [x] |
 | FR-14 Checkpoint 与 Rollback              | T17, T18, T21                | [x] |
 | FR-15 测试报告与审查记录                          | T20, T22                     | [x] |
 | FR-16 Knowledge Delivery                 | T22, T23                     | [x] |
+| FR-21 Task-scoped Persistent Runtime Memory | S13-R1-R5                 | [~] |
 | 凭据与分发设计                                  | T25, T26, T27                | [x] |
-| 可测试性约定                                   | T1-T30                       | [x] |
+| 可测试性约定                                   | T1-T30, S13-R1-R5            | [~] |
 | 测试失败分类                                   | T20                          | [x] |
 | 危险动作与治理护栏                                | T13, T14, T15                | [x] |
-| 记忆与上下文机制                                 | T2, T19                      | [x] |
-| 主贡献维度                                    | T16, T17, T18, T20, T21, T23 | [x] |
-| MockLLM 机制演示                             | T9, T21, T23                 | [x] |
+| 记忆与上下文机制                                 | T2, T19, S13-R1-R5           | [~] |
+| 主贡献维度                                    | T16-T21, T23, S13-R1-R5      | [~] |
+| MockLLM 机制演示                             | T9, T21, T23, S13-R5         | [~] |
 | P0 分层结构与装配抽取                         | T28                         | [x] |
 | P1 应用服务层拆分                             | T29                         | [x] |
 | P2 Demo 与 Delivery 支持包拆分                 | T30                         | [x] |
@@ -5948,7 +5958,7 @@ T6 router
 T7 action schema
 ```
 
-主贡献闭环优先顺序：
+反馈与回退闭环优先顺序（S13 前基线）：
 
 ```text
 T16 trace
@@ -7398,3 +7408,173 @@ S4-R2 Build       S4-R3 Test Report
 - AgentLoop 覆盖调用前、Provider 返回后、已批准 Action/Rollback 前及工具完成后的协作式暂停；无 Token 行为保持不变。
 - TUI 覆盖 `/pause`、菜单启用、重复请求、非运行拒绝、busy 等待、安全请求隔离，且不调用 Worker cancel。
 - 聚焦测试、全量 pytest、Ruff、MyPy、既有构建门禁与 `git diff --check` 留存本轮新鲜证据；同步 SPEC、架构、TUI 使用说明和 AGENT_LOG。
+
+---
+
+## S13：Task-scoped Persistent Runtime Memory
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [~] R0 文档契约完成；R1–R5 待实现 |
+| 目标分支 | `codex/task-runtime-memory` |
+| 依赖 | S11-R1 通用失败恢复、S12-R1 安全暂停、T19 ContextBuilder |
+| 主贡献 | Task-scoped runtime memory + deterministic feedback + reversible coding state |
+| 总范围 | 当前 task 的工具摘要、内容寻址快照、跨进程恢复、确定性 Context 注入和按需检索 |
+
+### 问题与成功标准
+
+当前 AgentLoop 只把本轮 observation 临时放入下一次 Prompt；后续 observation 会覆盖它，resume 也不会恢复完整工具结果。Trace 为审计而省略正文，`project_memory.md` 则是人工维护的跨任务背景，二者都不能承担 task runtime memory。
+
+S13 保持 Provider 无状态，由 Harness 自动记录当前 task 已执行工具的安全结果。成功标准是：模型在多轮及跨进程 resume 后仍能获得最近行为、已读文件索引和少量热点正文；未自动注入的历史可通过只读 Memory Tool 恢复；写入、rollback 和外部文件变化不会让旧快照冒充当前文件；最终 Prompt 始终受统一预算约束。
+
+### 冻结边界
+
+- `project_memory.md` 继续由人维护，不自动接收 task memory；不实现 Durable Facts 晋升或跨 task / 跨项目共享。
+- 不保存完整 conversation history，不在 Provider 内追加消息，不使用数据库、pgvector、embedding、向量检索或 LLM 自动压缩/总结。
+- `state.json` 保持 schema v1，不放入大体积 memory 字段；`memory/`、trace、checkpoint 和阶段产物继续各自承担独立职责。
+- Memory blob 只能来自 `read_file`、`list_files`、`search_text`、`get_diff` 已经完成路径治理和脱敏的 ToolResult；Recorder 不重新读取原始文件生成 blob。
+- Memory 不进入 `hancode export`、交付产物或默认 Git 提交范围；MVP 不新增专用 Memory TUI 浏览器。
+
+### 统一数据与接口契约
+
+任务目录新增惰性创建的：
+
+```text
+.hancode/tasks/<task_id>/memory/
+├── index.json
+├── events.jsonl
+└── blobs/<sha256>.txt|json
+```
+
+`events.jsonl` 是 append-only 权威记录；`index.json` 是可由合法事件前缀恢复的派生索引。每条 `MemoryRecord` 固定包含 `schema_version`、`memory_id`、`seq`、`task_id`、`phase`、`kind`、`tool_name`、`success`、安全摘要、`error_code`、规范化路径、blob 引用/摘要/大小/媒体类型、`workspace_generation`、`checkpoint_id`、`invalidates` 和记录摘要。`stale` 由事件重放得出，不回写旧记录。
+
+核心接口：
+
+```python
+class MemoryStore(Protocol):
+    def ensure_capacity(self, task_id: str, *, reserved_bytes: int) -> None: ...
+    def record_tool_result(
+        self, task_id: str, *, phase: Phase, action: Action,
+        result: ToolResult, observation: object, state: TaskState,
+    ) -> MemoryRecord: ...
+    def record_rollback(
+        self, task_id: str, *, phase: Phase, result: RollbackResult,
+        observation: object, state: TaskState,
+    ) -> MemoryRecord: ...
+    def read(self, task_id: str, memory_id: str, *, start_line: int, end_line: int) -> MemorySlice: ...
+    def search(self, task_id: str, query: MemoryQuery) -> tuple[MemorySearchHit, ...]: ...
+
+class MemoryContextPacker(Protocol):
+    def build(self, *, task_id: str, phase: Phase, state: TaskState,
+              observation: object | None) -> MemoryContext: ...
+```
+
+`ContextBuilder.build()` 增加可选 `observation`，在内部合并 phase context、observation 和 `MemoryContext` 后统一执行 `max_context_chars` 预算。AgentLoop 不再在 ContextBuilder 返回后追加 observation。
+
+新增配置及默认值：
+
+| 配置 | 默认值 | 语义 |
+| --- | ---: | --- |
+| `max_memory_blob_bytes` | `1_048_576` | 单 blob 最大 UTF-8 字节数 |
+| `max_memory_task_bytes` | `33_554_432` | 单 task Memory 总容量 |
+| `max_memory_recent_events` | `8` | 每轮最近摘要上限 |
+| `max_memory_file_entries` | `32` | 每轮有效文件索引上限 |
+| `max_memory_hot_contents` | `2` | 每轮热点文件正文上限 |
+
+旧配置缺少这些字段时使用默认值；新模板和配置中心使用同一默认值真源。`max_memory_task_bytes` 统计 `events.jsonl`、`index.json` 和全部 blob 的实际文件字节，不计同目录原子临时文件；Memory 有界且不自动删除历史，超限返回 `memory_blob_too_large` 或 `memory_quota_exceeded`。
+
+### S13-R0：文档契约冻结
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成 |
+| 开发方式 | 用户明确不采用 TDD；只做文档一致性检查 |
+| 允许修改 | `docs/SPEC.md`、`docs/PLAN.md`、`docs/AGENT_LOG.md` |
+
+验收：
+
+- SPEC 将 runtime memory、反馈闭环、可回退状态列为三项并列主贡献。
+- 明确 Project Memory、Task Runtime Memory、Trace、Checkpoint 和 TaskState 的职责边界。
+- 冻结存储格式、公开接口、预算顺序、失效语义、错误状态、配置默认值、后续任务依赖和非目标。
+- SPEC 与活动计划无“memory 只是最低支撑维度”等冲突表述；AGENT_LOG 保留实施前的历史边界。Git diff 只新增三份目标文档的 R0 改动，不覆盖用户已有测试修改。
+
+### S13-R1：Memory 领域模型、配置与 Filesystem Store
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [ ] 待实现 |
+| 依赖 | S13-R0 |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+范围：新增不可变 Memory 模型和严格 schema；实现 blob 内容寻址、事件追加、index 原子替换、配额、task identity、序号/摘要校验、链接防护和跨进程加载；配置模板、ConfigLoader 与配置中心同步五个字段。
+
+允许修改：新增 `src/hancode/core/memory.py`、`src/hancode/storage/memory.py` 和对应新测试；修改 `core/config.py`、`core/project_config.py`、`interfaces/tui/config_presenters.py`、项目配置模板及既有 config 测试；同步 `docs/PLAN.md`、`docs/AGENT_LOG.md`。配置页面只有在 Red 证明 presenter 不能自动覆盖新增字段时才允许做最小相邻修改。
+
+原子顺序固定为 blob 临时写入/替换 → event append + flush/fsync → index 同目录原子替换。崩溃留下的新建未引用 blob应在本次失败补偿中删除；合法事件比 index 更新时允许补建并产生 `memory_index_recovered` 审计信号；非法 index、损坏事件、缺失 blob 或摘要不符返回 `memory_corrupt`。
+
+Red 测试至少覆盖：严格 round trip、相同内容两事件一 blob、旧 task 惰性初始化、合法落后 index 恢复、非法身份/序号/摘要、缺失 blob、symlink/junction、单 blob 和总配额、旧配置兼容及模板/UI 默认值一致。
+
+### S13-R2：Recorder、Mutation 与 Rollback 一致性
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [ ] 待实现 |
+| 依赖 | S13-R1 |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+将 `MemoryStore` 接入 Filesystem AgentLoop ports 和 Engine。执行顺序固定为 dispatch → FeedbackBuilder → Memory persist → observation 附 `memory_ref` → trace。所有真正 dispatch 的工具产生元数据摘要；摘要不得包含正文、stdout、stderr、command、Action args 或 reason。
+
+允许修改：`src/hancode/runtime/agent_loop.py`、`src/hancode/runtime/engine.py`、S13-R1 的 Memory 模型/Store，以及 AgentLoop、adapter、Approval resume 和 rollback 的直接回归测试；同步 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得顺带改写 Provider、Phase Router 或现有 Recovery 状态机。
+
+`read_file` 建立 `latest_by_path` 文件快照；其他白名单 blob 仅作为可检索 payload。成功 `write_file`/`edit_file`、`mutation_applied=None` 和成功 rollback 追加 invalidation、增加 generation 并保留历史 blob。mutation 前预留最大元数据事件空间；只读结果持久化失败为 `BLOCKED`，已成功 mutation/rollback 后失效失败为 `INCONSISTENT`。
+
+Red 测试至少覆盖：全工具摘要、四类 blob allow-list、memory_ref、无正文 Trace、write/edit 失效、未知写入效果、rollback 失效、Approval resume exactly-once、持久化异常的 BLOCKED/INCONSISTENT 分流以及 Memory 故障后零 Provider 继续调用。
+
+### S13-R3：Memory Context Packer 与统一预算
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [ ] 待实现 |
+| 依赖 | S13-R2 |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+自动注入最近事件摘要、最新有效文件索引和最多两个 `read_file` 热点正文。热点排序固定为 `state.files_changed` 路径优先、同 phase、较新 seq、路径字典序；当前 observation 或 `source_snippets` 已包含的正文不得重复注入。
+
+允许修改：新增 `src/hancode/runtime/memory.py`；修改 `src/hancode/runtime/context.py`、`src/hancode/runtime/agent_loop.py`、`src/hancode/tooling/file_tools.py` 和对应 context/file-tool/AgentLoop 测试；同步 `docs/PLAN.md`、`docs/AGENT_LOG.md`。安全指纹探针只返回摘要，不新增任意文件读取接口。
+
+在热点注入及后续有效检索前，复用 file tool 的路径/敏感文件边界，只计算当前脱敏内容 SHA-256。缺失、摘要变化或路径变为不安全时追加 invalidation；探针不把正文返回给 Memory 层。
+
+统一预算保留顺序为：最小骨架与 phase 必需证据 → 当前 observation → 活动失败与最近人工回答 → memory 摘要/索引 → 热点正文 → 其他可选项目上下文。按相反顺序裁剪；最终 canonical JSON 必须 `<= max_context_chars`，无法容纳最小骨架时返回 `context_budget_too_small`。
+
+Red 测试至少覆盖：跨三个工具步骤仍记住首个文件、跨 AgentLoop 实例恢复、热点排序/去重、内部和外部变化排除 stale、不同 task 隔离、超大 observation + memory 的最终预算以及最小预算失败。
+
+### S13-R4：`memory_read` 与 `memory_search`
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [ ] 待实现 |
+| 依赖 | S13-R3 |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+两个工具在所有 phase 可用，均为只读、无需 Approval/Checkpoint，且只能访问 Registry 绑定的当前 task：
+
+允许修改：新增 `src/hancode/tooling/memory_tools.py`；修改 `src/hancode/tooling/factory.py`、`src/hancode/core/tool_specs.py`、`src/hancode/core/actions.py`、`src/hancode/policy/tool_policy.py` 和对应 parser/policy/registry/factory 测试；同步 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得增加通用路径参数或绕过现有 ToolPolicy。
+
+- `memory_read(memory_id, start_line=1, end_line=200)`：最多 200 行，输出受 `max_observation_bytes` 约束；允许读取 stale 历史，但必须返回 stale、失效原因、generation 和“不可视为当前文件”的标记。
+- `memory_search(query, path=None, phase=None, include_stale=False, limit=5)`：`limit` 仅允许 1–20；只搜索当前 task 的摘要与 blob。排序依次为有效记录、路径命中、摘要命中、正文命中、同 phase、较新 seq、memory ID。
+
+Memory Tool 自身只记录访问摘要，不复制 blob。Red 测试覆盖 ToolSpec/ActionParser/Policy/Registry/Provider Catalog、非法 ID/行号/query/limit、跨 task 拒绝、stale 默认排除与显式包含、排序稳定、输出预算、损坏 blob 和任意路径不可传入。
+
+### S13-R5：端到端 Demo、文档同步与质量门
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [ ] 待实现 |
+| 依赖 | S13-R4 |
+| 开发方式 | RED → GREEN → REFACTOR；最后人工文档审查 |
+
+MockLLM Demo 固定演示：读取 A(v1) → 其他工具调用 → 销毁并恢复 AgentLoop → 自动获得 A 索引/热点 → `memory_search/read` → 写入 A(v2) 使 v1 stale → 测试失败反馈 → rollback → v2 保留为历史但不自动注入 → 重新读取得到 v1。
+
+允许修改：`src/hancode/demo_support/runner.py`、直接相关 Mock Demo 测试、`README.md`、`docs/系统架构.md`、配置说明、`docs/PLAN.md`、`docs/AGENT_LOG.md`；若 export 回归证明 allow-list 漂移，只允许在既有 export 模块和对应测试做最小修复。
+
+同步 README、系统架构、配置说明和 AGENT_LOG；确认 export allow-list 不包含 `memory/`。最终运行 S13 聚焦回归、全量 pytest、Ruff、MyPy、`uv sync --locked --extra dev`、离线 build、Mock Demo 和 `git diff --check`，并记录本轮新鲜结果、环境阻断和未完成风险。

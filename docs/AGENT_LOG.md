@@ -2258,3 +2258,17 @@
   - `tests/test_file_tools.py::test_read_file_rejects_symlink_escape` 补 `error_code="path_out_of_scope"`（与同文件其它路径逃逸断言一致）。
 - 门禁修复：`src/hancode/core/phases.py` 的 DELIVER 分支把 `requirements` 从 list+append 改为 tuple 拼接，消除 `mypy src` 的 2 项既有类型错误（`core/phases.py:138,156`），行为不变。
 - 验证：全量 pytest `1482 passed, 17 skipped`；`ruff check src tests scripts` 全仓通过（锁定 ruff 0.15.22，本地 0.16.1 会多报 UP012/I001 规则噪声，属版本差异）；`mypy src` `131 source files` 无错误；`git diff --check` 通过；`hancode --help` 正常。未提交、未推送。
+
+### 2026-08-04 — S13-R0 Task-scoped Persistent Runtime Memory 文档契约
+
+- 用户要求先完成 R0 文档更新，并明确本阶段不采用 TDD；本轮只修改 `docs/SPEC.md`、`docs/PLAN.md`、`docs/AGENT_LOG.md`，不改实现代码、不运行产品测试。
+- 问题边界：当前 observation 只在相邻轮次临时回灌，后续结果会覆盖；resume 不恢复完整工具内容；Trace 为审计而省略正文；人工维护的 `project_memory.md` 不承担自动运行时记忆。
+- 主贡献定位：将 Task-scoped persistent runtime memory、deterministic feedback loop、reversible coding state 冻结为三项并列贡献；Provider 继续保持无状态，每轮由 Harness 根据当前 task 的持久化证据重建 Context。
+- 存储契约：每个 task 惰性创建 `memory/index.json`、append-only `events.jsonl` 和内容寻址 `blobs/`；事件为权威记录、index 为可恢复派生索引，旧 `TaskState` schema v1 不增加大体积字段。
+- 记录与安全：所有真正 dispatch 的工具结果记录无正文摘要；仅 `read_file`、`list_files`、`search_text`、`get_diff` 的既有安全输出允许落 blob。Recorder 不重新读取原始文件生成 blob，Trace 和 export 不包含正文。
+- 上下文契约：ContextBuilder 在一次 `max_context_chars` 预算中处理 phase 证据、当前 observation、最近事件、有效文件索引和最多两个热点正文；不再允许 AgentLoop 在预算后追加 observation。
+- 一致性契约：write/edit、未知写入效果、rollback 和外部文件指纹变化追加 invalidation 并增加 generation；读取结果记忆失败进入 `BLOCKED`，成功 mutation/rollback 后失效失败进入 `INCONSISTENT`。
+- 检索与资源边界：R4 实现所有 phase 可用的只读 `memory_read` / `memory_search`；不使用向量数据库、embedding 或 LLM 总结。默认单 blob 1 MiB、单 task 32 MiB，历史不自动淘汰。
+- 后续任务：PLAN 将实现拆为 R1 模型/存储/配置、R2 Recorder/失效、R3 Context/预算、R4 检索工具、R5 Demo/文档/门禁；R1–R5 恢复 RED → GREEN → REFACTOR。
+- 工作区保护：开始前确认 `main` 上存在用户已有的测试修改与删除，本轮未触碰这些路径、未提交、未推送。
+- 文档验证：必需术语/配置/工具/存储路径逐项扫描通过，活动 SPEC/PLAN 未残留“Memory 只是最低支撑维度”的冲突口径；`git diff --check -- docs/SPEC.md docs/PLAN.md docs/AGENT_LOG.md` 通过；最终 `git diff --name-only -- docs` 仅列出三份目标文档。按用户要求未运行产品测试。
