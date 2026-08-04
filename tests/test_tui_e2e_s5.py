@@ -113,6 +113,7 @@ class _TaskService:
         *,
         resume: bool = False,
         trace_observer: object = None,
+        pause_token: object = None,
     ) -> AgentRunResult:
         self.run_calls.append((task_id, resume))
         self.summary = _summary(TaskStatus.COMPLETED)

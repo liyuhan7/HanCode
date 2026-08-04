@@ -96,6 +96,7 @@ class _FakeTaskService:
         resume: bool = False,
         provider: object = None,
         trace_observer: object = None,
+        pause_token: object = None,
     ) -> object:
         self.run_calls.append((task_id, resume))
         return object()

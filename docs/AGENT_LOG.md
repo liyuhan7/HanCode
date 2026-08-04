@@ -2246,3 +2246,15 @@
 - 实现：新增内存、线程安全、单向 `PauseToken`，经 TUI App、Controller、OperationExecutor、TaskService 和 Engine 传入 AgentLoop；Token 不进入 `TuiOperation`。AgentLoop 在调用 Provider 前、解析后和已批准 Action/rollback 前的安全点保存 `PAUSED`、记录 `run_paused`；resume 记录 `run_resumed`，普通 run 返回结构化 `task_paused`。
 - TUI：`/pause` 和操作菜单仅请求当前 request 的 Token，保持 busy，且不调用 Worker cancel；接受当前 request 的运行结果或错误后才清理对应 Token，中文状态/Trace 标签与帮助同步更新。
 - 验证：Core/State/Router 聚焦 `54 passed`；首轮暂停、AgentLoop 与 TUI 聚焦回归 `99 passed in 10.62s`；新增 Provider 返回后与工具完成后安全点回归在组合运行中均通过，但同一命令另有既有审批流程 `test_agent_creates_registers_and_runs_project_test_strategy` 返回 `INCONSISTENT`（`72 passed, 1 failed`），未将其掩盖或越界修复。本次修改文件 Ruff 通过、MyPy `8 source files` 无错误、`git diff --check` 通过。全量 pytest 在收集阶段被工作区已有的未跟踪 `tests/test_learnings.py` 阻断（缺少 `hancode.delivery_support.learnings`）；全仓 Ruff/MyPy 另有既有 `tests/test_learnings.py` 未使用导入和 `core/phases.py` 两项类型错误，均未越界修改。Windows 受限 sandbox 的 pytest 清理会报 `WinError 5`，使用同一项目 `.venv` 在非受限环境取得上述通过结果。
+
+### 2026-08-04 — 修复 S12 pause 提交的 CI 红色与全量门禁
+
+- 背景：commit `625abeb`（实现 agent 运行暂停功能）被用户发现 CI 全红：先是在收集阶段被 `tests/test_learnings.py` 阻断（导入不存在的 `hancode.delivery_support.learnings`），随后暴露该提交本身不完整。用户确认修复该提交、完成 feature，并同意删除遗留的 `tests/test_learnings.py`。
+- 收集修复：按用户决策删除未跟踪/已提交的 `tests/test_learnings.py`（其引用的 learnings 模块从未实现），pytest 收集恢复 `1497 tests collected`。
+- 提交内测试同步（pause 功能完成）：
+  - `task_service.run` 现恒传 `pause_token`，补上各测试 fake 的 `pause_token: object = None` 参数：`tests/test_app_layers.py`、`tests/test_task_service.py`（两处）、`tests/test_observed_trace.py`、`tests/test_tui_approval.py`、`tests/test_tui_hitl.py`、`tests/test_tui_e2e_s5.py`。
+  - `test_tui_*` 三处 fake 的 run 未接受 `pause_token`，导致批准后自动 resume 的 Worker 抛 `tui_operation_internal_error`，补参后自动 resume 生效。
+  - `tests/test_models.py` 的 TaskStatus 枚举清单补上新增的 `paused`。
+  - `tests/test_file_tools.py::test_read_file_rejects_symlink_escape` 补 `error_code="path_out_of_scope"`（与同文件其它路径逃逸断言一致）。
+- 门禁修复：`src/hancode/core/phases.py` 的 DELIVER 分支把 `requirements` 从 list+append 改为 tuple 拼接，消除 `mypy src` 的 2 项既有类型错误（`core/phases.py:138,156`），行为不变。
+- 验证：全量 pytest `1482 passed, 17 skipped`；`ruff check src tests scripts` 全仓通过（锁定 ruff 0.15.22，本地 0.16.1 会多报 UP012/I001 规则噪声，属版本差异）；`mypy src` `131 source files` 无错误；`git diff --check` 通过；`hancode --help` 正常。未提交、未推送。

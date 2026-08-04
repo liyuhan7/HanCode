@@ -135,7 +135,7 @@ def build_phase_gate(
             ),
         )
     else:
-        requirements = [
+        requirements = (
             PhaseRequirement(
                 requirement_id="knowledge_artifact_required",
                 description="KNOWLEDGE.md must exist.",
@@ -151,9 +151,10 @@ def build_phase_gate(
                     or state.latest_test_status == "passed"
                 ),
             ),
-        ]
+        )
         if delivery_diff_present is not None:
-            requirements.append(
+            requirements = (
+                *requirements,
                 PhaseRequirement(
                     requirement_id="latest_diff_evidence_required",
                     description=(
@@ -164,8 +165,7 @@ def build_phase_gate(
                         state.latest_checkpoint is None
                         or delivery_diff_present is True
                     ),
-                )
+                ),
             )
-        requirements = tuple(requirements)
 
     return PhaseGate(phase=phase, requirements=requirements)

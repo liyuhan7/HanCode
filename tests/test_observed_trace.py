@@ -238,6 +238,7 @@ def test_task_service_forwards_trace_observer(
         resume: bool,
         provider: object,
         trace_observer: object = None,
+        pause_token: object = None,
     ) -> object:
         captured["trace_observer"] = trace_observer
         captured["resume"] = resume
