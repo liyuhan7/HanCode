@@ -2238,3 +2238,11 @@
 - 新鲜验证：S11 聚焦回归 `244 passed, 2 skipped in 6.30s`；全量 pytest `1465 passed, 17 skipped in 108.13s`；Ruff 全仓通过；MyPy `130` 个源码文件无错误；`git diff --check` 通过；`uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`。新增产物写入效果未知的 fail-closed 回归也通过。
 - 环境失败单独记录：一次使用新 worktree 空 `.venv` 的 `uv run --no-sync` 因缺少 `jsonschema` 在收集测试时失败；改用已有项目依赖环境重跑后通过，未将其归类为产品失败。
 - 按用户要求保留验证临时目录和构建产物；未提交、未推送。
+
+### 2026-08-04 — S12-R1 TUI 协作式安全暂停
+
+- 用户明确要求直接在 `main` 开发、先补任务卡，并采用 TDD；未创建分支或 worktree，未提交、未推送。
+- TDD：先以 `TaskStatus.PAUSED` 缺失得到 RED，再补 Core 状态/Router/Summary；再以 `PauseToken` 模块缺失得到 AgentLoop RED，完成最小运行时安全点后转 GREEN。命令解析补充 `/pause` 回归。
+- 实现：新增内存、线程安全、单向 `PauseToken`，经 TUI App、Controller、OperationExecutor、TaskService 和 Engine 传入 AgentLoop；Token 不进入 `TuiOperation`。AgentLoop 在调用 Provider 前、解析后和已批准 Action/rollback 前的安全点保存 `PAUSED`、记录 `run_paused`；resume 记录 `run_resumed`，普通 run 返回结构化 `task_paused`。
+- TUI：`/pause` 和操作菜单仅请求当前 request 的 Token，保持 busy，且不调用 Worker cancel；接受当前 request 的运行结果或错误后才清理对应 Token，中文状态/Trace 标签与帮助同步更新。
+- 验证：Core/State/Router 聚焦 `54 passed`；首轮暂停、AgentLoop 与 TUI 聚焦回归 `99 passed in 10.62s`；新增 Provider 返回后与工具完成后安全点回归在组合运行中均通过，但同一命令另有既有审批流程 `test_agent_creates_registers_and_runs_project_test_strategy` 返回 `INCONSISTENT`（`72 passed, 1 failed`），未将其掩盖或越界修复。本次修改文件 Ruff 通过、MyPy `8 source files` 无错误、`git diff --check` 通过。全量 pytest 在收集阶段被工作区已有的未跟踪 `tests/test_learnings.py` 阻断（缺少 `hancode.delivery_support.learnings`）；全仓 Ruff/MyPy 另有既有 `tests/test_learnings.py` 未使用导入和 `core/phases.py` 两项类型错误，均未越界修改。Windows 受限 sandbox 的 pytest 清理会报 `WinError 5`，使用同一项目 `.venv` 在非受限环境取得上述通过结果。

@@ -129,6 +129,7 @@ def test_read_file_rejects_symlink_escape(tmp_path: Path) -> None:
         success=False,
         action_name="read_file",
         error_summary="Path must stay inside the project root.",
+        error_code="path_out_of_scope",
     )
 
 

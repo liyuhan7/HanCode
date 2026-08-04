@@ -35,6 +35,10 @@ def test_parse_bare_command_without_args() -> None:
     assert result.args == ()
 
 
+def test_parse_pause_command_without_args() -> None:
+    assert parse_command("/pause") == TuiCommand(name="pause", args=())
+
+
 def test_unknown_command_returns_structured_error() -> None:
     result = parse_command("/frobnicate")
 

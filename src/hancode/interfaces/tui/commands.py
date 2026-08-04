@@ -24,6 +24,7 @@ _COMMANDS: dict[str, tuple[int, int | None, str]] = {
     "use": (1, 1, "tui_task_id_required"),
     "run": (0, 0, ""),
     "resume": (0, 0, ""),
+    "pause": (0, 0, ""),
     "approve": (0, 0, ""),
     "reject": (0, None, ""),
     "status": (0, 0, ""),

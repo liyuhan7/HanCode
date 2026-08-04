@@ -52,7 +52,8 @@ class TaskSummary:
             and approval_pending is not None
         )
         resumable = (
-            state.status is TaskStatus.BLOCKED and not state.inconsistent
+            state.status in {TaskStatus.BLOCKED, TaskStatus.PAUSED}
+            and not state.inconsistent
         ) or (
             state.status is TaskStatus.INCONSISTENT
             and state.rollback_required

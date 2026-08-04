@@ -27,6 +27,7 @@ from hancode.runtime.delivery_pipeline import DeliveryPipeline
 from hancode.runtime.feedback import FeedbackBuilder
 from hancode.runtime.recovery import RecoveryCoordinator
 from hancode.runtime.observation import ObservedTraceAppender, TraceObserver
+from hancode.runtime.pause import PauseToken
 from hancode.storage.approvals import ApprovalStore
 from hancode.storage.workspace import load_project_metadata
 from hancode.tooling.factory import build_default_tool_registry
@@ -64,6 +65,7 @@ def create_agent_loop(
     trace_observer: TraceObserver | None = None,
     mutation_guard: MutationGuard | None = None,
     max_steps: int | None = None,
+    pause_token: PauseToken | None = None,
 ) -> AgentLoop:
     """Build the standard filesystem-backed AgentLoop with injectable seams."""
     config = load_config(project_root, task_id)
@@ -131,6 +133,7 @@ def create_agent_loop(
         delivery_pipeline=DeliveryPipeline(),
         build_required=config.build_command is not None,
         recovery_coordinator=RecoveryCoordinator(feedback_builder=feedback_builder),
+        pause_token=pause_token,
     )
 
 
@@ -141,9 +144,14 @@ def run_task(
     resume: bool = False,
     provider: LLMClient | None = None,
     trace_observer: TraceObserver | None = None,
+    pause_token: PauseToken | None = None,
 ) -> AgentRunResult:
     """Create and execute the standard AgentLoop for one task."""
     loop = create_agent_loop(
-        project_root, task_id, provider=provider, trace_observer=trace_observer
+        project_root,
+        task_id,
+        provider=provider,
+        trace_observer=trace_observer,
+        pause_token=pause_token,
     )
     return loop.run(task_id, resume=resume)

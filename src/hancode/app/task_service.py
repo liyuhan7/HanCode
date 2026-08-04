@@ -16,6 +16,7 @@ from hancode.providers.factory import create_provider_adapter
 from hancode.runtime.agent_loop import AgentRunResult
 from hancode.runtime.engine import run_task
 from hancode.runtime.observation import TraceObserver
+from hancode.runtime.pause import PauseToken
 from hancode.storage.workspace import (
     init_task_workspace,
     list_task_ids,
@@ -100,6 +101,7 @@ class TaskService:
         resume: bool = False,
         provider: LLMClient | None = None,
         trace_observer: TraceObserver | None = None,
+        pause_token: PauseToken | None = None,
     ) -> AgentRunResult:
         selected_provider = provider
         if selected_provider is None:
@@ -114,6 +116,7 @@ class TaskService:
             resume=resume,
             provider=selected_provider,
             trace_observer=trace_observer,
+            pause_token=pause_token,
         )
 
     def resume(
@@ -123,6 +126,7 @@ class TaskService:
         *,
         provider: LLMClient | None = None,
         trace_observer: TraceObserver | None = None,
+        pause_token: PauseToken | None = None,
     ) -> AgentRunResult:
         return self.run(
             project_root,
@@ -130,6 +134,7 @@ class TaskService:
             resume=True,
             provider=provider,
             trace_observer=trace_observer,
+            pause_token=pause_token,
         )
 
     def _resolve_credential(self, config: HanCodeConfig) -> str | None:

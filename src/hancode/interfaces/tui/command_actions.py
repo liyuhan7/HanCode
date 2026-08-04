@@ -24,6 +24,7 @@ def available_actions(state: TuiViewState) -> tuple[CommandActionView, ...]:
         _action("tasks", "查看任务列表", "/tasks", None, True, None),
         _action("run", "运行当前任务", "/run", "R", has_task and not state.busy, "没有可运行的任务。"),
         _action("resume", "继续当前任务", "/resume", None, has_task and not state.busy, "当前任务不可继续。"),
+        _action("pause", "暂停当前任务", "/pause", None, state.busy and state.active_task_id == state.running_task_id, "当前没有正在运行的任务。"),
         _action("diff", "查看代码改动", "/diff", None, has_task, "请先选择任务。"),
         _action("test", "查看测试结果", "/test", None, has_task, "请先选择任务。"),
         _action("delivery", "查看交付结果", "/delivery", None, has_task, "请先选择任务。"),

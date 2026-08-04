@@ -36,6 +36,8 @@ def select_next_phase(state: TaskState, *, build_required: bool = False) -> Rout
             "approval_decision_required",
             blocked=True,
         )
+    if state.status is TaskStatus.PAUSED:
+        return RoutingDecision(state.current_phase, "task_paused", blocked=True)
     if state.status is TaskStatus.COMPLETED:
         if build_required and state.latest_build_status != "passed":
             return RoutingDecision(Phase.REVIEW, "build_required", blocked=True)

@@ -33,6 +33,7 @@ from hancode.core.change_models import CheckpointSummary, DiffScope, TaskDiff
 from hancode.core.delivery_evidence import DeliveryEvidence, DeliveryResult
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.runtime.agent_loop import AgentRunResult
+from hancode.runtime.pause import PauseToken
 from hancode.storage.export import ExportResult
 from hancode.storage.trace import TraceEvent
 
@@ -247,9 +248,14 @@ class TuiOperationExecutor:
         self,
         operation: TuiOperation,
         trace_observer: TuiRunObserver | None = None,
+        pause_token: PauseToken | None = None,
     ) -> TuiOperationResult:
         try:
-            value = self._execute(operation, trace_observer=trace_observer)
+            value = self._execute(
+                operation,
+                trace_observer=trace_observer,
+                pause_token=pause_token,
+            )
         except HanCodeError as exc:
             raise TuiOperationError(
                 operation.request_id,
@@ -284,6 +290,7 @@ class TuiOperationExecutor:
         operation: TuiOperation,
         *,
         trace_observer: TuiRunObserver | None,
+        pause_token: PauseToken | None,
     ) -> TuiOperationValue:
         kind = operation.kind
         task_id = operation.task_id
@@ -306,6 +313,14 @@ class TuiOperationExecutor:
                 if trace_observer is not None
                 else None
             )
+            if pause_token is not None:
+                return self._services.task.run(
+                    self._project_root,
+                    selected,
+                    resume=operation.resume,
+                    trace_observer=observer,
+                    pause_token=pause_token,
+                )
             return self._services.task.run(
                 self._project_root,
                 selected,

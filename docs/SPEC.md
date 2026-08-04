@@ -2146,4 +2146,12 @@ P2 风险可作为后续改进：
 - 原生调用始终要求单个 Function Tool；缺失或畸形 tool call 是可重试协议失败，未知工具、refusal、content filter 与输出截断是终止错误。`final` 不属于任何 Provider 输出契约。
 - `auto` 仅接受精确 capability 结构化错误并逐级降级；每次降级只记录 `provider_mode_fallback` 的 phase、from/to mode 与 reason code，绝不记录 provider 原文、arguments 或凭据。Trace sink 失败必须让运行进入 `inconsistent`。
 
+## S12-R1 TUI 协作式安全暂停（2026-08-04）
+
+`TaskStatus` 增加 `PAUSED`，但 `state.json` 继续使用 schema v1。暂停请求只属于当前 TUI 进程的一次运行：`PauseToken` 是内存中的线程安全单向信号，不写任务目录，也不提供跨进程或 CLI 暂停。
+
+AgentLoop 仅在 Provider 调用前、候选 Action 解析后但 Policy/Approval/Checkpoint/dispatch 前、已批准 Action/rollback 前和完成完整工具操作后的下一轮入口处理该信号。到达安全点时先持久化 `PAUSED`，再追加 `run_paused`；二者失败均转为 `INCONSISTENT`。Provider、测试与工具运行中不被中断，Checkpoint—dispatch、State 与 Trace 持久化区间保持原子。
+
+普通 run 读取 `PAUSED` 时不调用 Provider 或工具，并返回结构化 `task_paused`；显式 resume 先恢复 `RUNNING`、记录 `run_resumed`，再沿原 Router 继续。completed、inconsistent、等待输入或等待 Approval 等已经到达的状态优先于迟到暂停请求。
+
 

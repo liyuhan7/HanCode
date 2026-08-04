@@ -57,6 +57,7 @@ from hancode.interfaces.tui.view_state import (
 )
 from hancode.runtime.agent_loop import AgentRunResult
 from hancode.storage.trace import TraceEvent
+from hancode.runtime.pause import PauseToken
 
 
 _MUTATIONS = frozenset(
@@ -223,10 +224,15 @@ class TuiSessionController:
         operation: TuiOperation,
         *,
         trace_observer: TuiRunObserver | None = None,
+        pause_token: PauseToken | None = None,
     ) -> TuiOperationResult:
         """Delegate the operation to the Textual-independent executor."""
 
-        return self._executor.execute(operation, trace_observer=trace_observer)
+        return self._executor.execute(
+            operation,
+            trace_observer=trace_observer,
+            pause_token=pause_token,
+        )
 
     def apply_live_summary(self, request_id: str, summary: TaskSummary) -> bool:
         """Apply a running-task snapshot only while its mutation is current."""

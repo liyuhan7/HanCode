@@ -18,6 +18,7 @@ from hancode.runtime.agent_loop import (
     _state_after_tool,
 )
 from hancode.runtime.engine import create_agent_loop
+from hancode.runtime.pause import PauseToken
 from hancode.storage.checkpoints import (
     CheckpointManifest,
     RollbackResult,
@@ -406,6 +407,28 @@ class SpyToolRegistry:
         self.events.append("tool")
         self.actions.append(action)
         return ToolResult(success=True, action_name=action.tool_name or "unknown")
+
+
+class PauseAfterFirstActionLLM(MockLLM):
+    def __init__(self, actions: list[dict[str, object]], token: PauseToken) -> None:
+        super().__init__(actions)
+        self._token = token
+
+    def next_action(self, context: dict[str, object]) -> dict[str, object]:
+        action = super().next_action(context)
+        self._token.request()
+        return action
+
+
+class PauseAfterToolRegistry(SpyToolRegistry):
+    def __init__(self, events: list[str], token: PauseToken) -> None:
+        super().__init__(events)
+        self._token = token
+
+    def dispatch(self, action: Action) -> ToolResult:
+        result = super().dispatch(action)
+        self._token.request()
+        return result
 
 
 class FailingToolRegistry(SpyToolRegistry):
@@ -1437,6 +1460,57 @@ def test_blocked_active_failure_resume_does_not_call_llm() -> None:
     assert result.final_state.active_failure == failure
 
 
+def test_pause_before_provider_call_persists_paused_state() -> None:
+    token = PauseToken()
+    token.request()
+    loop, llm, _, _, tools, _ = _build_loop(
+        [_read_file_action()],
+        pause_token=token,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.PAUSED
+    assert result.error is None
+    assert result.final_state.status is TaskStatus.PAUSED
+    assert llm.contexts == ()
+    assert tools.actions == []
+
+
+def test_pause_after_provider_response_does_not_dispatch_action() -> None:
+    token = PauseToken()
+    llm = PauseAfterFirstActionLLM([_read_file_action()], token)
+    loop, _, _, _, tools, _ = _build_loop(
+        [],
+        llm=llm,
+        pause_token=token,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.PAUSED
+    assert len(llm.contexts) == 1
+    assert tools.actions == []
+
+
+def test_pause_requested_by_tool_waits_for_tool_completion() -> None:
+    token = PauseToken()
+    events: list[str] = []
+    tools = PauseAfterToolRegistry(events, token)
+    loop, _, _, _, _, _ = _build_loop(
+        [_read_file_action()],
+        events=events,
+        tool_registry=tools,
+        pause_token=token,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.PAUSED
+    assert [action.tool_name for action in tools.actions] == ["read_file"]
+    assert events == ["policy", "tool"]
+
+
 def _build_loop(
     actions: list[dict[str, object]],
     *,
@@ -1451,6 +1525,8 @@ def _build_loop(
     state_store: StubStateStore | None = None,
     tool_registry: SpyToolRegistry | None = None,
     delivery_pipeline: StubDeliveryPipeline | None = None,
+    pause_token: PauseToken | None = None,
+    llm: MockLLM | None = None,
 ) -> tuple[
     AgentLoop,
     MockLLM,
@@ -1460,7 +1536,7 @@ def _build_loop(
     SpyFeedbackBuilder,
 ]:
     recorded_events = events if events is not None else []
-    llm = MockLLM(actions)
+    llm = llm or MockLLM(actions)
     context_builder = SpyContextBuilder()
     policy = SpyPolicy(decision or StubPolicyDecision(allowed=True), recorded_events)
     tools = tool_registry or SpyToolRegistry(recorded_events)
@@ -1479,6 +1555,7 @@ def _build_loop(
         interaction_enabled=interaction_enabled,
         mutation_guard=InMemoryMutationGuard(),
         delivery_pipeline=delivery_pipeline,
+        pause_token=pause_token,
     )
     return loop, llm, context_builder, policy, tools, feedback
 

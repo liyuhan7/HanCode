@@ -50,3 +50,9 @@ Wide 终端（100 列及以上）显示任务、当前进展、Inspector 三栏�
 - Provider 页使用密码输入框将 API Key 直接保存到系统 Keyring；页面只展示来源和末四位掩码，不把 Key 写入项目配置、日志、Trace 或截图。
 - Keyring 来源支持录入、更新和显式确认清除；环境变量与 `.env` 来源只读。保存 Key 后仍需单独确认保存 `credential_source=keyring` 的项目配置草稿。
 - Worker 运行时禁止编辑项目配置，返回工作台后保留原有任务和检查状态。
+
+## 协作式暂停
+
+- `/pause` 和 Command Palette“暂停当前任务”只在当前选中任务的 mutation Worker 运行时可用；重复请求幂等，并提示“暂停请求已提交，等待当前操作到达安全点”。
+- 请求后界面继续显示运行中，直到 AgentLoop 返回 `PAUSED` 才解除 busy 并显示“已暂停”。不提供快捷键、CLI `task pause`、硬停止或取消请求。
+- `/resume` 是唯一恢复入口。长 Provider、测试或工具操作会完整结束，再在安全点暂停；不会通过 Textual Worker cancel 中断它们。

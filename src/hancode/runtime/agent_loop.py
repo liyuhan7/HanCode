@@ -32,6 +32,7 @@ from hancode.tooling.file_tools import redact_text
 from hancode.providers.base import LLMClient
 from hancode.providers.errors import ProviderError
 from hancode.providers.mock import MockLLMExhausted
+from hancode.runtime.pause import PauseToken
 from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.models import OperationStatus, Phase, Risk, TaskStatus
 from hancode.policy.path_policy import PathZone, normalize_project_relative_path
@@ -403,6 +404,7 @@ class AgentLoop:
         delivery_pipeline: DeliveryPipelinePort | None = None,
         build_required: bool = False,
         recovery_coordinator: RecoveryCoordinator | None = None,
+        pause_token: PauseToken | None = None,
     ) -> None:
         if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps <= 0:
             raise ValueError("max_steps must be positive")
@@ -434,6 +436,7 @@ class AgentLoop:
         self._delivery_pipeline = delivery_pipeline
         self._build_required = build_required
         self._recovery_coordinator = recovery_coordinator or RecoveryCoordinator()
+        self._pause_token = pause_token
 
     def run(self, task_id: str, *, resume: bool = False) -> AgentRunResult:
         if not isinstance(resume, bool):
@@ -610,6 +613,41 @@ class AgentLoop:
                 trace_events=tuple(trace_events),
             )
 
+        def _pause_if_requested(steps: int) -> AgentRunResult | None:
+            if self._pause_token is None or not self._pause_token.is_requested():
+                return None
+            paused_state = self._save_if_changed(
+                task_id, state, replace(state, status=TaskStatus.PAUSED)
+            )
+            trace_error = self._append_trace(
+                task_id,
+                trace_events,
+                event_type="run_paused",
+                phase=paused_state.current_phase,
+                status="succeeded",
+                observation={"reason": "pause_requested"},
+            )
+            if trace_error is not None:
+                inconsistent_state, state_error = self._mark_inconsistent(
+                    task_id, paused_state, trace_error
+                )
+                return _result(
+                    TaskStatus.INCONSISTENT,
+                    steps,
+                    tuple(tool_calls),
+                    observation,
+                    state_error,
+                    inconsistent_state,
+                )
+            return _result(
+                TaskStatus.PAUSED,
+                steps,
+                tuple(tool_calls),
+                observation,
+                None,
+                paused_state,
+            )
+
         reconcile = getattr(self._state_store, "reconcile", None)
         if callable(reconcile):
             try:
@@ -655,6 +693,38 @@ class AgentLoop:
                     state,
                 )
             state = reconciled_state
+
+        if state.status is TaskStatus.PAUSED:
+            if not resume:
+                return _result(
+                    TaskStatus.PAUSED,
+                    0,
+                    (),
+                    observation,
+                    StructuredError(
+                        error_code="task_paused",
+                        message="Task is paused and requires an explicit resume.",
+                        phase=state.current_phase.value,
+                        denied_rule=None,
+                        suggested_fix="Resume the task when it is safe to continue.",
+                    ),
+                    state,
+                )
+            state = self._save_if_changed(
+                task_id, state, replace(state, status=TaskStatus.RUNNING)
+            )
+            trace_error = self._append_trace(
+                task_id,
+                trace_events,
+                event_type="run_resumed",
+                phase=state.current_phase,
+                status="running",
+            )
+            if trace_error is not None:
+                state, state_error = self._mark_inconsistent(task_id, state, trace_error)
+                return _result(
+                    TaskStatus.INCONSISTENT, 0, (), observation, state_error, state
+                )
 
         if state.active_failure is not None:
             active_failure = state.active_failure
@@ -780,6 +850,9 @@ class AgentLoop:
                         state = self._state_store.load(task_id)
                         if not _is_valid_task_state(state, task_id):
                             raise HanCodeError(_state_adapter_error(Phase.SPEC))
+                        paused_result = _pause_if_requested(steps_completed)
+                        if paused_result is not None:
+                            return paused_result
                         routing = select_next_phase(
                             state, build_required=self._build_required
                         )
@@ -931,6 +1004,9 @@ class AgentLoop:
         )
         for step in range(steps_completed + 1, self._max_steps + 1):
             routing = select_next_phase(state, build_required=self._build_required)
+            paused_result = _pause_if_requested(step - 1)
+            if paused_result is not None and not routing.completed and not routing.blocked:
+                return paused_result
             if routing.rollback_required:
                 state = self._enter_phase(task_id, state, routing.phase)
                 state, observation, error, status = self._perform_rollback(
@@ -1102,6 +1178,9 @@ class AgentLoop:
                     state_error,
                     state,
                 )
+            paused_result = _pause_if_requested(step - 1)
+            if paused_result is not None:
+                return paused_result
             try:
                 raw_action = self._llm.next_action(context)
             except MockLLMExhausted as exc:
@@ -1255,6 +1334,10 @@ class AgentLoop:
                         ),
                     )
                 continue
+
+            paused_result = _pause_if_requested(step - 1)
+            if paused_result is not None:
+                return paused_result
 
             # A valid action proves the provider recovered.  Do not let an older
             # retryable provider or parse error masquerade as the later terminal

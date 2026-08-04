@@ -25,6 +25,7 @@ from hancode.app.inspection_service import ArtifactPreview, InspectionService
 from hancode.app.interaction_service import InteractionService
 from hancode.app.recovery_service import RecoveryService, RecoverySummary, RollbackPreview
 from hancode.app.task_service import TaskService
+from hancode.runtime.pause import PauseToken
 from hancode.app.task_models import TaskSummary
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import TaskStatus
@@ -151,6 +152,8 @@ class HanCodeTuiApp(App[None]):
         self._rollback_modal_open = False
         self._drawer_requested = False
         self._config_service = config_service or ConfigService()
+        self._active_pause_token: PauseToken | None = None
+        self._pause_request_id: str | None = None
         self.controller = TuiSessionController(
             project_root,
             services=services,
@@ -237,6 +240,8 @@ class HanCodeTuiApp(App[None]):
             self.start_run(resume=False)
         elif command.name == "resume":
             self.start_run(resume=True)
+        elif command.name == "pause":
+            self.request_pause()
         elif command.name == "task":
             self._create_and_run(command.args[0])
         elif command.name == "use":
@@ -370,7 +375,24 @@ class HanCodeTuiApp(App[None]):
             self._notify(error.message if error is not None else "操作被拒绝。")
             return
         self.controller.begin_operation(operation)
-        self._run_worker(operation)
+        pause_token = PauseToken()
+        self._active_pause_token = pause_token
+        self._pause_request_id = operation.request_id
+        self._run_worker(operation, pause_token=pause_token)
+
+    def request_pause(self) -> None:
+        state = self.controller.state
+        token = self._active_pause_token
+        if (
+            token is None
+            or self._pause_request_id != state.current_request_id
+            or not state.busy
+            or state.active_task_id != state.running_task_id
+        ):
+            self._notify("当前没有正在运行的任务。")
+            return
+        token.request()
+        self._notify("暂停请求已提交，等待当前操作到达安全点。")
 
     def submit_answer(self, answer: str) -> None:
         """Answer a pending interaction, then auto-resume (S4-T6)."""
@@ -528,7 +550,7 @@ class HanCodeTuiApp(App[None]):
 
     def _show_help(self) -> None:
         self._notify(
-            "命令：/task <goal> /tasks /use <id> /run /resume /approve "
+            "命令：/task <goal> /tasks /use <id> /run /resume /pause /approve "
             "/reject <理由> /status /diff [task|latest] [path] /test "
             "/checkpoints /delivery /trace [event-id] /artifacts /open <name> "
             "/export <directory> /build /rollback [confirm|cancel] /view [focus|inspect] "
@@ -760,12 +782,15 @@ class HanCodeTuiApp(App[None]):
             f"{PHASE_LABELS.get(summary.current_phase.value, summary.current_phase.value)}"
         )
 
-    def _run_worker(self, operation: TuiOperation) -> None:
+    def _run_worker(
+        self, operation: TuiOperation, *, pause_token: PauseToken | None = None
+    ) -> None:
         self._run_operation_worker(
             operation,
             group="task-mutation",
             exclusive=True,
             trace_observer=_WorkerTraceObserver(self, operation.request_id),
+            pause_token=pause_token,
         )
 
     def _run_query_worker(self, operation: TuiOperation) -> None:
@@ -783,6 +808,7 @@ class HanCodeTuiApp(App[None]):
         group: str,
         exclusive: bool,
         trace_observer: _WorkerTraceObserver | None = None,
+        pause_token: PauseToken | None = None,
     ) -> None:
         """Execute one operation and publish only request-scoped messages."""
 
@@ -790,11 +816,23 @@ class HanCodeTuiApp(App[None]):
             worker = get_current_worker()
             try:
                 if trace_observer is None:
-                    result = self.controller.execute(operation)
+                    result = (
+                        self.controller.execute(operation, pause_token=pause_token)
+                        if pause_token is not None
+                        else self.controller.execute(operation)
+                    )
                 else:
-                    result = self.controller.execute(
-                        operation,
-                        trace_observer=trace_observer,
+                    result = (
+                        self.controller.execute(
+                            operation,
+                            trace_observer=trace_observer,
+                            pause_token=pause_token,
+                        )
+                        if pause_token is not None
+                        else self.controller.execute(
+                            operation,
+                            trace_observer=trace_observer,
+                        )
                     )
             except TuiOperationError as exc:
                 if not worker.is_cancelled:
@@ -843,6 +881,7 @@ class HanCodeTuiApp(App[None]):
             return
         kind = message.result.kind
         if kind is TuiOperationKind.RUN_TASK:
+            self._clear_pause_token(message.result.request_id)
             self._refresh_phase_bar()
             self._refresh_task_list_data_only()
             self._refresh_header()
@@ -921,11 +960,17 @@ class HanCodeTuiApp(App[None]):
 
         if not self.controller.apply_error(message.error):
             return
+        self._clear_pause_token(message.error.request_id)
         self._notify(message.error.structured_error.message)
         if message.error.kind is TuiOperationKind.RUN_TASK:
             self._refresh_phase_bar()
             self._reflect_waiting_input()
             self._refresh_task_list_data_only()
+
+    def _clear_pause_token(self, request_id: str) -> None:
+        if self._pause_request_id == request_id:
+            self._active_pause_token = None
+            self._pause_request_id = None
 
     def _refresh_task_list_data_only(self) -> None:
         """Update task list data only; does not touch widgets."""

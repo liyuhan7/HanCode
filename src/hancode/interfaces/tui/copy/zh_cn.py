@@ -20,6 +20,7 @@ STATUS_LABELS = {
     "running": "正在运行",
     "waiting_input": "等待输入",
     "waiting_approval": "等待确认",
+    "paused": "已暂停",
     "blocked": "已阻塞",
     "failed": "执行失败",
     "completed": "已完成",
@@ -59,6 +60,8 @@ EVENT_LABELS = {
     "rollback_completed": "已恢复检查点",
     "approval_requested": "等待确认",
     "run_completed": "任务完成",
+    "run_paused": "任务已安全暂停",
+    "run_resumed": "恢复运行",
 }
 
 

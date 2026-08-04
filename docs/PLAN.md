@@ -7365,3 +7365,36 @@ S4-R2 Build       S4-R3 Test Report
 - AgentLoop 保留既有测试专用修复、Approval、Checkpoint、RecoveryService 与 Provider 协议重试路径，仅在 S11-R1 范围接入统一失败闭环。
 - 新鲜验证：聚焦回归 `244 passed, 2 skipped in 6.30s`；全量 `1465 passed, 17 skipped in 108.13s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 130 source files`；`git diff --check` 通过；`uv build --offline` 成功生成 sdist 与 wheel。
 - 验证临时目录、`dist/`、`build/` 和 `src/hancode.egg-info/` 按用户要求保留；未提交、未推送。
+
+---
+
+## S12-R1：TUI 协作式安全暂停
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；全量质量门受既有工作区收集/静态问题阻断 |
+| 分支 | `main`（用户明确指定） |
+| 依赖 | S11-R1、S5-R2 TUI Operation 边界 |
+| 范围 | 当前 TUI 会话内的协作式暂停与既有 `/resume` 恢复 |
+| 开发方式 | Core → Runtime → Application → TUI 的逐行为 RED → GREEN → 回归 |
+
+### 行为契约
+
+- 新增单次运行级、线程安全的内存 `PauseToken`；`/pause` 和操作菜单只请求暂停，不取消 Provider、测试或工具进程。
+- AgentLoop 只在安全点暂停：Provider 调用前、解析后的 Policy/Approval/Checkpoint/dispatch 前、已批准 Action 或 Rollback 前，以及完整工具操作后的下一轮入口。
+- 达到安全点先将 `TaskStatus.PAUSED` 持久化，再记录 `run_paused` Trace；任一持久化失败均 fail-closed 为 `INCONSISTENT`。
+- 普通 run 遇到 PAUSED 零 Provider、零工具并返回 `task_paused`；`/resume` 将其转回 RUNNING、记录 `run_resumed` 后沿既有 Router 继续。
+- TUI 以 request ID 绑定活动 Token；暂停请求期间保持 busy，只有 Worker 返回 PAUSED 后才解除 busy。迟到 Worker 不得清除新运行的 Token。
+
+### 非目标
+
+- 不支持跨进程、跨 TUI 会话、任务目录 marker 或 CLI `task pause`。
+- 不实现硬停止、Textual Worker cancel、Provider/测试/工具进程终止或取消暂停请求。
+- 不在 Checkpoint—dispatch 原子区间、State/Trace 持久化或工具执行中间暂停。
+
+### 验收
+
+- State/Router 覆盖 PAUSED 序列化、普通 run 零执行、`resumable=True` 与 resume 转回 RUNNING。
+- AgentLoop 覆盖调用前、Provider 返回后、已批准 Action/Rollback 前及工具完成后的协作式暂停；无 Token 行为保持不变。
+- TUI 覆盖 `/pause`、菜单启用、重复请求、非运行拒绝、busy 等待、安全请求隔离，且不调用 Worker cancel。
+- 聚焦测试、全量 pytest、Ruff、MyPy、既有构建门禁与 `git diff --check` 留存本轮新鲜证据；同步 SPEC、架构、TUI 使用说明和 AGENT_LOG。
