@@ -34,6 +34,59 @@ class MemoryMediaType(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryQuery:
+    query: str
+    path: str | None = None
+    phase: Phase | None = None
+    include_stale: bool = False
+    limit: int = 5
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySlice:
+    memory_id: str
+    phase: Phase
+    kind: MemoryKind
+    tool_name: str | None
+    media_type: MemoryMediaType
+    paths: tuple[str, ...]
+    record_generation: int
+    current_generation: int
+    stale: bool
+    invalidated_by: str | None
+    invalidation_reason: str | None
+    current_file_authoritative: bool
+    warning: str | None
+    start_line: int
+    end_line: int
+    total_lines: int
+    content: str
+    content_truncated: bool
+    next_start_line: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySearchHit:
+    memory_id: str
+    seq: int
+    phase: Phase
+    kind: MemoryKind
+    tool_name: str | None
+    success: bool
+    summary: str
+    error_code: str | None
+    paths: tuple[str, ...]
+    media_type: MemoryMediaType | None
+    blob_bytes: int | None
+    record_generation: int
+    current_generation: int
+    stale: bool
+    invalidated_by: str | None
+    invalidation_reason: str | None
+    match_sources: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryBlob:
     content: bytes
     media_type: MemoryMediaType
@@ -418,8 +471,11 @@ __all__ = [
     "MemoryKind",
     "MemoryLoadResult",
     "MemoryMediaType",
+    "MemoryQuery",
     "MemoryRecord",
     "MemoryRecordDraft",
+    "MemorySearchHit",
+    "MemorySlice",
     "MemorySnapshot",
     "digest_memory_index",
     "digest_memory_record",

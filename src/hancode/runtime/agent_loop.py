@@ -2147,6 +2147,31 @@ class AgentLoop:
                 try:
                     tool_result = self._tool_registry.dispatch(action)
                 except HanCodeError as exc:
+                    if _memory_tool_integrity_failure(action, exc.structured_error):
+                        trace_error = self._append_trace(
+                            task_id,
+                            trace_events,
+                            event_type="tool_failed",
+                            phase=routing.phase,
+                            status="failed",
+                            action=_trace_action(action, decision, include_path=False),
+                            observation={"dispatch_failed": True},
+                            error_summary=redact_text(exc.structured_error.message),
+                        )
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            exc.structured_error,
+                            state,
+                            risks=(
+                                (_trace_failure_risk(trace_error),)
+                                if trace_error is not None
+                                else ()
+                            ),
+                        )
                     trace_error = self._append_trace(
                         task_id,
                         trace_events,
@@ -6226,6 +6251,17 @@ def _memory_failure_requires_inconsistent(action: Action, result: ToolResult) ->
     return action.tool_name in {"write_file", "edit_file"} and (
         result.success or result.mutation_applied is None
     )
+
+
+def _memory_tool_integrity_failure(
+    action: Action, error: StructuredError
+) -> bool:
+    return action.tool_name in {"memory_read", "memory_search"} and error.error_code in {
+        "memory_corrupt",
+        "memory_task_identity_mismatch",
+        "memory_path_link_not_allowed",
+        "memory_write_error",
+    }
 
 
 def _memory_failure_needs_checkpoint_abort(

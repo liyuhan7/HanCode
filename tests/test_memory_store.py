@@ -76,6 +76,75 @@ def test_append_read_file_memory_is_restored_by_another_store(tmp_path: Path) ->
     assert blob_path.read_bytes() == b"print('hello')\n"
 
 
+def test_read_returns_task_bound_text_blob_lines_and_authority(tmp_path: Path) -> None:
+    _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    record = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/main.py.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("first\nsecond\nthird\n"),
+        ),
+    ).record
+
+    result = store.read(
+        "task-001", record.memory_id, start_line=1, end_line=2
+    )
+
+    assert result.memory_id == record.memory_id
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.total_lines == 3
+    assert result.content == "first\nsecond\n"
+    assert result.next_start_line == 3
+    assert result.stale is False
+    assert result.current_file_authoritative is True
+
+
+def test_read_reports_stable_errors_for_missing_content_and_range(tmp_path: Path) -> None:
+    _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    metadata = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="run_tests",
+            success=True,
+            summary="Tests passed.",
+        ),
+    ).record
+
+    with pytest.raises(HanCodeError) as missing:
+        store.read("task-001", "mem-999999", start_line=1, end_line=1)
+    with pytest.raises(HanCodeError) as unavailable:
+        store.read("task-001", metadata.memory_id, start_line=1, end_line=1)
+
+    content = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/main.py.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("one line\n"),
+        ),
+    ).record
+    with pytest.raises(HanCodeError) as invalid_range:
+        store.read("task-001", content.memory_id, start_line=2, end_line=2)
+
+    assert missing.value.structured_error.error_code == "memory_not_found"
+    assert unavailable.value.structured_error.error_code == "memory_content_unavailable"
+    assert invalid_range.value.structured_error.error_code == "memory_invalid_record"
+
+
 def test_record_tool_result_persists_a_read_file_snapshot(tmp_path: Path) -> None:
     task_root = _initialize_task(tmp_path)
     action = Action(
@@ -160,6 +229,11 @@ def test_record_successful_write_invalidates_the_current_read_snapshot(
     assert invalidation.workspace_generation == 1
     assert store.load("task-001").snapshot.latest_by_path == ()
 
+    stale = store.read(
+        "task-001", read.memory_id, start_line=1, end_line=1
+    )
+    assert stale.invalidation_reason == "source_write"
+
 
 def test_record_rollback_invalidates_the_current_read_snapshot(tmp_path: Path) -> None:
     task_root = _initialize_task(tmp_path)
@@ -201,6 +275,10 @@ def test_record_rollback_invalidates_the_current_read_snapshot(tmp_path: Path) -
     assert rollback.kind is MemoryKind.ROLLBACK
     assert rollback.invalidates == (read.memory_id,)
     assert rollback.workspace_generation == 1
+    stale = store.read(
+        "task-001", read.memory_id, start_line=1, end_line=1
+    )
+    assert stale.invalidation_reason == "rollback"
 
 
 def test_record_list_files_keeps_a_json_payload_without_file_snapshot(
@@ -231,6 +309,97 @@ def test_record_list_files_keeps_a_json_payload_without_file_snapshot(
     assert record.blob_ref is not None and record.blob_ref.endswith(".json")
     assert record.paths == ("src",)
     assert FilesystemMemoryStore(tmp_path).load("task-001").snapshot.latest_by_path == ()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "args", "result", "expected_summary"),
+    [
+        (
+            "memory_read",
+            {"memory_id": "mem-000001", "start_line": 1, "end_line": 200},
+            ToolResult(
+                success=True,
+                action_name="memory_read",
+                output={
+                    "memory_id": "mem-000001",
+                    "start_line": 1,
+                    "end_line": 3,
+                    "stale": True,
+                    "content": "secret historical body",
+                },
+            ),
+            {
+                "outcome": "succeeded",
+                "memory_id": "mem-000001",
+                "start_line": 1,
+                "end_line": 3,
+                "stale": True,
+            },
+        ),
+        (
+            "memory_search",
+            {"query": "secret query"},
+            ToolResult(
+                success=True,
+                action_name="memory_search",
+                output={
+                    "returned_count": 2,
+                    "hits": [
+                        {"memory_id": "mem-000002"},
+                        {"memory_id": "mem-000001"},
+                    ],
+                },
+            ),
+            {
+                "outcome": "succeeded",
+                "returned_count": 2,
+                "memory_ids": ["mem-000002", "mem-000001"],
+            },
+        ),
+        (
+            "memory_read",
+            {"memory_id": "mem-999999"},
+            ToolResult(
+                success=False,
+                action_name="memory_read",
+                error_summary="Missing memory.",
+                error_code="memory_not_found",
+                mutation_applied=False,
+            ),
+            {"outcome": "failed", "error_code": "memory_not_found"},
+        ),
+    ],
+)
+def test_record_memory_tool_access_keeps_metadata_without_query_or_blob(
+    tmp_path: Path,
+    tool_name: str,
+    args: dict[str, object],
+    result: ToolResult,
+    expected_summary: dict[str, object],
+) -> None:
+    task_root = _initialize_task(tmp_path)
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name=tool_name,
+        args=args,
+        reason=None,
+    )
+
+    record = FilesystemMemoryStore(tmp_path).record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=action,
+        result=result,
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+
+    assert record.kind is MemoryKind.MEMORY_ACCESS
+    assert record.blob_ref is None
+    assert json.loads(record.summary) == expected_summary
+    assert "secret query" not in record.summary
+    assert "secret historical body" not in record.summary
 
 
 @pytest.mark.parametrize(

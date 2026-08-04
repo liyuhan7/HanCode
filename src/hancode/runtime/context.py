@@ -366,6 +366,35 @@ def _apply_context_budget(
         raise AssertionError("truncation shape must remain internal and deterministic")
     truncation["applied"] = True
 
+    for section_name in _TRUNCATION_ORDER[phase]:
+        if section_name not in _OMITTABLE_SECTIONS or section_name not in sections:
+            continue
+        del sections[section_name]
+        omitted.append(section_name)
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
+
+    if "runtime_environment" in context:
+        del context["runtime_environment"]
+        omitted.append("runtime_environment")
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
+
+    if "task_workspace" in context:
+        del context["task_workspace"]
+        omitted.append("task_workspace")
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
+
+    if "artifact_targets" in context:
+        del context["artifact_targets"]
+        omitted.append("artifact_targets")
+        if len(_canonical_json(context)) <= max_context_chars:
+            return context
+
+    if _truncate_source_snippets(sections, context, max_context_chars, truncated):
+        return context
+
     if _trim_runtime_memory(context, max_context_chars, truncated):
         return context
 
@@ -387,36 +416,7 @@ def _apply_context_budget(
         if len(_canonical_json(context)) <= max_context_chars:
             return context
 
-    for section_name in _TRUNCATION_ORDER[phase]:
-        if section_name not in _OMITTABLE_SECTIONS or section_name not in sections:
-            continue
-        del sections[section_name]
-        omitted.append(section_name)
-        if len(_canonical_json(context)) <= max_context_chars:
-            return context
-
-    if "runtime_environment" in context:
-        del context["runtime_environment"]
-        omitted.append("runtime_environment")
-        if len(_canonical_json(context)) <= max_context_chars:
-            return context
-
-    if "task_workspace" in context:
-        del context["task_workspace"]
-        omitted.append("task_workspace")
-        if len(_canonical_json(context)) <= max_context_chars:
-            return context
-
     if _truncate_observation(context, max_context_chars, truncated):
-        return context
-
-    if "artifact_targets" in context:
-        del context["artifact_targets"]
-        omitted.append("artifact_targets")
-        if len(_canonical_json(context)) <= max_context_chars:
-            return context
-
-    if _truncate_source_snippets(sections, context, max_context_chars, truncated):
         return context
 
     for section_name in _TRUNCATION_ORDER[phase]:

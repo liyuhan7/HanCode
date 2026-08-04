@@ -7415,7 +7415,7 @@ S4-R2 Build       S4-R3 Test Report
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [~] R0–R2 完成；R3–R5 待实现 |
+| 状态 | [x] R0–R5 已完成；全量质量门通过 |
 | 目标分支 | `codex/task-runtime-memory` |
 | 依赖 | S11-R1 通用失败恢复、S12-R1 安全暂停、T19 ContextBuilder |
 | 主贡献 | Task-scoped runtime memory + deterministic feedback + reversible coding state |
@@ -7554,7 +7554,7 @@ Red 测试至少覆盖：全工具摘要、四类 blob allow-list、memory_ref�
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [~] 核心实现完成；全量 pytest 受 Windows `WinError 5` 阻断 |
+| 状态 | [x] 已完成；Windows approval 重试修复保留，全量门禁通过 |
 | 依赖 | S13-R2 |
 | 开发方式 | RED → GREEN → REFACTOR |
 
@@ -7568,28 +7568,52 @@ Red 测试至少覆盖：全工具摘要、四类 blob allow-list、memory_ref�
 
 Red 测试至少覆盖：跨三个工具步骤仍记住首个文件、跨 AgentLoop 实例恢复、热点排序/去重、内部和外部变化排除 stale、不同 task 隔离、超大 observation + memory 的最终预算以及最小预算失败。
 
+实施结果（2026-08-04）：R4 开始前修复统一预算中可选项目上下文晚于 Memory 热点裁剪的顺序回归；R3 聚焦 `180 passed`，全量 pytest `1533 passed, 17 skipped in 128.22s`，Ruff、MyPy、离线 build 与 `git diff --check` 通过。既有 approval Windows `PermissionError` 短暂锁竞争重试修复保持不变。
+
 ### S13-R4：`memory_read` 与 `memory_search`
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [ ] 待实现 |
+| 状态 | [x] 已完成；R3 前置与 R4 全部质量门通过 |
 | 依赖 | S13-R3 |
 | 开发方式 | RED → GREEN → REFACTOR |
 
 两个工具在所有 phase 可用，均为只读、无需 Approval/Checkpoint，且只能访问 Registry 绑定的当前 task：
 
-允许修改：新增 `src/hancode/tooling/memory_tools.py`；修改 `src/hancode/tooling/factory.py`、`src/hancode/core/tool_specs.py`、`src/hancode/core/actions.py`、`src/hancode/policy/tool_policy.py` 和对应 parser/policy/registry/factory 测试；同步 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得增加通用路径参数或绕过现有 ToolPolicy。
+允许修改：新增 `src/hancode/tooling/memory_tools.py`；修改 `src/hancode/core/memory.py`、`src/hancode/storage/memory.py`、`src/hancode/runtime/memory.py`、`src/hancode/runtime/agent_loop.py`、`src/hancode/tooling/factory.py`、`src/hancode/core/tool_specs.py`、`src/hancode/core/actions.py`、`src/hancode/policy/tool_policy.py`，以及 Memory Tool、Memory Store、AgentLoop、Feedback、parser、policy、registry/factory 和 Provider Catalog 的直接回归测试；同步 `docs/PLAN.md`、`docs/AGENT_LOG.md`。保留 R3 的 approval Windows 重试修复。不得修改 Provider 实现、Checkpoint/Rollback、TaskState schema、Trace schema、export、TUI 或 Context 预算策略，不得增加通用路径参数或绕过现有 ToolPolicy。
 
 - `memory_read(memory_id, start_line=1, end_line=200)`：最多 200 行，输出受 `max_observation_bytes` 约束；允许读取 stale 历史，但必须返回 stale、失效原因、generation 和“不可视为当前文件”的标记。
 - `memory_search(query, path=None, phase=None, include_stale=False, limit=5)`：`limit` 仅允许 1–20；只搜索当前 task 的摘要与 blob。排序依次为有效记录、路径命中、摘要命中、正文命中、同 phase、较新 seq、memory ID。
 
-Memory Tool 自身只记录访问摘要，不复制 blob。Red 测试覆盖 ToolSpec/ActionParser/Policy/Registry/Provider Catalog、非法 ID/行号/query/limit、跨 task 拒绝、stale 默认排除与显式包含、排序稳定、输出预算、损坏 blob 和任意路径不可传入。
+Memory Tool 自身只记录访问摘要，不复制 blob。先将 R3 的 freshness 检查提取为 `MemoryFreshnessChecker`，供 Packer、`memory_read` 和 `memory_search` 复用；一次调用最多追加一条批量 invalidation，持久化或完整性失败必须 fail-closed。
+
+纵向切片与验收顺序：
+
+1. `memory_read` 当前 task 文本 blob tracer bullet。
+2. stale 内部失效、外部 fingerprint 变化及权威性警告。
+3. JSON 确定性格式化分页、200 行限制、超大单行和精确输出预算。
+4. `memory_search` 摘要、路径、正文匹配及固定排序。
+5. stale 默认排除/显式包含、phase/path 过滤和 task 隔离。
+6. `memory_access` Recorder 元数据，无 blob、query 或正文。
+7. ToolSpec、ActionParser、Policy、Registry 与 Provider Catalog 在所有 phase 一致。
+8. blob 损坏、task identity/link 错误和 freshness 写入失败在再次调用 Provider 前进入 `BLOCKED`。
+9. 跨 AgentLoop 实例恢复后 `memory_search` → `memory_read` 可取回 R1-R3 历史。
+
+最终验证：R3/R4 Memory 聚焦回归；ActionParser、ToolPolicy、Registry/factory、Provider Catalog、AgentLoop 与 Feedback 回归；全量 pytest、Ruff、MyPy、离线 build 和 `git diff --check`。只有 R3 前置门禁与 R4 全部新鲜验证通过后才标记完成。
+
+实施进度（2026-08-04）：
+
+- 新增不可变 `MemoryQuery`、`MemorySlice`、`MemorySearchHit`，Store 提供 task-bound `read()`/`search()`；读取时验证 blob，JSON 确定性 pretty-print 后分页，搜索使用 Unicode `casefold()` 子串与冻结排序。
+- 新增共享 `MemoryFreshnessChecker`，R3 Packer、`memory_read`、`memory_search` 复用单次批量失效；stale 历史可读但明确非权威，完整性与 freshness 写入错误穿透 Registry 并在 AgentLoop 中直接 `BLOCKED`。
+- 两工具由 ToolSpec 自动进入 Parser、Policy 与 Provider Catalog；默认 Registry 仅在 task-bound 配置中注册。Memory access Recorder 只写目标/行范围/stale 或命中 ID/error code，不复制 blob、query 或正文。
+- 跨独立 AgentLoop 实例的 `memory_search` → `memory_read` 恢复回归通过。当前 R3/R4、parser、policy、registry/factory、catalog、AgentLoop 与 Feedback 聚焦回归为 `309 passed`；Ruff 全仓通过；MyPy `135 source files` 无错误。最终全量 pytest、离线 build 与 diff check 待文档同步后执行。
+- 最终验证：全量 pytest `1575 passed, 17 skipped in 101.73s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 135 source files`；`uv build --offline` 成功生成 sdist/wheel；`git diff --check` 通过。R3 前置门禁与 R4 新鲜验证均满足，S13-R4 标记完成。
 
 ### S13-R5：端到端 Demo、文档同步与质量门
 
 | 元信息 | 值 |
 | --- | --- |
-| 状态 | [ ] 待实现 |
+| 状态 | [x] 已完成；Mock Demo、文档与质量门通过 |
 | 依赖 | S13-R4 |
 | 开发方式 | RED → GREEN → REFACTOR；最后人工文档审查 |
 
@@ -7598,3 +7622,12 @@ MockLLM Demo 固定演示：读取 A(v1) → 其他工具调用 → 销毁并恢
 允许修改：`src/hancode/demo_support/runner.py`、直接相关 Mock Demo 测试、`README.md`、`docs/系统架构.md`、配置说明、`docs/PLAN.md`、`docs/AGENT_LOG.md`；若 export 回归证明 allow-list 漂移，只允许在既有 export 模块和对应测试做最小修复。
 
 同步 README、系统架构、配置说明和 AGENT_LOG；确认 export allow-list 不包含 `memory/`。最终运行 S13 聚焦回归、全量 pytest、Ruff、MyPy、`uv sync --locked --extra dev`、离线 build、Mock Demo 和 `git diff --check`，并记录本轮新鲜结果、环境阻断和未完成风险。
+
+实施结果（2026-08-04）：
+
+- MockLLM Demo 在首个阶段读取 `src/calculator.py` 初始快照；首轮测试失败后由新 AgentLoop resume，通过 task-bound `memory_search`/`memory_read` 恢复当前 v2；每个 stage 都重新创建 AgentLoop，继续使用同一 Filesystem Memory。
+- 首次 source write 后再次读取 calculator v2，后续测试失败与自动 rollback 使 v1/v2 都保留为 stale 历史；rollback 后显式读取 v1，默认检索不再返回 stale v2，Context 也不会把它当作当前文件。
+- Memory Tool 访问只落 `memory_access` 元数据，未复制 query 或 blob；新增 Demo 回归同时验证跨阶段恢复、stale 映射、历史正文和 export allow-list 不包含 `memory/`。
+- README 与系统架构同步 `.hancode/tasks/<task>/memory/` 结构、五项 Memory 配置、stale 语义和离线 Demo 流程；`export` 的六项 artifact allow-list 保持不变。
+- R5 聚焦回归 `67 passed`；`uv sync --locked --extra dev` 成功；Mock Demo 脚本与 `hancode demo --provider mock` 均返回 `completed`；`uv build --offline` 成功生成 sdist/wheel。
+- 全量 pytest 中间一次为 `1575 passed, 17 skipped`，重复 Demo 在既有审批消费的 `state.json` 原子替换处出现 `state_write_error`；4 次独立工作区复现全部完成，当前代码最终全量为 `1576 passed, 17 skipped in 166.98s`。文档同步后的全仓 Ruff、MyPy 与 `git diff --check` 均通过，证据已回填 AGENT_LOG；该 Windows 文件锁竞争仍是环境层低频风险，未纳入 R5 越界修复。

@@ -9,7 +9,10 @@ from hancode.core.memory import (
     MemoryBlob,
     MemoryKind,
     MemoryMediaType,
+    MemoryQuery,
     MemoryRecord,
+    MemorySearchHit,
+    MemorySlice,
     digest_memory_record,
 )
 from hancode.core.models import Phase
@@ -87,3 +90,53 @@ def test_memory_blob_rejects_forged_digest_or_size() -> None:
             content_sha256="0" * 64,
             byte_count=1,
         )
+
+
+def test_memory_query_slice_and_search_hit_are_immutable_slot_models() -> None:
+    query = MemoryQuery(query="needle")
+    slice_ = MemorySlice(
+        memory_id="mem-000001",
+        phase=Phase.CODE,
+        kind=MemoryKind.TOOL_RESULT,
+        tool_name="read_file",
+        media_type=MemoryMediaType.TEXT,
+        paths=("src/main.py",),
+        record_generation=0,
+        current_generation=0,
+        stale=False,
+        invalidated_by=None,
+        invalidation_reason=None,
+        current_file_authoritative=True,
+        warning=None,
+        start_line=1,
+        end_line=1,
+        total_lines=1,
+        content="needle\n",
+        content_truncated=False,
+        next_start_line=None,
+    )
+    hit = MemorySearchHit(
+        memory_id="mem-000001",
+        seq=1,
+        phase=Phase.CODE,
+        kind=MemoryKind.TOOL_RESULT,
+        tool_name="read_file",
+        success=True,
+        summary="Read src/main.py.",
+        error_code=None,
+        paths=("src/main.py",),
+        media_type=MemoryMediaType.TEXT,
+        blob_bytes=7,
+        record_generation=0,
+        current_generation=0,
+        stale=False,
+        invalidated_by=None,
+        invalidation_reason=None,
+        match_sources=("content",),
+    )
+
+    assert query.limit == 5
+    assert slice_.current_file_authoritative is True
+    assert hit.match_sources == ("content",)
+    with pytest.raises((AttributeError, TypeError)):
+        query.limit = 10  # type: ignore[misc]

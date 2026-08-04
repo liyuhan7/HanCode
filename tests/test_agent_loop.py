@@ -35,6 +35,7 @@ from hancode.core.failures import (
     RecoveryMode,
 )
 from hancode.core.interactions import InteractionRecord, InteractionStatus
+from hancode.core.memory import MemoryBlob, MemoryKind, MemoryRecordDraft
 from hancode.delivery_support.result import RequirementCoverage, RequirementStatus
 from hancode.runtime.delivery_pipeline import DeliveryPipeline
 from hancode.runtime.feedback import (
@@ -50,6 +51,7 @@ from hancode.tooling.factory import build_default_tool_registry
 from hancode.tooling.registry import ToolResult
 from hancode.storage.trace import TraceEvent
 from hancode.storage.test_strategies import TestStrategyStore
+from hancode.storage.memory import FilesystemMemoryStore
 
 
 @dataclass(frozen=True)
@@ -538,6 +540,25 @@ class FailingMemoryStore(SpyMemoryStore):
         )
 
 
+class CorruptMemoryToolRegistry(SpyToolRegistry):
+    def __init__(self, events: list[str], error_code: str) -> None:
+        super().__init__(events)
+        self.error_code = error_code
+
+    def dispatch(self, action: Action) -> ToolResult:
+        self.events.append("tool")
+        self.actions.append(action)
+        raise HanCodeError(
+            StructuredError(
+                error_code=self.error_code,
+                message="Task runtime memory cannot be trusted.",
+                phase=action.phase.value,
+                denied_rule="valid_runtime_memory_required",
+                suggested_fix="Repair task runtime memory before continuing.",
+            )
+        )
+
+
 def test_finish_action_routes_to_the_next_phase_with_context() -> None:
     loop, llm, context_builder, _, _, _ = _build_loop([_finish_action()])
 
@@ -599,6 +620,123 @@ def test_read_memory_failure_blocks_without_a_second_provider_call() -> None:
     assert result.error.error_code == "memory_write_error"
     assert len(tools.actions) == 1
     assert len(llm.contexts) == 1
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "memory_corrupt",
+        "memory_task_identity_mismatch",
+        "memory_path_link_not_allowed",
+        "memory_write_error",
+    ],
+)
+def test_memory_tool_integrity_failure_blocks_without_record_or_second_provider(
+    error_code: str,
+) -> None:
+    events: list[str] = []
+    tools = CorruptMemoryToolRegistry(events, error_code)
+    memory_store = SpyMemoryStore()
+    loop, llm, _, _, _, feedback = _build_loop(
+        [
+            {
+                "type": "tool_call",
+                "phase": "code",
+                "tool_name": "memory_search",
+                "args": {"query": "needle"},
+                "reason": None,
+            },
+            _finish_action(),
+        ],
+        events=events,
+        tool_registry=tools,
+        memory_store=memory_store,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == error_code
+    assert len(llm.contexts) == 1
+    assert memory_store.tool_records == []
+    assert feedback.tool_results == []
+
+
+def test_memory_search_then_read_recovers_history_across_agent_loop_instances(
+    tmp_path: Path,
+) -> None:
+    init_project_workspace(tmp_path, "project-001", "Course", "Assignment")
+    init_task_workspace(tmp_path, "task-001", goal="Recover historical evidence.")
+    store = FilesystemMemoryStore(tmp_path)
+    historical = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.SPEC,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="get_diff",
+            success=True,
+            summary="Captured recovery needle.",
+            blob=MemoryBlob.text("historical evidence body\n"),
+        ),
+    ).record
+    config = load_config(tmp_path, "task-001")
+
+    search_loop = create_agent_loop(
+        tmp_path,
+        "task-001",
+        provider=MockLLM(
+            [
+                {
+                    "type": "tool_call",
+                    "phase": "spec",
+                    "tool_name": "memory_search",
+                    "args": {"query": "recovery needle"},
+                    "reason": None,
+                }
+            ]
+        ),
+        tool_registry=build_default_tool_registry(config),
+        max_steps=1,
+    )
+    searched = search_loop.run("task-001")
+    save_state(
+        config.task_root,
+        replace(load_state(config.task_root), status=TaskStatus.CREATED),
+    )
+
+    read_loop = create_agent_loop(
+        tmp_path,
+        "task-001",
+        provider=MockLLM(
+            [
+                {
+                    "type": "tool_call",
+                    "phase": "spec",
+                    "tool_name": "memory_read",
+                    "args": {"memory_id": historical.memory_id},
+                    "reason": None,
+                }
+            ]
+        ),
+        tool_registry=build_default_tool_registry(config),
+        max_steps=1,
+    )
+    read = read_loop.run("task-001")
+
+    snapshot = store.load("task-001").snapshot
+    access_records = [
+        record for record in snapshot.records if record.kind is MemoryKind.MEMORY_ACCESS
+    ]
+    assert searched.tool_calls == ("memory_search",)
+    assert read.tool_calls == ("memory_read",)
+    assert [record.tool_name for record in access_records] == [
+        "memory_search",
+        "memory_read",
+    ]
+    assert all(record.blob_ref is None for record in access_records)
+    assert read.final_observation is not None
+    assert "historical evidence body" in read.final_observation.to_dict()["summary"]
 
 
 def test_policy_denial_does_not_execute_tool() -> None:

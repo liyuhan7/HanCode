@@ -49,6 +49,58 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         read_only=True,
     ),
     ToolSpec(
+        name="memory_read",
+        description=(
+            "Read a line range from one persisted memory blob in the current task. "
+            "Stale history is readable but is explicitly non-authoritative."
+        ),
+        args_schema={
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "pattern": "^mem-[0-9]{6,}$",
+                },
+                "start_line": {"type": "integer", "minimum": 1, "default": 1},
+                "end_line": {"type": "integer", "minimum": 1, "default": 200},
+            },
+            "required": ["memory_id"],
+            "additionalProperties": False,
+        },
+        allowed_phases=frozenset(Phase),
+        read_only=True,
+    ),
+    ToolSpec(
+        name="memory_search",
+        description=(
+            "Search summaries, recorded paths, and verified blob text in the current "
+            "task. Use memory_read to retrieve a matching blob."
+        ),
+        args_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//).+$",
+                },
+                "phase": {"type": "string", "enum": [phase.value for phase in Phase]},
+                "include_stale": {"type": "boolean", "default": False},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        allowed_phases=frozenset(Phase),
+        read_only=True,
+    ),
+    ToolSpec(
         name="list_files",
         description=(
             "List project files visible to the current workspace policy. "

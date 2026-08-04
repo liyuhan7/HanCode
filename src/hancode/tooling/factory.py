@@ -10,11 +10,13 @@ from typing import Any, cast
 
 from hancode.core.config import HanCodeConfig
 from hancode.core.errors import HanCodeError
+from hancode.core.models import Phase
 from hancode.core.state import load_state
 from hancode.core.tool_specs import ALL_TOOL_SPECS
 from hancode.policy.path_policy import PathClassifier, PathZone
 from hancode.providers.base import ToolDescriptor
 from hancode.storage.test_strategies import TestStrategyStore
+from hancode.storage.memory import FilesystemMemoryStore
 from hancode.tooling.build_tools import run_build as _run_build_tool
 from hancode.tooling.checkpoint_tools import list_checkpoints
 from hancode.tooling.delivery_tools import record_knowledge, record_review, read_test_report
@@ -29,6 +31,11 @@ from hancode.tooling.file_tools import (
 )
 from hancode.tooling.test_tools import run_tests
 from hancode.tooling.registry import ToolRegistry, ToolResult
+from hancode.tooling.memory_tools import (
+    MemoryFreshnessChecker,
+    memory_read,
+    memory_search,
+)
 from hancode.tooling.test_strategy_tools import record_test_strategy
 from hancode.tooling.test_remediation_tools import record_remediation
 
@@ -127,6 +134,24 @@ def _run_build_dispatch(
     return _run_build_tool(project_root, command, **cast(dict[str, Any], remaining))
 
 
+def _memory_search_dispatch(
+    config: HanCodeConfig,
+    task_id: str,
+    checker: MemoryFreshnessChecker,
+    store: FilesystemMemoryStore,
+    **kwargs: object,
+) -> ToolResult:
+    phase = load_state(config.task_root).current_phase if config.task_root else Phase.SPEC
+    return memory_search(
+        task_id,
+        current_phase=phase,
+        checker=checker,
+        store=store,
+        max_observation_bytes=config.max_observation_bytes,
+        **cast(dict[str, Any], kwargs),
+    )
+
+
 def build_default_tool_registry(
     config: HanCodeConfig,
     *,
@@ -153,6 +178,28 @@ def build_default_tool_registry(
 
     # S4 tools
     if task_root is not None:
+        memory_store = FilesystemMemoryStore(project_root)
+        freshness_checker = MemoryFreshnessChecker(project_root, config, memory_store)
+        registry.register(
+            "memory_read",
+            partial(
+                memory_read,
+                task_root.name,
+                checker=freshness_checker,
+                store=memory_store,
+                max_observation_bytes=config.max_observation_bytes,
+            ),
+        )
+        registry.register(
+            "memory_search",
+            partial(
+                _memory_search_dispatch,
+                config,
+                task_root.name,
+                freshness_checker,
+                memory_store,
+            ),
+        )
         registry.register(
             "get_diff",
             partial(get_diff, project_root, task_root),

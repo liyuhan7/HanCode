@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from hancode.core.actions import Action, ActionType
+from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import Phase
 from hancode.tooling.registry import ToolRegistry, ToolResult
 
@@ -60,6 +61,43 @@ def test_tool_exception_returns_failed_result_without_exception_message() -> Non
         error_code="tool_execution_exception",
     )
     assert "secret-value" not in (result.error_summary or "")
+
+
+@pytest.mark.parametrize(
+    ("error_code", "propagates"),
+    [
+        ("memory_corrupt", True),
+        ("memory_task_identity_mismatch", True),
+        ("memory_path_link_not_allowed", True),
+        ("memory_write_error", True),
+        ("memory_not_found", False),
+    ],
+)
+def test_registry_only_propagates_memory_integrity_errors(
+    error_code: str, propagates: bool
+) -> None:
+    def memory_read(*, memory_id: str) -> ToolResult:
+        raise HanCodeError(
+            StructuredError(
+                error_code=error_code,
+                message="Memory access failed.",
+                phase="code",
+                denied_rule="valid_memory_required",
+                suggested_fix="Repair or select memory.",
+            )
+        )
+
+    registry = ToolRegistry()
+    registry.register("memory_read", memory_read)
+    action = _tool_action("memory_read", {"memory_id": "mem-000001"})
+
+    if propagates:
+        with pytest.raises(HanCodeError) as raised:
+            registry.dispatch(action)
+        assert raised.value.structured_error.error_code == error_code
+    else:
+        result = registry.dispatch(action)
+        assert result.error_code == "tool_execution_exception"
 
 
 def test_tool_result_contains_action_name_success_and_error_summary() -> None:

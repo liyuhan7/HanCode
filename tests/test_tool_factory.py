@@ -6,6 +6,7 @@ import subprocess
 
 from hancode.core.actions import Action, ActionType
 from hancode.core.config import load_config
+from hancode.core.memory import MemoryBlob, MemoryKind, MemoryRecordDraft
 from hancode.core.models import Phase
 from hancode.core.state import load_state, save_state
 from hancode.core.test_strategy import TestCoverageItem
@@ -13,8 +14,10 @@ from hancode.core.test_remediation import FailureCategory
 from hancode.runtime.test_remediation import build_test_failure_record
 from hancode.storage.test_remediations import TestRemediationStore
 from hancode.storage.test_strategies import TestStrategyStore
+from hancode.storage.memory import FilesystemMemoryStore
 from hancode.tooling.test_tools import run_tests
-from hancode.tooling.factory import build_default_tool_registry
+from hancode.tooling.factory import build_default_tool_catalog, build_default_tool_registry
+from hancode.core.tool_specs import TOOL_SPEC_BY_NAME
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 
 
@@ -104,6 +107,41 @@ def test_task_registry_records_test_strategy(tmp_path: Path) -> None:
     assert result.success is True
     assert isinstance(result.output, dict)
     assert len(result.output["test_strategy_digest"]) == 64
+
+
+def test_task_registry_binds_memory_tools_to_current_task(tmp_path: Path) -> None:
+    init_project_workspace(tmp_path, "project-001", "SE", "Harness")
+    init_task_workspace(tmp_path, "task-001", goal="Recover memory.")
+    record = FilesystemMemoryStore(tmp_path).append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="get_diff",
+            success=True,
+            summary="Needle summary.",
+            blob=MemoryBlob.text("historical body\n"),
+        ),
+    ).record
+    registry = build_default_tool_registry(load_config(tmp_path, "task-001"))
+
+    searched = registry.dispatch(_action("memory_search", {"query": "needle"}))
+    read = registry.dispatch(_action("memory_read", {"memory_id": record.memory_id}))
+
+    assert searched.success is True
+    assert searched.output["hits"][0]["memory_id"] == record.memory_id  # type: ignore[index]
+    assert read.success is True
+    assert read.output["content"] == "historical body\n"  # type: ignore[index]
+
+
+def test_default_provider_catalog_projects_memory_tool_specs(tmp_path: Path) -> None:
+    init_project_workspace(tmp_path, "project-001", "SE", "Harness")
+    catalog = {tool.name: tool for tool in build_default_tool_catalog(load_config(tmp_path))}
+
+    for name in ("memory_read", "memory_search"):
+        assert catalog[name].args_schema == TOOL_SPEC_BY_NAME[name].args_schema
+        assert TOOL_SPEC_BY_NAME[name].allowed_phases == frozenset(Phase)
+        assert TOOL_SPEC_BY_NAME[name].read_only is True
 
 
 def test_task_registry_records_remediation_for_latest_failure(tmp_path: Path) -> None:

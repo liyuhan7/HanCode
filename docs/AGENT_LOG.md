@@ -2302,3 +2302,26 @@
 - 全量门禁：两次全量 pytest 均达到 `1530 passed, 17 skipped` 后各有一条不同的 Mock Demo 用例因 Windows `WinError 5` 失败；第二次的真实堆栈位于既有 approval manifest 的 `os.replace`，并非 R3 Memory 实现。首次失败用例单独重跑通过。未将 R3 标记完成；后续需在稳定 Windows 文件系统条件下取得全量 Green 后再收尾。
 - 静态/构建：全仓 Ruff 通过；MyPy `134` 个源码文件无错误；`git diff --check` 未报告错误。`uv build --offline` 因当前离线 cache 缺少 `setuptools>=68` 无法解析 build-system 依赖，未联网安装或改动锁文件。
 - 保留：按用户要求不清理 `.tmp/hancode-s13-r3/` 及既有构建产物；未提交、未推送。
+
+### 2026-08-04 — S13-R4 Memory Tools 与按需历史恢复
+
+- 准入与前置：先扩展 PLAN 的 R4 文件边界和九项纵向验收切片，再修复 R3 统一预算误先裁 Memory 热点的顺序回归。R3 聚焦 `180 passed`；全量 pytest `1533 passed, 17 skipped in 128.22s`；Ruff、MyPy、离线 build、`git diff --check` 通过，保留 approval Windows 重试修复。
+- TDD：依次以 Memory 模型缺失、Store `read()` 缺失、`memory_tools` 模块缺失、search 缺失、未知 ToolSpec/Registry、`memory_access` 未记录、AgentLoop 完整性错误误入 `INCONSISTENT`、`total_matches` 被 limit 提前截断等 RED，完成每个纵向切片的最小 GREEN 后再重构。
+- 模型与 Store：新增冻结 slots 的 `MemoryQuery`、`MemorySlice`、`MemorySearchHit`；`FilesystemMemoryStore.read()` 按 task/ID/1-based 行范围读取验证后的 blob，JSON 在读取时确定性格式化；`search()` 对摘要、精确记录路径和已验证 UTF-8 blob 做 `casefold()` 子串匹配并按冻结键排序。
+- Freshness 与预算：新增共享 `MemoryFreshnessChecker`，Packer、read、search 复用现有脱敏指纹、PathClassifier 和单次批量 invalidation。stale 不重复探测；read 保留 identity/stale/generation/pagination 元数据，按完整行裁剪并对超大单行 UTF-8 安全截断；search 先选 limit，再缩摘要、末尾删低排名命中。
+- Tool 接线：两个 ToolSpec 在全部 Phase `read_only=True`，Parser/Policy/Provider Catalog 由现有 metadata 自动消费；默认 Registry 只在 `task_root` 存在时绑定当前 task，不暴露 task ID、blob path 或任意磁盘路径参数，无 Approval/Checkpoint。
+- Recorder 与 fail-closed：Memory Tool 成功/普通失败只追加 `memory_access`，摘要不含 query、正文或复制 blob。`memory_corrupt`、`memory_task_identity_mismatch`、`memory_path_link_not_allowed`、freshness `memory_write_error` 从 Registry 穿透，AgentLoop 在再次 Provider 前直接 `BLOCKED`，不记录不可信访问结果。
+- 恢复与当前验证：真实 Filesystem Store 加多个独立 AgentLoop 实例的 `memory_search` → `memory_read` 可恢复历史正文，access 记录无 blob。当前聚焦回归 `309 passed`；Ruff 全仓通过；MyPy `135 source files` 无错误。最终全量 pytest、离线 build、diff check 和 PLAN 完成状态待执行后回填。
+- 最终验证：全量 pytest `1575 passed, 17 skipped in 101.73s`；Ruff `All checks passed!`；MyPy `Success: no issues found in 135 source files`；`uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`；`git diff --check` 通过。R3 前置与 R4 全部新鲜门禁满足，任务标记完成。
+- 工作区：保留 R1-R3 与用户已有未提交基线，不覆盖无关文档删除或 `.gitignore` 修改；按用户假设不清理测试临时目录，未提交、未推送。
+
+### 2026-08-04 — S13-R5 端到端 Mock Demo、文档同步与质量门
+
+- 范围：依据 S13-R5 任务卡，只扩展 `demo_support/runner.py`、Mock Demo 直接回归、README、系统架构、PLAN 和本日志；未修改 export allow-list、Provider、TUI、TaskState 或 Memory 核心实现。
+- RED：新增回归先在现有 Demo 上失败，`read_file` 记录数为 `0`；失败点确认 Demo 尚未证明 task runtime memory 的读取、检索、stale 和 rollback 生命周期。
+- GREEN：Demo 首阶段先读取 `src/calculator.py` v1，在 source write 后再次读取 v2；首轮测试失败后由新 AgentLoop resume，通过 task-bound `memory_search`/`memory_read` 恢复 v2，rollback 后再显式读取 stale v1。Memory access 只写无 blob/query/正文的元数据。
+- 回归：新增测试验证 v1/v2 blob 均保留为 stale 历史、默认检索排除 v2、当前文件映射清除、stale read 返回 v1，以及 export 目录没有 `memory/`；R5 聚焦 `67 passed`，Mock Demo 原有回归 `11 passed`。
+- 文档：README 和系统架构补充 `memory/index.json`、`events.jsonl`、`blobs/`、五项 Memory 配置、跨 AgentLoop 恢复、stale 语义和 export 边界；PLAN 将 S13/R5 标记完成并记录验证证据。
+- 质量门：`uv sync --locked --extra dev` 成功；`uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`；`scripts/demo_mock_loop.py` 与 `hancode demo --provider mock` 均返回 `completed`；全量 Ruff `All checks passed!`；MyPy `Success: no issues found in 135 source files`；`git diff --check` 通过。
+- 全量 pytest：中间一次运行 `1575 passed, 17 skipped` 时一个重复 Demo 工作区在既有审批消费的 `core.state.save_state()` 原子替换处返回 `state_write_error`；trace 中此前的 Memory search/read 均已成功，未发现 Memory 损坏。随后 4 次独立工作区复现全部 `completed`，最终当前代码全量为 `1576 passed, 17 skipped in 166.98s`。该一次性 Windows 文件锁 flake 作为环境风险保留，不改变 Memory 语义，也未新增越界重试逻辑。
+- 产物与 Git：按用户要求未清理 `.tmp/hancode-s13-r5-*`、历史 `.tmp`、`dist/`、`build/`、`src/hancode.egg-info/` 或 `.pytest_cache/`；未提交、未推送。清理由用户在确认精确路径后自行执行。

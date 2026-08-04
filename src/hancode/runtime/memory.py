@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
 from hancode.core.config import HanCodeConfig
 from hancode.core.errors import HanCodeError, StructuredError
-from hancode.core.memory import MemoryKind, MemoryMediaType, MemoryRecord, MemoryRecordDraft
+from hancode.core.memory import MemoryKind, MemoryMediaType, MemoryRecord
 from hancode.core.models import Phase
 from hancode.core.state import TaskState
-from hancode.policy.path_policy import PathClassifier, PathZone
 from hancode.storage.memory import FilesystemMemoryStore
-from hancode.tooling.file_tools import probe_redacted_file_sha256
+from hancode.tooling.memory_tools import MemoryFreshnessChecker
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,45 +103,13 @@ class MemoryContextPacker:
     ) -> MemoryContext:
         if state.task_id != task_id:
             raise _memory_context_error("memory_task_identity_mismatch", phase)
-        snapshot = self.store.load(task_id).snapshot
+        snapshot = MemoryFreshnessChecker(
+            self.project_root, self.config, self.store
+        ).refresh_all(task_id)
         records = _records_by_id(snapshot.records)
         selected = _select_current_files(
             snapshot.latest_by_path, records, state, phase, self.config.max_memory_file_entries
         )
-        invalidated: list[tuple[str, str]] = []
-        classifier = PathClassifier(self.config)
-        for path, record in selected:
-            probe = probe_redacted_file_sha256(self.project_root, path)
-            reason = _stale_reason(probe.status, probe.content_sha256, record.content_sha256)
-            if classifier.classify(path) in {PathZone.PROTECTED, PathZone.OUT_OF_SCOPE}:
-                reason = "unsafe"
-            if reason is not None:
-                invalidated.append((record.memory_id, reason))
-        if invalidated:
-            reason_by_path = {
-                path: reason
-                for path, record in selected
-                for memory_id, reason in invalidated
-                if memory_id == record.memory_id
-            }
-            self.store.append(
-                task_id,
-                MemoryRecordDraft(
-                    phase=phase, kind=MemoryKind.INVALIDATION, tool_name=None,
-                    success=True,
-                    summary=_canonical_json({
-                        "outcome": "invalidated", "source": "context_fingerprint_probe",
-                        "reason_by_path": reason_by_path,
-                    }),
-                    paths=tuple(sorted(reason_by_path)),
-                    invalidates=tuple(memory_id for memory_id, _ in invalidated),
-                ),
-            )
-            snapshot = self.store.load(task_id).snapshot
-            records = _records_by_id(snapshot.records)
-            selected = _select_current_files(
-                snapshot.latest_by_path, records, state, phase, self.config.max_memory_file_entries
-            )
         invalidated_by = dict(snapshot.invalidated_by)
         file_index = tuple(
             _file_context(path, record, snapshot.workspace_generation)
@@ -224,12 +190,6 @@ def _file_context(path: str, record: MemoryRecord, generation: int) -> MemoryFil
     )
 
 
-def _stale_reason(status: str, current_sha256: str | None, recorded_sha256: str | None) -> str | None:
-    if status != "available":
-        return status
-    return None if current_sha256 == recorded_sha256 else "content_changed"
-
-
 def _observed_content_memory_id(observation: object | None) -> str | None:
     if not isinstance(observation, Mapping):
         return None
@@ -238,10 +198,6 @@ def _observed_content_memory_id(observation: object | None) -> str | None:
         return None
     memory_id = memory_ref.get("memory_id")
     return memory_id if isinstance(memory_id, str) else None
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _memory_context_error(error_code: str, phase: Phase) -> HanCodeError:

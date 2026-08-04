@@ -152,6 +152,18 @@ def test_finish_action_has_no_tool_side_effect() -> None:
         ("list_files", {}, None),
         ("list_files", {"path": "src"}, None),
         ("search_text", {"query": "Action"}, None),
+        ("memory_read", {"memory_id": "mem-000001"}, None),
+        (
+            "memory_search",
+            {
+                "query": "Action",
+                "path": "src/main.py",
+                "phase": "code",
+                "include_stale": True,
+                "limit": 20,
+            },
+            None,
+        ),
         ("write_file", {"path": "docs/PLAN.md", "content": "# Plan\n"}, "record plan"),
         (
             "edit_file",
@@ -186,6 +198,10 @@ def test_known_tools_accept_their_fixed_argument_schema(
         ("read_file", {"path": "README.md", "target_kind": "source"}, None),
         ("list_files", {"query": "Action"}, None),
         ("search_text", {"query": "Action", "path": "src"}, None),
+        ("memory_read", {"memory_id": "mem-000001", "task_id": "task-001"}, None),
+        ("memory_read", {"memory_id": "mem-000001", "blob_path": "memory/blob"}, None),
+        ("memory_search", {"query": "Action", "limit": 21}, None),
+        ("memory_search", {"query": "Action", "phase": "unknown"}, None),
         ("write_file", {"path": "src/main.py"}, "add file"),
         (
             "edit_file",

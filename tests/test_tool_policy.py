@@ -23,7 +23,14 @@ from hancode.core.delivery_evidence import DeliveryEvidence
     [
         (
             Phase.SPEC,
-            ("list_files", "read_file", "search_text", "write_file"),
+            (
+                "list_files",
+                "memory_read",
+                "memory_search",
+                "read_file",
+                "search_text",
+                "write_file",
+            ),
         ),
         (
             Phase.CODE,
@@ -32,6 +39,8 @@ from hancode.core.delivery_evidence import DeliveryEvidence
                 "get_diff",
                 "list_checkpoints",
                 "list_files",
+                "memory_read",
+                "memory_search",
                 "read_file",
                 "record_test_strategy",
                 "search_text",
@@ -44,6 +53,8 @@ from hancode.core.delivery_evidence import DeliveryEvidence
                 "get_diff",
                 "list_checkpoints",
                 "list_files",
+                "memory_read",
+                "memory_search",
                 "read_file",
                 "read_test_report",
                 "run_build",
@@ -58,10 +69,12 @@ from hancode.core.delivery_evidence import DeliveryEvidence
                 "get_diff",
                 "list_checkpoints",
                 "list_files",
-                    "read_file",
-                    "read_test_report",
-                    "record_remediation",
-                    "record_review",
+                "memory_read",
+                "memory_search",
+                "read_file",
+                "read_test_report",
+                "record_remediation",
+                "record_review",
                 "rollback_last_checkpoint",
                 "run_build",
                 "search_text",
@@ -74,6 +87,28 @@ def test_allowed_tools_for_phase_returns_sorted_policy_matrix(
     phase: Phase, expected: tuple[str, ...]
 ) -> None:
     assert allowed_tools_for_phase(phase) == expected
+
+
+@pytest.mark.parametrize("phase", tuple(Phase))
+@pytest.mark.parametrize(
+    ("tool_name", "args"),
+    [
+        ("memory_read", {"memory_id": "mem-000001"}),
+        ("memory_search", {"query": "needle"}),
+    ],
+)
+def test_memory_tools_are_read_only_policy_actions_in_every_phase(
+    tmp_path: Path, phase: Phase, tool_name: str, args: dict[str, object]
+) -> None:
+    decision = _policy(tmp_path).evaluate(
+        action=_action(tool_name, phase, args, None),
+        phase=phase,
+        state=_state(phase),
+    )
+
+    assert decision.allowed is True
+    assert decision.requires_checkpoint is False
+    assert decision.target_zone is None
 
 
 def test_allows_code_source_write_and_requires_checkpoint(tmp_path: Path) -> None:

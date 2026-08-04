@@ -49,6 +49,9 @@ from hancode.demo_support.fixture import (
 TASK_ID = "task-001"
 _DEMO_TEST_COMMAND = "python -m unittest discover -s tests -q"
 _TEST_TIMEOUT_SECONDS = 2
+_MEMORY_DEMO_PATH = "src/calculator.py"
+_MEMORY_DEMO_INITIAL_ID = "mem-000001"
+_MEMORY_DEMO_V2_ID = "mem-000005"
 
 _FIXTURE_DIGESTS = DEMO_FIXTURE_DIGESTS
 _PACKAGED_FIXTURE_ROOT = PACKAGED_FIXTURE_ROOT
@@ -175,7 +178,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
             config,
             ports,
             registry,
-            build_first_actions(),
+            _memory_demo_first_actions(),
             resume=False,
         )
         runs.append(first)
@@ -187,7 +190,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
             config,
             ports,
             registry,
-            build_retry_actions(),
+            _memory_demo_retry_actions(),
             resume=True,
         )
         runs.append(second)
@@ -211,7 +214,7 @@ def run_mock_demo(project_root: Path) -> AgentRunResult:
             config,
             ports,
             registry,
-            build_post_rollback_actions(),
+            _memory_demo_post_rollback_actions(),
             resume=True,
         )
         runs.append(fourth)
@@ -270,6 +273,79 @@ def _run_stage(
         max_steps=max(1, len(actions) + _demo_stage_step_reserve(actions)),
     )
     return loop.run(TASK_ID, resume=resume)
+
+
+def _memory_demo_first_actions() -> tuple[dict[str, object], ...]:
+    """Capture the initial snapshot before the existing demo writes begin."""
+    actions = list(build_first_actions())
+    prefix = [_read_memory_demo_file(Phase.SPEC)]
+    for index, action in enumerate(actions):
+        args = action.get("args")
+        if (
+            action.get("tool_name") == "write_file"
+            and isinstance(args, dict)
+            and args.get("path") == _MEMORY_DEMO_PATH
+        ):
+            actions.insert(index + 1, _read_memory_demo_file(Phase.CODE))
+            break
+    return tuple(prefix + actions)
+
+
+def _memory_demo_retry_actions() -> tuple[dict[str, object], ...]:
+    """Use a new AgentLoop instance to retrieve the current v2 snapshot."""
+    return (
+        _search_memory_demo(Phase.REVIEW, "return left - right"),
+        _read_memory_blob(Phase.REVIEW, _MEMORY_DEMO_V2_ID),
+        *build_retry_actions(),
+    )
+
+
+def _memory_demo_post_rollback_actions() -> tuple[dict[str, object], ...]:
+    """Read the stale v1 snapshot before the normal post-rollback repair."""
+    return (
+        _search_memory_demo(Phase.REVIEW, "NotImplementedError", include_stale=True),
+        _read_memory_blob(Phase.REVIEW, _MEMORY_DEMO_INITIAL_ID),
+        *build_post_rollback_actions(),
+    )
+
+
+def _read_memory_demo_file(phase: Phase) -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": phase.value,
+        "tool_name": "read_file",
+        "args": {"path": _MEMORY_DEMO_PATH},
+        "reason": "Capture the deterministic runtime-memory demo snapshot.",
+    }
+
+
+def _search_memory_demo(
+    phase: Phase,
+    query: str,
+    *,
+    include_stale: bool = False,
+) -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": phase.value,
+        "tool_name": "memory_search",
+        "args": {
+            "query": query,
+            "include_stale": include_stale,
+            "limit": 5,
+        },
+        "reason": "Recover a deterministic task-scoped memory reference.",
+    }
+
+
+def _read_memory_blob(phase: Phase, memory_id: str) -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": phase.value,
+        "tool_name": "memory_read",
+        "args": {"memory_id": memory_id, "start_line": 1, "end_line": 200},
+        "reason": "Read the persisted memory snapshot without filesystem access.",
+    }
 
 
 def _demo_stage_step_reserve(actions: Sequence[dict[str, object]]) -> int:

@@ -4,6 +4,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from hancode.core.actions import Action, ActionType
+from hancode.core.errors import HanCodeError
+
+
+_MEMORY_INTEGRITY_ERRORS = frozenset(
+    {
+        "memory_corrupt",
+        "memory_task_identity_mismatch",
+        "memory_path_link_not_allowed",
+        "memory_write_error",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +67,17 @@ class ToolRegistry:
 
         try:
             result = tool(**action.args)
+        except HanCodeError as exc:
+            if (
+                action.tool_name in {"memory_read", "memory_search"}
+                and exc.structured_error.error_code in _MEMORY_INTEGRITY_ERRORS
+            ):
+                raise
+            return _failed_result(
+                action.tool_name,
+                f"Tool execution failed: {type(exc).__name__}.",
+                error_code="tool_execution_exception",
+            )
         except Exception as exc:
             return _failed_result(
                 action.tool_name,

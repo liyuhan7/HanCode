@@ -9,7 +9,10 @@ import pytest
 
 from hancode.demo_support import runner as demo
 from hancode.core.errors import HanCodeError, StructuredError
+from hancode.core.memory import MemoryKind, MemoryQuery
 from hancode.core.models import Phase, TaskStatus
+from hancode.storage.export import export_task_artifacts
+from hancode.storage.memory import FilesystemMemoryStore
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +52,79 @@ def test_mock_demo_runs_without_real_credentials_and_generates_delivery_artifact
     )
     test_report = (task_root / "TEST_REPORT.md").read_text(encoding="utf-8")
     assert "Ran 1 test" in test_report
+
+
+def test_mock_demo_proves_runtime_memory_survives_resume_and_rollback(
+    tmp_path: Path,
+) -> None:
+    project_root = _copy_fixture(tmp_path)
+
+    result = demo.run_mock_demo(project_root)
+
+    assert result.status is TaskStatus.COMPLETED
+    snapshot = FilesystemMemoryStore(project_root).load("task-001").snapshot
+    tool_names = [record.tool_name for record in snapshot.records]
+    assert tool_names.count("read_file") >= 2
+    assert "memory_search" in tool_names
+    assert "memory_read" in tool_names
+    trace_events = [
+        json.loads(line)
+        for line in (
+            project_root / ".hancode" / "tasks" / "task-001" / "trace.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    completed_tools = [
+        event["action"]["tool_name"]
+        for event in trace_events
+        if event["event_type"] in {"tool_completed", "tool_failed"}
+        and isinstance(event.get("action"), dict)
+    ]
+    assert completed_tools.index("memory_search") > completed_tools.index("run_tests")
+
+    calculator_reads = [
+        record
+        for record in snapshot.records
+        if record.tool_name == "read_file" and record.paths == ("src/calculator.py",)
+    ]
+    assert len(calculator_reads) >= 2
+    first_read = calculator_reads[0]
+    second_read = calculator_reads[1]
+    assert first_read.blob_ref is not None
+    assert second_read.blob_ref is not None
+    assert dict(snapshot.invalidated_by)[first_read.memory_id]
+    assert dict(snapshot.invalidated_by)[second_read.memory_id]
+    access_records = [
+        record for record in snapshot.records if record.kind is MemoryKind.MEMORY_ACCESS
+    ]
+    assert access_records
+    assert all(record.blob_ref is None for record in access_records)
+    assert all("NotImplementedError" not in record.summary for record in access_records)
+    v2_snapshot = FilesystemMemoryStore(project_root).read(
+        "task-001", second_read.memory_id, start_line=1, end_line=200
+    )
+    assert "return left - right" in v2_snapshot.content
+
+    stale_v2 = FilesystemMemoryStore(project_root).search(
+        "task-001",
+        MemoryQuery(query="return left - right", include_stale=True, limit=20),
+    )
+    current_v2 = FilesystemMemoryStore(project_root).search(
+        "task-001",
+        MemoryQuery(query="return left - right", include_stale=False, limit=20),
+    )
+    assert any(hit.memory_id == second_read.memory_id and hit.stale for hit in stale_v2)
+    assert not current_v2
+    assert not dict(snapshot.latest_by_path).get("src/calculator.py")
+
+    restored = FilesystemMemoryStore(project_root).read(
+        "task-001", first_read.memory_id, start_line=1, end_line=200
+    )
+    assert restored.stale is True
+    assert "NotImplementedError" in restored.content
+
+    export_dir = tmp_path / "exported"
+    export_task_artifacts(project_root, "task-001", export_dir)
+    assert not (export_dir / "memory").exists()
 
 
 def test_mock_demo_reuses_default_registry_with_injected_test_tool(

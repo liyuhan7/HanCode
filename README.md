@@ -11,6 +11,7 @@ HanCode 是一个面向学生课程项目的 headless CLI Coding Agent Harness�
 - Tool Policy 和课程文件保护策略阻止危险或越界写入。
 - Feedback Loop 对测试失败分类并回灌修复建议。
 - Trace Logging、Checkpoint Rollback 和 Knowledge Delivery 让过程可审计、可回退、可交付。
+- Task Runtime Memory 按 task 持久化工具摘要和脱敏文件快照，跨 resume 恢复；失效历史可检索但不会冒充当前文件。
 - MockLLM 使用确定性 Action 序列验证核心机制，不依赖真实模型。
 
 ## 当前可用命令
@@ -94,6 +95,10 @@ HanCode 使用课程项目导向的轻量本地目录：
       state.json
       trace.jsonl
       history.jsonl
+      memory/
+        index.json
+        events.jsonl
+        blobs/
       checkpoints/
 ```
 
@@ -143,6 +148,11 @@ hancode demo --provider mock
 ```
 
 Demo 输出结构化 JSON，展示固定的受控流程和交付产物；它不是交互式 shell，也不是长期运行服务。
+
+S13 的 MockLLM Demo 还会读取 `src/calculator.py` 的初始快照，调用
+`memory_search`/`memory_read`，在后续写入后把旧快照标记为 stale；每个阶段都重新创建
+AgentLoop 以验证跨实例恢复，失败反馈和 rollback 后仍可读取历史 v1。`hancode export`
+只复制 state 声明的交付物，永远不会导出 task 下的 `memory/` 目录。
 
 Demo 使用 Python 的临时目录。运行环境的 `TEMP/TMP` 必须指向当前用户可写、可清理的目录；受限沙箱或 ACL 异常时可能返回结构化错误 `cli_internal_error`，应先修复临时目录权限再重试。
 
@@ -250,6 +260,11 @@ hancode config setup .
   "max_observation_bytes": 8192,
   "max_context_chars": 24000,
   "max_trace_events": 40,
+  "max_memory_blob_bytes": 1048576,
+  "max_memory_task_bytes": 33554432,
+  "max_memory_recent_events": 8,
+  "max_memory_file_entries": 32,
+  "max_memory_hot_contents": 2,
   "writable_roots": ["src", "tests"],
   "protected_patterns": [],
   "interaction_mode": "disabled",
@@ -289,6 +304,11 @@ Provider 分组可以安全管理 API Key：
 - 保存 Key 后配置草稿会选择 `credential_source=keyring`，仍需 `Ctrl+S` 单独确认保存项目配置。
 
 Provider、策略和命令在下一次运行或恢复时生效；`retry_budget` 只影响之后新建的任务。
+
+`max_memory_blob_bytes`、`max_memory_task_bytes`、`max_memory_recent_events`、
+`max_memory_file_entries` 和 `max_memory_hot_contents` 属于“运行时记忆”限制。旧的
+`project.json` 缺少这些键时，ConfigLoader 只在内存补默认值；保存配置时才按规范顺序写回。
+Memory 事件日志和内容寻址 blob 是 task 内部运行时数据，不属于交付物或导出 allow-list。
 
 ## 真实 Provider 配置
 

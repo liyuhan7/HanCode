@@ -20,8 +20,12 @@ from hancode.core.memory import (
     MemoryIndex,
     MemoryKind,
     MemoryLoadResult,
+    MemoryMediaType,
+    MemoryQuery,
     MemoryRecord,
     MemoryRecordDraft,
+    MemorySearchHit,
+    MemorySlice,
     MemorySnapshot,
     digest_memory_index,
     digest_memory_record,
@@ -137,6 +141,173 @@ class FilesystemMemoryStore:
         except OSError as exc:
             raise _memory_corrupt(state.current_phase) from exc
 
+    def read(
+        self,
+        task_id: str,
+        memory_id: str,
+        *,
+        start_line: int,
+        end_line: int,
+    ) -> MemorySlice:
+        state = load_state(task_path(self._project_root, task_id))
+        if (
+            not isinstance(memory_id, str)
+            or not memory_id
+            or not isinstance(start_line, int)
+            or isinstance(start_line, bool)
+            or not isinstance(end_line, int)
+            or isinstance(end_line, bool)
+            or start_line < 1
+            or end_line < start_line
+            or end_line - start_line + 1 > 200
+        ):
+            raise _memory_invalid_record(state.current_phase)
+        snapshot = self.load(task_id).snapshot
+        records = {record.memory_id: record for record in snapshot.records}
+        record = records.get(memory_id)
+        if record is None:
+            raise _memory_not_found(state.current_phase)
+        if record.blob_ref is None or record.media_type is None:
+            raise _memory_content_unavailable(state.current_phase)
+        content = self.read_blob_bytes(task_id, memory_id)
+        try:
+            text = content.decode("utf-8")
+            if record.media_type is MemoryMediaType.JSON:
+                text = json.dumps(
+                    json.loads(text), ensure_ascii=False, indent=2, sort_keys=True
+                ) + "\n"
+        except (UnicodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise _memory_corrupt(state.current_phase) from exc
+        lines = text.splitlines(keepends=True)
+        if start_line > len(lines):
+            raise _memory_invalid_record(state.current_phase)
+        actual_end = min(end_line, len(lines))
+        invalidated_by = dict(snapshot.invalidated_by).get(memory_id)
+        stale = invalidated_by is not None
+        invalidation_reason = _invalidation_reason(
+            records.get(invalidated_by) if invalidated_by is not None else None,
+            record.paths,
+        )
+        authoritative = (
+            not stale
+            and record.tool_name == "read_file"
+            and len(record.paths) == 1
+            and dict(snapshot.latest_by_path).get(record.paths[0]) == memory_id
+        )
+        return MemorySlice(
+            memory_id=record.memory_id,
+            phase=record.phase,
+            kind=record.kind,
+            tool_name=record.tool_name,
+            media_type=record.media_type,
+            paths=record.paths,
+            record_generation=record.workspace_generation,
+            current_generation=snapshot.workspace_generation,
+            stale=stale,
+            invalidated_by=invalidated_by,
+            invalidation_reason=invalidation_reason,
+            current_file_authoritative=authoritative,
+            warning=(
+                "This stale memory is historical and must not be treated as the current file."
+                if stale
+                else None
+            ),
+            start_line=start_line,
+            end_line=actual_end,
+            total_lines=len(lines),
+            content="".join(lines[start_line - 1 : actual_end]),
+            content_truncated=False,
+            next_start_line=actual_end + 1 if actual_end < len(lines) else None,
+        )
+
+    def search(
+        self, task_id: str, query: MemoryQuery
+    ) -> tuple[MemorySearchHit, ...]:
+        state = load_state(task_path(self._project_root, task_id))
+        if (
+            not isinstance(query, MemoryQuery)
+            or not isinstance(query.query, str)
+            or not query.query.strip()
+            or not isinstance(query.include_stale, bool)
+            or not isinstance(query.limit, int)
+            or isinstance(query.limit, bool)
+            or not 1 <= query.limit <= 20
+            or (query.path is not None and not isinstance(query.path, str))
+            or (query.phase is not None and not isinstance(query.phase, Phase))
+        ):
+            raise _memory_invalid_record(state.current_phase)
+        if query.path is not None:
+            try:
+                from hancode.core.memory import _validate_relative_path
+
+                _validate_relative_path(query.path)
+            except ValueError as exc:
+                raise _memory_invalid_record(state.current_phase) from exc
+        snapshot = self.load(task_id).snapshot
+        invalidated_by = dict(snapshot.invalidated_by)
+        records = {record.memory_id: record for record in snapshot.records}
+        needle = query.query.casefold()
+        hits: list[MemorySearchHit] = []
+        for record in snapshot.records:
+            stale = record.memory_id in invalidated_by
+            if stale and not query.include_stale:
+                continue
+            if query.path is not None and query.path not in record.paths:
+                continue
+            if query.phase is not None and record.phase is not query.phase:
+                continue
+            sources: list[str] = []
+            if any(needle in path.casefold() for path in record.paths):
+                sources.append("path")
+            if needle in record.summary.casefold():
+                sources.append("summary")
+            if record.blob_ref is not None:
+                try:
+                    text = self.read_blob_bytes(task_id, record.memory_id).decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise _memory_corrupt(state.current_phase) from exc
+                if needle in text.casefold():
+                    sources.append("content")
+            if not sources:
+                continue
+            invalidation_id = invalidated_by.get(record.memory_id)
+            hits.append(
+                MemorySearchHit(
+                    memory_id=record.memory_id,
+                    seq=record.seq,
+                    phase=record.phase,
+                    kind=record.kind,
+                    tool_name=record.tool_name,
+                    success=record.success,
+                    summary=record.summary,
+                    error_code=record.error_code,
+                    paths=record.paths,
+                    media_type=record.media_type,
+                    blob_bytes=record.blob_bytes,
+                    record_generation=record.workspace_generation,
+                    current_generation=snapshot.workspace_generation,
+                    stale=stale,
+                    invalidated_by=invalidation_id,
+                    invalidation_reason=_invalidation_reason(
+                        records.get(invalidation_id) if invalidation_id else None,
+                        record.paths,
+                    ),
+                    match_sources=tuple(sources),
+                )
+            )
+        hits.sort(
+            key=lambda hit: (
+                hit.stale,
+                "path" not in hit.match_sources,
+                "summary" not in hit.match_sources,
+                "content" not in hit.match_sources,
+                hit.phase is not state.current_phase,
+                -hit.seq,
+                hit.memory_id,
+            )
+        )
+        return tuple(hits)
+
     def record_tool_result(
         self,
         task_id: str,
@@ -161,7 +332,9 @@ class FilesystemMemoryStore:
         blob: MemoryBlob | None = None
         kind = MemoryKind.TOOL_RESULT
         invalidates: tuple[str, ...] = ()
-        if action.tool_name == "read_file" and result.success:
+        if action.tool_name in {"memory_read", "memory_search"}:
+            kind = MemoryKind.MEMORY_ACCESS
+        elif action.tool_name == "read_file" and result.success:
             if not isinstance(result.output, Mapping):
                 raise _memory_invalid_record(phase)
             path = result.output.get("path")
@@ -220,7 +393,11 @@ class FilesystemMemoryStore:
             kind=kind,
             tool_name=action.tool_name,
             success=result.success,
-            summary=_tool_result_summary(result),
+            summary=(
+                _memory_access_summary(result)
+                if kind is MemoryKind.MEMORY_ACCESS
+                else _tool_result_summary(result, invalidation=kind is MemoryKind.INVALIDATION)
+            ),
             error_code=result.error_code,
             paths=paths,
             checkpoint_id=state.latest_checkpoint,
@@ -266,7 +443,11 @@ class FilesystemMemoryStore:
                 tool_name="rollback_last_checkpoint",
                 success=True,
                 summary=json.dumps(
-                    {"outcome": "succeeded", "restored_file_count": len(paths)},
+                    {
+                        "outcome": "succeeded",
+                        "reason": "rollback",
+                        "restored_file_count": len(paths),
+                    },
                     ensure_ascii=False,
                     sort_keys=True,
                     separators=(",", ":"),
@@ -600,17 +781,96 @@ def _event_bytes(record: MemoryRecord) -> bytes:
     ).encode("utf-8")
 
 
-def _tool_result_summary(result: ToolResult) -> str:
+def _tool_result_summary(result: ToolResult, *, invalidation: bool = False) -> str:
+    summary: dict[str, object] = {
+        "exit_code": result.exit_code,
+        "outcome": "succeeded" if result.success else "failed",
+        "timed_out": result.timed_out,
+    }
+    if invalidation:
+        summary["reason"] = "source_write"
     return json.dumps(
-        {
-            "exit_code": result.exit_code,
-            "outcome": "succeeded" if result.success else "failed",
-            "timed_out": result.timed_out,
-        },
+        summary,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _memory_access_summary(result: ToolResult) -> str:
+    if not result.success:
+        return json.dumps(
+            {"outcome": "failed", "error_code": result.error_code},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    if not isinstance(result.output, Mapping):
+        raise _memory_invalid_record(Phase.SPEC)
+    if result.action_name == "memory_read":
+        memory_id = result.output.get("memory_id")
+        start_line = result.output.get("start_line")
+        end_line = result.output.get("end_line")
+        stale = result.output.get("stale")
+        if (
+            not isinstance(memory_id, str)
+            or not isinstance(start_line, int)
+            or isinstance(start_line, bool)
+            or not isinstance(end_line, int)
+            or isinstance(end_line, bool)
+            or not isinstance(stale, bool)
+        ):
+            raise _memory_invalid_record(Phase.SPEC)
+        summary: dict[str, object] = {
+            "outcome": "succeeded",
+            "memory_id": memory_id,
+            "start_line": start_line,
+            "end_line": end_line,
+            "stale": stale,
+        }
+    else:
+        returned_count = result.output.get("returned_count")
+        hits = result.output.get("hits")
+        if (
+            not isinstance(returned_count, int)
+            or isinstance(returned_count, bool)
+            or not isinstance(hits, list)
+        ):
+            raise _memory_invalid_record(Phase.SPEC)
+        memory_ids: list[str] = []
+        for hit in hits:
+            if not isinstance(hit, Mapping) or not isinstance(hit.get("memory_id"), str):
+                raise _memory_invalid_record(Phase.SPEC)
+            memory_ids.append(hit["memory_id"])
+        summary = {
+            "outcome": "succeeded",
+            "returned_count": returned_count,
+            "memory_ids": memory_ids,
+        }
+    return json.dumps(
+        summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _invalidation_reason(
+    invalidation: MemoryRecord | None, paths: tuple[str, ...]
+) -> str | None:
+    if invalidation is None:
+        return None
+    try:
+        summary = json.loads(invalidation.summary)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(summary, dict):
+        return None
+    reasons = summary.get("reason_by_path")
+    if isinstance(reasons, dict):
+        for path in paths:
+            reason = reasons.get(path)
+            if isinstance(reason, str):
+                return reason
+    reason = summary.get("reason")
+    return reason if isinstance(reason, str) else None
 
 
 def _json_document_bytes(value: dict[str, object]) -> bytes:
@@ -752,6 +1012,26 @@ def _memory_invalid_record(phase: Phase) -> HanCodeError:
         phase,
         "valid_memory_record_required",
         "Provide canonical memory metadata bound to the current task.",
+    )
+
+
+def _memory_not_found(phase: Phase) -> HanCodeError:
+    return _memory_error(
+        "memory_not_found",
+        "The requested memory ID does not exist for the current task.",
+        phase,
+        "task_bound_memory_id_required",
+        "Use memory_search to find a memory ID in the current task.",
+    )
+
+
+def _memory_content_unavailable(phase: Phase) -> HanCodeError:
+    return _memory_error(
+        "memory_content_unavailable",
+        "The requested memory record does not contain readable content.",
+        phase,
+        "memory_blob_required",
+        "Choose a memory record that carries a persisted blob.",
     )
 
 
