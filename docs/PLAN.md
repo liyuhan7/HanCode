@@ -6488,6 +6488,16 @@ S4-R2 Build       S4-R3 Test Report
 - 验证：相关套件 `141 passed, 5 skipped`；全量 pytest `1467 passed, 17 skipped`；Ruff `All checks passed!`；`mypy src` `130 source files` 无错误。
 - 未改变 `_delivery_blockers` 门禁判定；解除直接阻塞仍需模型在交付前成功执行 `get_diff`。
 
+### 缺陷修复记录（2026-08-04）— remediation planned_paths 跨文件修复死锁
+
+- 现象：task-003 测试失败进入 REVIEW，模型 `record_remediation(kind=modify_test, planned_paths=[.hancode/tests/interaction.test.js])` 后回 CODE 修复；模型发现真实 `index.html` 缺少 `#back-to-top` 按钮需补充，但每次 `edit_file index.html` 均被策略 `remediation_planned_path_required` 拒绝（"写目标不在 remediation planned_paths"），且 `record_remediation` 仅在 REVIEW 阶段可用，模型在 CODE 阶段无法扩展修复范围，陷入死循环。
+- 代码缺陷根因：`record_remediation` 的 `allowed_phases=frozenset({Phase.REVIEW})`，导致 CODE 阶段无法重新声明 remediation 范围；`remediation_planned_path_required` 策略又严格锁定写操作于已声明 `planned_paths`，跨文件修复被永久阻断。
+- 修复：`src/hancode/core/tool_specs.py` 中 `record_remediation` 的 `allowed_phases` 扩展为 `{Phase.REVIEW, Phase.CODE}`。`AgentLoop` 的 record_remediation 处理本身阶段无关（更新 `latest_remediation_digest`、重置 CODE 完成标记），`tool_policy` 的 `active_test_failure_required` 检查（必须有 failed 测试）防止滥用。模型在 CODE 阶段可用 `modify_source` 重新声明含源文件的 `planned_paths` 自救。
+- 回归测试：`test_record_remediation_allowed_in_code_phase_when_test_failed`（CODE 阶段 record_remediation 通过 policy）；更新 `test_allowed_tools_for_phase_returns_sorted_policy_matrix` 的 CODE 允许工具断言。
+- 验证：`test_tool_policy.py` 61 passed；action_schema/prompt/tool_factory/remediation 相关套件 178 passed；全量 pytest `1588 passed, 17 skipped`；Ruff `All checks passed!`；`mypy src` `135 source files` 无错误。
+- 注意：`modify_test` 只接受 test 路径；要改 `index.html` 需用 `modify_source`（允许任意 SOURCE 路径）。该修复仅提供"自救能力"，task-003 当前仍卡在 CODE，需 resume 后由模型实际重新声明 remediation 才能继续。
+- 契约引导增强（同日实施）：`src/hancode/providers/prompt_contract.py` 的 REVIEW 契约提示模型在 `record_remediation` 时一次性声明 `planned_paths` 覆盖所有将修改的文件（源码/测试/标记语言），因同一阶段内无法再扩展；CODE 契约提示修复时只写 `planned_paths` 内文件，若需跨文件可重新 `record_remediation` 扩展。验证：providers/tool_policy/phases/context_builder/tool_factory/action_schema 相关套件 258 passed。
+
 ### 非目标 / 边界
 
 - 不引入真实网络 LLM、真实凭据或新的第三方 Agent 框架。
@@ -7631,3 +7641,154 @@ MockLLM Demo 固定演示：读取 A(v1) → 其他工具调用 → 销毁并恢
 - README 与系统架构同步 `.hancode/tasks/<task>/memory/` 结构、五项 Memory 配置、stale 语义和离线 Demo 流程；`export` 的六项 artifact allow-list 保持不变。
 - R5 聚焦回归 `67 passed`；`uv sync --locked --extra dev` 成功；Mock Demo 脚本与 `hancode demo --provider mock` 均返回 `completed`；`uv build --offline` 成功生成 sdist/wheel。
 - 全量 pytest 中间一次为 `1575 passed, 17 skipped`，重复 Demo 在既有审批消费的 `state.json` 原子替换处出现 `state_write_error`；4 次独立工作区复现全部完成，当前代码最终全量为 `1576 passed, 17 skipped in 166.98s`。文档同步后的全仓 Ruff、MyPy 与 `git diff --check` 均通过，证据已回填 AGENT_LOG；该 Windows 文件锁竞争仍是环境层低频风险，未纳入 R5 越界修复。
+
+### S13-R6：文件快照正确性与热点连续性
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成；专项测试与相关静态检查通过 |
+| 依赖 | S13-R5 |
+| 开发方式 | 直接实现后补回归测试；本任务不采用 TDD |
+
+目标：同一路径被再次读取时，旧快照在查询视图中确定性标记为 superseded/stale，但不增加 workspace generation；写入或 rollback 后历史快照继续保持 stale。经过 freshness 检查的 `latest_by_path` 是当前文件权威来源，无关路径 mutation 不得仅因全局 generation 变化移除当前热点正文。
+
+允许修改：`src/hancode/core/memory.py`、`src/hancode/storage/memory.py`、`src/hancode/runtime/memory.py`、直接相关 Memory 模型/Store/Tool/Context 测试，以及 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得在本任务实现 blob 读取优化、崩溃恢复、compaction、长单行续传或 recent event 分层。
+
+实现约束：`superseded_by` 由既有 append-only event 重放派生，不修改持久化 `MemoryRecord` schema，不追加 supersession event，也不增加 generation。`memory_read` 与 `memory_search` 将 superseded 和 invalidated 统一视为 stale；显式 `include_stale=True` 仍可恢复历史。热点资格依赖 freshness 检查后的当前映射和文本媒体类型，不再要求 record generation 等于全局 generation。
+
+回归测试至少覆盖：连续读取同一路径后旧快照 stale、默认搜索排除旧快照、显式搜索和读取可恢复旧正文、写入后同路径两份快照均 stale，以及读取 A 后写入 B 时 A 仍保留在 file index 与 hot contents。
+
+专项验证：Memory 模型、Store、Tool、Context 测试；相关 Ruff、MyPy 与 `git diff --check`。按用户要求，本任务不运行全量 pytest、全仓静态检查或 build，全部后续小任务完成后统一执行最终质量门。
+
+实施结果（2026-08-04）：
+
+- `_validate_replay()` 重放时派生 `superseded_by`：某路径出现新的成功 `read_file` 快照时，把该路径上一份 current 快照记入 `superseded_by`，不增加 generation、不新增事件、不改持久化 schema。`MemorySnapshot` 增加派生字段 `superseded_by`。
+- `MemorySlice`、`MemorySearchHit` 增加 `superseded_by`；`read()`/`search()` 将 invalidated 或 superseded 统一视为 stale，superseded 场景 `invalidation_reason="superseded"`、`current_file_authoritative=False`；`memory_read`/`memory_search` 输出同步暴露 `superseded_by`。默认搜索排除 superseded 快照，`include_stale=True` 仍可恢复历史正文。
+- `MemoryContextPacker` 热点资格与 `hot_eligible` 移除 `record.workspace_generation == generation` 限制，只依赖 freshness 检查后的 `latest_by_path`、文本媒体类型和去重条件；无关路径 mutation 抬升 generation 后当前文件仍保留在 file index 与 hot contents。
+- 新增回归：同路径重复读取旧快照 stale 且 generation 不变、写入后同路径全部快照 stale、默认搜索排除 superseded、显式搜索/读取恢复旧正文、读取 A 后写入 B 时 A 仍 hot。因新增字段增大最小元数据，`test_memory_read_enforces_line_and_exact_utf8_output_budgets` 预算由 500 调整为 550，截断语义不变。
+- 专项验证：`tests/test_memory_models.py tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 55 passed；相关 Ruff、MyPy 通过；`git diff --check` 仅 LF/CRLF 提示，无空白错误。按用户要求本任务未跑全量门禁。
+
+### S13-R7：Verified Blob 单次读取与单次加载搜索
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成；专项测试与相关静态检查通过 |
+| 依赖 | S13-R6 |
+| 开发方式 | 直接实现后补回归测试；本任务不采用 TDD |
+
+目标：消除 verified blob 的 TOCTOU 重复读取窗口，返回的字节必须与刚完成 SHA-256 校验的字节一致；让一次 `read()`/`search()` 请求只执行一次 `load()`，同一请求内相同内容寻址 blob 只读取和哈希一次。
+
+允许修改：`src/hancode/storage/memory.py`、直接相关 Memory Store/Tool/Context 测试，以及 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得改动崩溃恢复、compaction、长行续传、recent 分层或公开 Memory Tool 输出协议。
+
+实现约束：新增内部 `_read_verified_blob()`，单次读取后校验长度与摘要并直接返回该字节；`read_blob_bytes()` 校验后不再二次读取路径。`read()` 只加载一次并直接读取已验证 blob；`search()` 入口只 `load()` 一次，循环使用请求内 `dict[blob_ref, bytes]` 缓存。缺失、篡改、symlink、junction 仍统一 fail-closed。
+
+专项验证：Memory Store、Tool、Context 测试；相关 Ruff、MyPy 与 `git diff --check`。按用户要求本任务不运行全量门禁。
+
+实施结果（2026-08-04）：
+
+- 新增 `_read_verified_blob()`：单次 `read_bytes()` 后校验长度与 SHA-256 并返回该字节，`_validate_blob()` 改为其只校验包装。`read_blob_bytes()` 校验后不再二次读取路径，消除 TOCTOU 窗口。
+- `read()` 只 `load()` 一次并直接读取已验证 blob，不再经 `read_blob_bytes()` 触发第二次 `load()`；`search()` 入口只 `load()` 一次，循环用请求内 `dict[blob_ref, bytes]` 缓存，相同内容寻址 blob 在 search 循环内只读取哈希一次。
+- 缺失、篡改、symlink、junction 仍统一 `memory_corrupt`/`memory_path_link_not_allowed` fail-closed。
+- 新增回归：`_read_verified_blob` 返回其哈希过的字节且只读一次；`search()` 的 `load()` 恰好一次、共享 blob 读取次数为 `load` 期 N 次 + search 缓存 1 次。
+- 专项验证：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 49 passed；`storage/memory.py` 及三个测试文件 Ruff 通过；`storage/memory.py` MyPy 通过；`git diff --check` 仅 LF/CRLF 提示。
+
+### S13-R8：Event Tail 与 Orphan Blob 崩溃恢复
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成；专项测试与相关静态检查通过 |
+| 依赖 | S13-R7 |
+| 开发方式 | 直接实现后补回归测试；本任务不采用 TDD |
+
+目标：进程在事件写入或 blob 提交后崩溃时可安全恢复——合法完整前缀加未换行不完整尾部可被截断恢复，已提交但无 event 引用的 orphan blob 可被清理；中间损坏或不可信 index 时继续 fail-closed。
+
+允许修改：`src/hancode/storage/memory.py`、直接相关 Memory Store 测试，以及 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得改动 compaction、长行续传、recent 分层或公开 Memory Tool 输出协议。
+
+实现约束：仅当 `index.json` 存在、合法且不超前于完整前缀时，才截断最后一条未换行的不完整 event，并产生 `memory_event_tail_recovered`；index 缺失、损坏、超前或完整前缀 replay 失败时抛 `memory_corrupt`，不依据不可信 index 截断。load 完成 replay 后计算 referenced blob 集合，仅删除严格符合内容寻址命名（64 位 hex + `.txt`/`.json`）且未被引用的普通 blob，产生 `memory_orphan_blob_removed`；symlink、junction、临时文件、非普通文件与已引用 blob 一律不动。
+
+专项验证：Memory Store 测试；相关 Ruff、MyPy 与 `git diff --check`。按用户要求本任务不运行全量门禁。
+
+实施结果（2026-08-04）：
+
+- `load()` 在 `_read_records` 前调用 `_recover_incomplete_event_tail()`：仅当 `events.jsonl` 结尾缺换行且存在可信 index 时，用完整前缀 replay 加 index 匹配校验后原子截断不完整尾部，产生 `memory_event_tail_recovered`；index 缺失、task 不符、`next_seq` 与完整前缀不一致或 replay 失败一律 `memory_corrupt`。完整前缀通过 `_InMemoryEvents` 包装复用现有 `_read_records`。
+- replay 成功后 `_remove_orphan_blobs()` 计算 referenced blob 集合，仅删除严格匹配 `[0-9a-f]{64}\.(txt|json)` 且未被引用的普通文件，产生 `memory_orphan_blob_removed`；symlink/junction/reparse、非内容寻址命名（如临时或杂项文件）、已引用 blob 一律不动。审计信号累加不再互相覆盖。
+- 新增回归：可信 index 下截断不完整尾部并保留完整记录；index 缺失时不完整尾部 fail-closed；orphan blob 被清理而已引用 blob 和非内容寻址文件保留。
+- 专项验证：`tests/test_memory_store.py` 42 passed；`storage/memory.py` 与测试文件 Ruff 通过；`storage/memory.py` MyPy 通过；`git diff --check` 无空白错误。
+
+### S13-R10：超长单行的字节续传
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成；专项测试与相关静态检查通过 |
+| 依赖 | S13-R8 |
+| 开发方式 | 直接实现后补回归测试；本任务不采用 TDD |
+
+目标：当单行本身超过 observation budget 时，除返回前缀外还提供 `next_byte_offset`，配合新参数 `start_byte_offset` 使 minified JSON、生成代码和超长字符串的剩余部分能被完整恢复；普通多行分页仍用 `next_start_line`。
+
+允许修改：`src/hancode/core/memory.py`、`src/hancode/storage/memory.py`、`src/hancode/tooling/memory_tools.py`、`src/hancode/core/tool_specs.py`、直接相关 Memory 模型/Store/Tool 与 ToolSpec/parser/registry 测试，以及 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得改动 compaction、recent 分层、Context 预算策略或增加通用路径参数。
+
+实现约束：`MemorySlice` 增加 `start_byte_offset` 与 `next_byte_offset`；`store.read` 接受 `start_byte_offset`，只对 `start_line` 的 UTF-8 字节做续传切片，落在多字节字符中间时 `memory_invalid_record` fail-closed。`memory_read` 透传 `start_byte_offset`；`_fit_memory_slice` 单行超预算时返回带 `[TRUNCATED]` 前缀并设置 `next_byte_offset` 指向下一段起点，读完该行后恢复标准行分页。ToolSpec `memory_read` schema 增加 `start_byte_offset`。
+
+专项验证：Memory 模型、Store、Tool、ToolSpec/parser/registry 测试；相关 Ruff、MyPy 与 `git diff --check`。按用户要求本任务不运行全量门禁。
+
+实施结果（2026-08-04）：
+
+- `MemorySlice` 增加 `start_byte_offset`（默认 0）与 `next_byte_offset`（默认 None）。`store.read()` 接受 `start_byte_offset`，只对 `start_line` 对应行做 UTF-8 字节续传切片；offset 越界或落在多字节字符中间返回 `memory_invalid_record`。
+- `_fit_memory_slice` 单行超预算时用 `_largest_fitting_prefix_chars` 计算可容纳字符前缀，返回 `content` 前缀 + `[TRUNCATED]` 并将 `next_byte_offset` 设为 `start_byte_offset + 已消费字节`；多行分页仍走 `next_start_line`，读完该行后恢复标准行分页。
+- ToolSpec `memory_read` schema 增加 `start_byte_offset`（integer, minimum 0, default 0）；registry 以 `action.args` kwargs 透传，无需额外接线。
+- 新增回归：超长单行按字节 offset 逐段拼回完整内容；预算测试断言单行截断时 `next_byte_offset > 0`。因新增两个整型字段增大最小元数据，`test_memory_read_enforces_line_and_exact_utf8_output_budgets` 预算 550→600，续传测试用 800。
+- 专项验证：`tests/test_memory_models.py tests/test_memory_store.py tests/test_memory_tools.py tests/test_action_schema.py tests/test_action_parser.py tests/test_tool_factory.py tests/test_tool_registry.py` 135 passed；相关 Ruff、MyPy 通过；`git diff --check` 无空白错误。
+
+### S13-R11：Recent Events 分层
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成；专项测试与相关静态检查通过 |
+| 依赖 | S13-R10 |
+| 开发方式 | 直接实现后补回归测试；本任务不采用 TDD |
+
+目标：避免连续 `memory_read`/`memory_search` 产生的 `MEMORY_ACCESS` 记录挤掉真正有价值的 recent events（read_file、test failure、invalidation、rollback）。
+
+允许修改：`src/hancode/runtime/memory.py`、直接相关 Context 测试，以及 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得改动存储格式、公开 Memory Tool 输出协议或 Context 预算裁剪策略。
+
+实现约束：`recent_events` 分层——substantive 记录（`TOOL_RESULT`、`INVALIDATION`、`ROLLBACK`）取最近 `max_memory_recent_events` 条；`MEMORY_ACCESS` 单独最多保留 2 条，排在 substantive 之后。`MEMORY_ACCESS` 仍完整保留在持久化事件日志，仅从自动 Context 分流。
+
+专项验证：Context 测试；相关 Ruff、MyPy 与 `git diff --check`。按用户要求本任务不运行全量门禁。
+
+实施结果（2026-08-04）：
+
+- `MemoryContextPacker.build()` 将 `recent_events` 分层：substantive 记录（`TOOL_RESULT`/`INVALIDATION`/`ROLLBACK`）取最近 `max_memory_recent_events` 条，`MEMORY_ACCESS` 单独最多保留 `_MAX_RECENT_MEMORY_ACCESSES=2` 条并排在 substantive 之后。`MEMORY_ACCESS` 仍完整保留在持久化事件日志，仅从自动 Context 分流。
+- 新增回归：8 次 memory_search 访问后，read_file 仍在 recent、access 事件恰 2 条且位于 substantive 之后、持久化日志仍保留全部 8 条 access。
+- 专项验证：`tests/test_memory_context.py tests/test_context_builder.py` 24 passed；`runtime/memory.py` 与 Context 测试 Ruff 通过；`runtime/memory.py` MyPy 通过；`git diff --check` 无空白错误。
+
+### S13-R9：容量闭环（可审计历史 Blob 淘汰）
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成；专项测试与相关静态检查通过 |
+| 依赖 | S13-R8 |
+| 开发方式 | 直接实现后补回归测试；本任务不采用 TDD |
+
+目标：达到 `max_memory_task_bytes` 时不再永久阻塞。在 append 触发配额压力时，先对可淘汰的历史 blob 做可审计的内容淘汰以腾出空间，再判定是否仍超限；保留全部 record 元数据与事件日志。
+
+冻结契约：
+
+1. `memory_id` 永久稳定；compaction 不删除事件、不重编号、不改 seq/generation 语义。
+2. 只淘汰 blob 文件内容，写独立 `memory/evicted.json` manifest 记录被淘汰的 `content_sha256`；load 时产生 `memory_blob_evicted` 审计信号。
+3. `memory_read` 对已淘汰正文返回 `memory_content_evicted`（非完整性错误，作为失败 ToolResult 返回，不阻塞循环）。
+4. quota 继续统计完整 event log 与存活 blob；被淘汰 blob 文件已删除，自然不再计入。
+5. 淘汰资格：仅当某 blob 的全部引用 record 都已 stale（invalidated 或 superseded）且不被任何当前 `latest_by_path` 文件快照引用时可淘汰；当前文件快照、活跃记录正文一律保留。按 blob 字节从大到小淘汰直到 prospective ≤ 配额；仍超限则 `memory_quota_exceeded`，不静默破坏历史引用。
+6. 原子顺序：先原子写 manifest 标记淘汰，再删除 blob 文件；崩溃留下“已标记未删”的 blob 下次 load/compaction 可安全再删。load 时 blob 文件缺失且在 manifest 中视为已淘汰跳过，缺失但不在 manifest 仍 `memory_corrupt`。
+
+允许修改：`src/hancode/core/memory.py`（如需错误码）、`src/hancode/storage/memory.py`、`src/hancode/tooling/memory_tools.py`（错误码映射）、直接相关 Memory Store/Tool 测试，以及 `docs/PLAN.md`、`docs/AGENT_LOG.md`。不得改动 recent 分层、长行续传或 Context 预算策略。
+
+专项验证：Memory Store、Tool 测试；相关 Ruff、MyPy 与 `git diff --check`。按用户要求本任务不运行全量门禁。
+
+实施结果（2026-08-04）：
+
+- `append()` 在配额判定处新增 compaction：prospective 超限时调用 `_compact_evictable_blobs()` 淘汰可淘汰历史 blob 后重算，仍超限才 `memory_quota_exceeded`。
+- `_compact_evictable_blobs()` 仅淘汰“全部引用 record 已 stale（invalidated/superseded）且不被任何 `latest_by_path` 当前快照引用”的 blob，按字节从大到小；先原子写 `evicted.json`（schema_version=1 + sorted content_sha256）再删 blob 文件；跳过链接与不存在文件。
+- `load()` 读取 manifest 并透传到 `_read_records`/`_validate_blob`：blob 缺失且在 manifest 视为已淘汰跳过，缺失但不在 manifest 仍 `memory_corrupt`；有淘汰记录时产生 `memory_blob_evicted` 审计信号。
+- `read()` 对已淘汰正文返回新错误 `memory_content_evicted`（非 `_INTEGRITY_ERRORS`，作为失败 ToolResult，不阻塞循环）；`search()` 跳过已淘汰 blob 内容匹配。`memory_id`、事件日志、seq/generation 语义不变。
+- 新增回归：superseded 大 blob 在配额压力下被淘汰且 manifest/审计正确、record 元数据保留；已淘汰正文 `memory_read` 返回 `memory_content_evicted`。
+- 专项验证：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 56 passed；`storage/memory.py`、`tooling/memory_tools.py` 与测试 Ruff 通过；两源文件 MyPy 通过；`git diff --check` 无空白错误。

@@ -118,11 +118,11 @@ def test_memory_read_enforces_line_and_exact_utf8_output_budgets(tmp_path: Path)
 
     invalid = memory_read(
         "task-001", record.memory_id, checker=checker, store=store,
-        max_observation_bytes=500, start_line=1, end_line=201,
+        max_observation_bytes=600, start_line=1, end_line=201,
     )
     result = memory_read(
         "task-001", record.memory_id, checker=checker, store=store,
-        max_observation_bytes=500,
+        max_observation_bytes=600,
     )
     too_small = memory_read(
         "task-001", record.memory_id, checker=checker, store=store,
@@ -131,11 +131,48 @@ def test_memory_read_enforces_line_and_exact_utf8_output_budgets(tmp_path: Path)
 
     assert invalid.error_code == "memory_invalid_record"
     assert result.success is True
-    assert len(json.dumps(result.output, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()) <= 500
+    assert len(json.dumps(result.output, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()) <= 600
     assert result.output["content"].endswith("[TRUNCATED]")  # type: ignore[index,union-attr]
     assert result.output["content_truncated"] is True  # type: ignore[index]
     assert result.output["next_start_line"] == 1  # type: ignore[index]
+    assert result.output["next_byte_offset"] > 0  # type: ignore[index,operator]
     assert too_small.error_code == "memory_output_budget_too_small"
+
+
+def test_memory_read_resumes_long_single_line_via_byte_offset(tmp_path: Path) -> None:
+    _workspace(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    record = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Long single line.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("A" * 4000 + "\n"),
+        ),
+    ).record
+    checker = MemoryFreshnessChecker(tmp_path, load_config(tmp_path, "task-001"), store)
+
+    recovered = ""
+    offset = 0
+    for _ in range(200):
+        chunk = memory_read(
+            "task-001", record.memory_id, checker=checker, store=store,
+            max_observation_bytes=800, start_line=1, start_byte_offset=offset,
+        )
+        assert chunk.success is True
+        content = chunk.output["content"]  # type: ignore[index]
+        if chunk.output["content_truncated"]:  # type: ignore[index]
+            recovered += content[: -len("[TRUNCATED]")]
+            offset = chunk.output["next_byte_offset"]  # type: ignore[index]
+        else:
+            recovered += content
+            break
+
+    assert recovered == "A" * 4000 + "\n"
 
 
 def test_memory_search_matches_sources_and_uses_fixed_ranking(tmp_path: Path) -> None:
@@ -253,6 +290,59 @@ def test_memory_search_filters_stale_phase_path_and_task(tmp_path: Path) -> None
     assert empty.output == {
         "total_matches": 0, "returned_count": 0, "truncated": False, "hits": []
     }
+
+
+def test_memory_search_excludes_superseded_snapshot_by_default(tmp_path: Path) -> None:
+    _workspace(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("alpha current\n", encoding="utf-8")
+    store = FilesystemMemoryStore(tmp_path)
+    old = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Alpha old.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("alpha old\n"),
+        ),
+    ).record
+    current = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Alpha current.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("alpha current\n"),
+        ),
+    ).record
+    checker = MemoryFreshnessChecker(tmp_path, load_config(tmp_path, "task-001"), store)
+
+    excluded = memory_search(
+        "task-001", "alpha old", current_phase=Phase.SPEC, checker=checker,
+        store=store, max_observation_bytes=8192,
+    )
+    included = memory_search(
+        "task-001", "alpha old", current_phase=Phase.SPEC, checker=checker,
+        store=store, max_observation_bytes=8192, include_stale=True,
+    )
+    restored = memory_read(
+        "task-001", old.memory_id, checker=checker, store=store,
+        max_observation_bytes=8192,
+    )
+
+    assert excluded.output["hits"] == []  # type: ignore[index]
+    assert included.output["hits"][0]["memory_id"] == old.memory_id  # type: ignore[index]
+    assert included.output["hits"][0]["superseded_by"] == current.memory_id  # type: ignore[index]
+    assert included.output["hits"][0]["stale"] is True  # type: ignore[index]
+    assert restored.output["content"] == "alpha old\n"  # type: ignore[index]
+    assert restored.output["superseded_by"] == current.memory_id  # type: ignore[index]
+    assert restored.output["stale"] is True  # type: ignore[index]
 
 
 def test_memory_search_reports_all_matches_before_limit_and_budget_truncation(

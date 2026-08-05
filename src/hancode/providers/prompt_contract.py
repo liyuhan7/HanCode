@@ -107,7 +107,10 @@ PHASE_CONTRACTS: dict[Phase, str] = {
         "is not a reason to ask the user. "
         "Do not execute build or test commands in the CODE phase. "
         "Do not return finish_phase until both source_change_required and "
-        "test_strategy_required are satisfied."
+        "test_strategy_required are satisfied. "
+        "When fixing a recorded test failure, write only within the remediation "
+        "planned_paths; if the fix needs a file outside them, call "
+        "record_remediation again to expand planned_paths before writing."
     ),
     Phase.TEST: (
         "Use the registered strategy in sections.test_strategy. "
@@ -128,6 +131,9 @@ PHASE_CONTRACTS: dict[Phase, str] = {
         "risk. "
         "When the latest test failed, use sections.test_failure as the authoritative "
         "evidence and call record_remediation after any necessary reads. "
+        "Declare every file the fix will touch in planned_paths\u2014sources, tests, "
+        "and markup alike\u2014because a modifying remediation can only write files "
+        "listed there, and it cannot be expanded later in the same phase. "
         "Do not call record_review while a failure is active. "
         "When the latest test passed, record final requirement coverage and risks "
         "with record_review; a successful record_review completes this phase. "

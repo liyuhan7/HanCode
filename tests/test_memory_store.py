@@ -8,11 +8,11 @@ import pytest
 
 from hancode.core.actions import Action, ActionType
 from hancode.core.errors import HanCodeError
-from hancode.core.memory import MemoryBlob, MemoryKind, MemoryRecordDraft
+from hancode.core.memory import MemoryBlob, MemoryKind, MemoryQuery, MemoryRecordDraft
 from hancode.core.models import OperationStatus, Phase
 from hancode.core.state import load_state
 from hancode.storage.checkpoints import RollbackResult
-from hancode.storage.memory import FilesystemMemoryStore
+from hancode.storage.memory import FilesystemMemoryStore, _read_verified_blob
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.tooling.registry import ToolResult
 
@@ -233,6 +233,104 @@ def test_record_successful_write_invalidates_the_current_read_snapshot(
         "task-001", read.memory_id, start_line=1, end_line=1
     )
     assert stale.invalidation_reason == "source_write"
+
+
+def test_repeated_read_supersedes_old_snapshot_without_advancing_generation(
+    tmp_path: Path,
+) -> None:
+    _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    first = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/main.py first.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("v1\n"),
+        ),
+    ).record
+    second = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/main.py again.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("v1\n"),
+        ),
+    ).record
+
+    snapshot = store.load("task-001").snapshot
+    old = store.read("task-001", first.memory_id, start_line=1, end_line=1)
+    current = store.read("task-001", second.memory_id, start_line=1, end_line=1)
+
+    assert snapshot.workspace_generation == 0
+    assert snapshot.latest_by_path == (("src/main.py", second.memory_id),)
+    assert snapshot.superseded_by == ((first.memory_id, second.memory_id),)
+    assert old.stale is True
+    assert old.superseded_by == second.memory_id
+    assert old.invalidation_reason == "superseded"
+    assert old.current_file_authoritative is False
+    assert current.stale is False
+    assert current.current_file_authoritative is True
+
+
+def test_write_leaves_all_snapshots_for_same_path_stale(tmp_path: Path) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    read_action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name="read_file",
+        args={"path": "src/main.py"},
+        reason=None,
+    )
+    reads = [
+        store.record_tool_result(
+            "task-001",
+            phase=Phase.CODE,
+            action=read_action,
+            result=ToolResult(
+                success=True,
+                action_name="read_file",
+                output={"path": "src/main.py", "content": "v1\n", "redacted": False},
+            ),
+            observation={"kind": "tool_feedback"},
+            state=load_state(task_root),
+        )
+        for _ in range(2)
+    ]
+    write_action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.CODE,
+        tool_name="write_file",
+        args={"path": "src/main.py", "content": "v2\n"},
+        reason="Update implementation.",
+    )
+
+    store.record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=write_action,
+        result=ToolResult(
+            success=True,
+            action_name="write_file",
+            output={"path": "src/main.py", "bytes_written": 3},
+            mutation_applied=True,
+        ),
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+
+    assert all(
+        store.read("task-001", record.memory_id, start_line=1, end_line=1).stale
+        for record in reads
+    )
 
 
 def test_record_rollback_invalidates_the_current_read_snapshot(tmp_path: Path) -> None:
@@ -678,6 +776,284 @@ def test_path_only_invalidation_advances_generation_without_snapshot(tmp_path: P
     assert appended.record.workspace_generation == 1
     assert appended.record.invalidates == ()
     assert appended.snapshot.workspace_generation == 1
+
+
+def test_append_evicts_stale_blob_bodies_to_free_capacity(tmp_path: Path) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    read = store.record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=Action(
+            type=ActionType.TOOL_CALL,
+            phase=Phase.CODE,
+            tool_name="read_file",
+            args={"path": "src/main.py"},
+            reason=None,
+        ),
+        result=ToolResult(
+            success=True,
+            action_name="read_file",
+            output={
+                "path": "src/main.py",
+                "content": "X" * 4000 + "\n",
+                "redacted": False,
+            },
+        ),
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+    # Supersede the large snapshot so its blob becomes evictable.
+    store.record_tool_result(
+        "task-001",
+        phase=Phase.CODE,
+        action=Action(
+            type=ActionType.TOOL_CALL,
+            phase=Phase.CODE,
+            tool_name="write_file",
+            args={"path": "src/main.py", "content": "small\n"},
+            reason="Shrink implementation.",
+        ),
+        result=ToolResult(
+            success=True,
+            action_name="write_file",
+            output={"path": "src/main.py", "bytes_written": 6},
+            mutation_applied=True,
+        ),
+        observation={"kind": "tool_feedback"},
+        state=load_state(task_root),
+    )
+    current_bytes = store.load("task-001").snapshot.total_bytes
+    _set_config(tmp_path, max_memory_task_bytes=current_bytes + 100)
+
+    appended = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="list_files",
+            success=True,
+            summary="Listed files after eviction.",
+        ),
+    )
+
+    manifest = json.loads(
+        (task_root / "memory" / "evicted.json").read_text(encoding="utf-8")
+    )
+    assert read.content_sha256 in manifest["evicted"]
+    assert not (task_root / "memory" / read.blob_ref).exists()  # type: ignore[operator]
+    assert len(appended.snapshot.records) == 3
+    reloaded = FilesystemMemoryStore(tmp_path).load("task-001")
+    assert "memory_blob_evicted" in reloaded.audit_signals
+
+
+def test_memory_read_reports_evicted_content(tmp_path: Path) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    record = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="get_diff",
+            success=True,
+            summary="Captured diff.",
+            paths=("src/a.py",),
+            blob=MemoryBlob.text("historical body\n"),
+        ),
+    ).record
+    memory_root = task_root / "memory"
+    (memory_root / "evicted.json").write_text(
+        json.dumps({"schema_version": 1, "evicted": [record.content_sha256]}),
+        encoding="utf-8",
+    )
+    (memory_root / record.blob_ref).unlink()  # type: ignore[operator]
+
+    with pytest.raises(HanCodeError) as exc_info:
+        store.read("task-001", record.memory_id, start_line=1, end_line=1)
+
+    assert exc_info.value.structured_error.error_code == "memory_content_evicted"
+
+
+def test_load_recovers_incomplete_event_tail_using_trusted_index(
+    tmp_path: Path,
+) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    committed = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="list_files",
+            success=True,
+            summary="Listed source files.",
+        ),
+    ).record
+    events_path = task_root / "memory" / "events.jsonl"
+    with events_path.open("ab") as handle:
+        handle.write(b'{"partial": "event without newline"')
+
+    recovered = FilesystemMemoryStore(tmp_path).load("task-001")
+
+    assert recovered.snapshot.records == (committed,)
+    assert "memory_event_tail_recovered" in recovered.audit_signals
+    assert events_path.read_bytes().endswith(b"\n")
+    assert len(events_path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_load_rejects_incomplete_event_tail_when_index_is_missing(
+    tmp_path: Path,
+) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="list_files",
+            success=True,
+            summary="Listed source files.",
+        ),
+    )
+    events_path = task_root / "memory" / "events.jsonl"
+    with events_path.open("ab") as handle:
+        handle.write(b'{"partial": "no newline"')
+    (task_root / "memory" / "index.json").unlink()
+
+    with pytest.raises(HanCodeError) as exc_info:
+        FilesystemMemoryStore(tmp_path).load("task-001")
+
+    assert exc_info.value.structured_error.error_code == "memory_corrupt"
+
+
+def test_load_removes_orphan_blob_but_keeps_referenced_blobs(
+    tmp_path: Path,
+) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    referenced = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/main.py.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("kept\n"),
+        ),
+    ).record
+    blobs_root = task_root / "memory" / "blobs"
+    orphan_blob = MemoryBlob.text("orphaned\n")
+    orphan_path = blobs_root / f"{orphan_blob.content_sha256}.txt"
+    orphan_path.write_bytes(orphan_blob.content)
+    stray_path = blobs_root / "not-a-content-address.txt"
+    stray_path.write_bytes(b"leave me\n")
+
+    loaded = FilesystemMemoryStore(tmp_path).load("task-001")
+
+    referenced_name = referenced.blob_ref.rsplit("/", 1)[-1]  # type: ignore[union-attr]
+    assert "memory_orphan_blob_removed" in loaded.audit_signals
+    assert not orphan_path.exists()
+    assert (blobs_root / referenced_name).exists()
+    assert stray_path.exists()
+
+
+def test_read_verified_blob_returns_the_bytes_it_hashed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_root = _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    record = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/main.py.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("verified\n"),
+        ),
+    ).record
+    blob_path = task_root / "memory" / record.blob_ref  # type: ignore[operator]
+    reads = 0
+    original_read_bytes = Path.read_bytes
+
+    def counting_read_bytes(path: Path) -> bytes:
+        nonlocal reads
+        if path == blob_path:
+            reads += 1
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+
+    content = _read_verified_blob(
+        record, task_root / "memory" / "blobs", Phase.CODE
+    )
+
+    assert content == b"verified\n"
+    assert reads == 1
+
+
+def test_search_loads_memory_only_once_and_reads_shared_blob_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _initialize_task(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    shared = MemoryBlob.text("needle shared\n")
+    for name in ("a", "b", "c"):
+        store.append(
+            "task-001",
+            MemoryRecordDraft(
+                phase=Phase.CODE,
+                kind=MemoryKind.TOOL_RESULT,
+                tool_name="read_file",
+                success=True,
+                summary=f"Read src/{name}.py.",
+                paths=(f"src/{name}.py",),
+                blob=shared,
+            ),
+        )
+    blob_path = (
+        tmp_path
+        / ".hancode"
+        / "tasks"
+        / "task-001"
+        / "memory"
+        / "blobs"
+        / f"{shared.content_sha256}.txt"
+    )
+    load_calls = 0
+    original_load = FilesystemMemoryStore.load
+
+    def counting_load(self: FilesystemMemoryStore, task_id: str):  # type: ignore[no-untyped-def]
+        nonlocal load_calls
+        load_calls += 1
+        return original_load(self, task_id)
+
+    monkeypatch.setattr(FilesystemMemoryStore, "load", counting_load)
+
+    blob_reads = 0
+    original_read_bytes = Path.read_bytes
+
+    def counting_read_bytes(path: Path) -> bytes:
+        nonlocal blob_reads
+        if path == blob_path:
+            blob_reads += 1
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+
+    hits = store.search("task-001", MemoryQuery(query="needle", include_stale=True))
+
+    # One load for the whole request (no nested per-blob reload), and the shared
+    # blob is verified once during load plus once in the cached search loop.
+    assert len(hits) == 3
+    assert load_calls == 1
+    assert blob_reads == 4
 
 
 def test_load_rejects_linked_memory_path(

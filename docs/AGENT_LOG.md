@@ -2,6 +2,121 @@
 
 本文件记录所有重要的智能体辅助开发活动。
 
+---
+
+### 2026-08-04 — S13-R9 — 容量闭环（可审计历史 Blob 淘汰）
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的达配额后永久阻塞、无 compaction/淘汰闭环；用户确认按保守方案（可审计历史 blob 淘汰 + 保留 record 元数据 + `memory_content_evicted`，不删事件、不重编号）实施。
+- 冻结契约：memory_id 永久稳定；只淘汰 blob 内容写独立 `evicted.json` manifest；`memory_read` 已淘汰返回 `memory_content_evicted`；quota 统计完整日志与存活 blob；淘汰资格限“全部引用已 stale 且非当前快照”；先写 manifest 再删文件。
+- 实现摘要：
+  - `_compact_evictable_blobs()` 在 append 配额压力时按字节从大到小淘汰合格历史 blob，先原子写 manifest 再删文件；`load()` 透传 evicted 集合，缺失且在 manifest 跳过、否则 `memory_corrupt`，产生 `memory_blob_evicted`。
+  - `read()` 已淘汰返回非阻塞 `memory_content_evicted`；`search()` 跳过已淘汰 blob 内容。
+- 验证：
+  - 专项 pytest：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 56 passed。
+  - Ruff：`storage/memory.py`、`tooling/memory_tools.py` 与测试通过。
+  - MyPy：两源文件无错误。
+  - `git diff --check`：无空白错误。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户确认保守 compaction 方案、不采用 TDD、在 main 开发。
+- 剩余风险：采用反应式（append 触发）淘汰而非高低水位后台压缩；未做成配置化水位；事件日志本身不压缩，符合冻结契约。
+
+---
+
+### 2026-08-04 — S13-R11 — Recent Events 分层
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的 `MEMORY_ACCESS` 挤掉有价值 recent events；不越界改存储格式、公开输出协议或 Context 预算裁剪。
+- 实现摘要：`MemoryContextPacker` 的 `recent_events` 分层，substantive（TOOL_RESULT/INVALIDATION/ROLLBACK）取最近 `max_memory_recent_events`，`MEMORY_ACCESS` 单独最多 2 条排其后；access 仍完整留在持久化日志。
+- 验证：
+  - 专项 pytest：`tests/test_memory_context.py tests/test_context_builder.py` 24 passed。
+  - Ruff：`runtime/memory.py` 与 Context 测试通过。
+  - MyPy：`runtime/memory.py` 无错误。
+  - `git diff --check`：无空白错误。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
+- 剩余风险：access 上限固定为 2（模块常量），未做成配置项；若后续需要可提为 `HanCodeConfig` 字段。
+
+---
+
+### 2026-08-04 — S13-R10 — 超长单行的字节续传
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的超长单行无法分页恢复——原实现返回同一 `next_start_line=1` 前缀，剩余部分永不可取；不越界改 compaction、recent 分层或 Context 预算。
+- 实现摘要：
+  - `MemorySlice` 增 `start_byte_offset`/`next_byte_offset`；`store.read()` 接受 `start_byte_offset` 只对起始行做 UTF-8 字节续传，越界或断字 fail-closed。
+  - `_fit_memory_slice` 单行超预算时返回 `[TRUNCATED]` 前缀并设 `next_byte_offset`，读完该行恢复行分页；ToolSpec `memory_read` schema 增 `start_byte_offset`，registry kwargs 透传。
+- 验证：
+  - 专项 pytest：`test_memory_models/store/tools/action_schema/action_parser/tool_factory/tool_registry` 135 passed。
+  - Ruff：四个源文件与工具测试通过。
+  - MyPy：四个源文件无错误。
+  - `git diff --check`：无空白错误。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
+- 剩余风险：新增两个整型字段使 memory_read 最小元数据略增，已同步两个预算断言；未引入 continuation token 抽象，采用 line + byte offset 双游标，语义边界已限定为“仅对起始行有效”。
+
+---
+
+### 2026-08-04 — S13-R8 — Event Tail 与 Orphan Blob 崩溃恢复
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的进程硬崩溃恢复不完整——event 写到一半直接判损坏、blob 已提交而 event 未提交产生的 orphan blob 无清理；不越界改 compaction、长行续传、recent 分层或公开输出协议。
+- 实现摘要：
+  - `_recover_incomplete_event_tail()`：仅在结尾缺换行且可信 index 匹配完整前缀时原子截断不完整尾部，产生 `memory_event_tail_recovered`；index 缺失/不符/replay 失败 fail-closed。用 `_InMemoryEvents` 复用 `_read_records`。
+  - `_remove_orphan_blobs()`：replay 后按 referenced 集合清理严格内容寻址命名的未引用普通 blob，产生 `memory_orphan_blob_removed`；链接、临时/杂项文件、已引用 blob 不动。审计信号累加。
+- 验证：
+  - 专项 pytest：`tests/test_memory_store.py` 42 passed。
+  - Ruff：`storage/memory.py` 与测试文件通过。
+  - MyPy：`storage/memory.py` 无错误。
+  - `git diff --check`：无空白错误。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
+- 剩余风险：完整前缀中间损坏仍 fail-closed（不跳过），符合审计要求；更强的 pending 事务标记或 SQLite WAL 属后续可选增强，未纳入本任务。
+
+---
+
+### 2026-08-04 — S13-R7 — Verified Blob 单次读取与单次加载搜索
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的 verified blob TOCTOU 与 `memory_search` 近 O(N²) 全量重放；不越界改崩溃恢复、compaction、长行续传、recent 分层或公开输出协议。
+- 实现摘要：
+  - 新增 `_read_verified_blob()`，单次读取后校验长度与摘要并返回该字节；`_validate_blob()` 改为其只校验包装；`read_blob_bytes()` 不再二次读取路径。
+  - `read()` 只 `load()` 一次并直接读取已验证 blob；`search()` 入口只 `load()` 一次，循环用请求内 `dict[blob_ref, bytes]` 缓存去重。
+  - 保持缺失、篡改、symlink、junction fail-closed。
+- 验证：
+  - 专项 pytest：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 49 passed。
+  - Ruff：`storage/memory.py` 与三个测试文件通过。
+  - MyPy：`storage/memory.py` 无错误。
+  - `git diff --check`：仅 LF/CRLF 提示。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
+- 剩余风险：`load()` 本身仍在重放时逐 blob 校验（O(N) 哈希），属既定 fail-closed 完整性要求；跨请求缓存未引入以避免外部篡改后的一致性风险。
+
+---
+
+### 2026-08-04 — S13-R6 — 文件快照正确性与热点连续性
+
+- 使用的技能：未使用 superpowers；按用户明确要求不采用 TDD，直接实现后补回归测试，只跑专项门禁。用户要求在 `main` 上开发，未执行 destructive git 命令。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的两个 P1 记忆正确性问题——同路径旧快照可能永不 stale、全局 generation 误伤未修改文件热点正文；不越界处理 blob 读取优化、崩溃恢复、compaction、长行续传或 recent 分层。
+- 实现摘要：
+  - `_validate_replay()` 从既有 append-only 事件派生 `superseded_by`：路径出现新成功 `read_file` 快照时把该路径上一份 current 快照标记 superseded，不增加 generation、不追加事件、不改持久化 schema。`MemorySnapshot` 增派生字段 `superseded_by`。
+  - `MemorySlice`、`MemorySearchHit` 增 `superseded_by`；`read()`/`search()` 把 invalidated 或 superseded 统一视为 stale，superseded 场景 reason 为 `superseded`、非权威；`memory_read`/`memory_search` 输出同步暴露该字段。默认搜索排除 superseded，`include_stale=True` 可恢复历史。
+  - `MemoryContextPacker` 热点资格与 `hot_eligible` 移除全局 generation 相等限制，只依赖 freshness 后的 `latest_by_path`、文本媒体类型与去重；无关路径 mutation 抬升 generation 后当前文件仍保留在 file index 和 hot contents。
+- 验证：
+  - 专项 pytest：`tests/test_memory_models.py tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 55 passed。
+  - Ruff：核心四模块与四个测试文件 `All checks passed!`。
+  - MyPy：`core/memory.py storage/memory.py runtime/memory.py tooling/memory_tools.py` 无错误。
+  - `git diff --check`：仅 LF/CRLF 提示，无空白错误。
+- 提交：未提交；按用户要求保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。未使用真实 LLM、网络或凭据。
+- 剩余风险：新增字段使 memory_read 最小元数据略增，已同步调整一个预算断言；全量 pytest、全仓 Ruff/MyPy、build 按计划在所有小任务完成后统一执行。
+
 ## 日志格式
 
 每条记录应包含：
@@ -2325,3 +2440,19 @@
 - 质量门：`uv sync --locked --extra dev` 成功；`uv build --offline` 成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`；`scripts/demo_mock_loop.py` 与 `hancode demo --provider mock` 均返回 `completed`；全量 Ruff `All checks passed!`；MyPy `Success: no issues found in 135 source files`；`git diff --check` 通过。
 - 全量 pytest：中间一次运行 `1575 passed, 17 skipped` 时一个重复 Demo 工作区在既有审批消费的 `core.state.save_state()` 原子替换处返回 `state_write_error`；trace 中此前的 Memory search/read 均已成功，未发现 Memory 损坏。随后 4 次独立工作区复现全部 `completed`，最终当前代码全量为 `1576 passed, 17 skipped in 166.98s`。该一次性 Windows 文件锁 flake 作为环境风险保留，不改变 Memory 语义，也未新增越界重试逻辑。
 - 产物与 Git：按用户要求未清理 `.tmp/hancode-s13-r5-*`、历史 `.tmp`、`dist/`、`build/`、`src/hancode.egg-info/` 或 `.pytest_cache/`；未提交、未推送。清理由用户在确认精确路径后自行执行。
+
+### 2026-08-04 — remediation planned_paths 跨文件修复死锁修复
+
+- 范围：只改 `src/hancode/core/tool_specs.py` 的 `record_remediation.allowed_phases`（`{REVIEW}` → `{REVIEW, CODE}`）与 `tests/test_tool_policy.py` 的断言/新增测试；未改存储格式、Policy 校验逻辑、AgentLoop 的 remediation 处理或 remediation 语义。
+- 背景：task-003 测试失败（汉堡菜单 `aria-expanded` 断言失败）进入 REVIEW，模型 `record_remediation(kind=modify_test, planned_paths=[.hancode/tests/interaction.test.js])` 后回 CODE 修复。模型在修复中发现真实 `index.html` 缺 `#back-to-top` 按钮，但每次 `edit_file index.html` 都被 `remediation_planned_path_required` 拒绝——REVIEW 声明的 `planned_paths` 只含测试文件，而 `record_remediation` 仅 REVIEW 阶段可用，模型无法扩展修复范围，陷入死循环（trace 多次 `policy_denied` 后仍重复尝试）。
+- 根因：`allowed_phases` 是 record_remediation 的唯一阶段控制点；`remediation_planned_path_required` 严格把 CODE 写操作锁死在已声明 `planned_paths` 内，跨文件修复一旦声明不全即死锁。
+- TDD：Red——更新 CODE 允许工具断言（期望含 `record_remediation`，当前不含）与新增 `test_record_remediation_allowed_in_code_phase_when_test_failed`（当前被 `tool_not_allowed_in_phase` 拒绝）；Green——扩展 `allowed_phases` 后两测试通过。
+- 验证：`test_tool_policy.py` 61 passed；action_schema/prompt/tool_factory/remediation 相关套件 178 passed；全量 pytest `1588 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 135 source files`。
+- 关键语义：`modify_test` 只接受 test 路径，要改 `index.html` 必须用 `modify_source`（允许任意 SOURCE 路径）。该修复提供模型"自救"能力（CODE 阶段重新 record_remediation 扩展 `planned_paths`）；task-003 当前仍卡在 CODE，需 resume 后由模型实际重新声明 remediation 才能继续。后续可选增强：REVIEW/CODE 契约引导模型声明完整 `planned_paths`。
+
+### 2026-08-04 — REVIEW/CODE 契约引导完整 planned_paths（增强）
+
+- 范围：只改 `src/hancode/providers/prompt_contract.py` 的 REVIEW/CODE 阶段契约文本（英文，无逻辑变更）。
+- 内容：REVIEW 契约提示 `record_remediation` 时一次性声明 `planned_paths` 覆盖所有将修改的文件（源码/测试/标记语言），因同一阶段内无法再扩展；CODE 契约提示修复时只写 `planned_paths` 内文件，若需跨文件可重新 `record_remediation` 扩展 `planned_paths` 后再写。
+- 验证：providers/test_tool_policy/test_phases/test_context_builder/test_tool_factory/test_action_schema 相关套件 `258 passed`；契约文件 ruff/mypy 无新错误。
+- 说明：全量 pytest 被工作区未完成的 `src/hancode/storage/memory.py` 等改动阻塞（mypy：`_SHA256_RE` 未定义、`_recover_incomplete_event_tail` 缺参数；116 个 TUI/memory 测试失败），与本次契约改动无关，待该改动完成后统一回填全量门禁。

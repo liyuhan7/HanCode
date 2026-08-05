@@ -138,11 +138,16 @@ def memory_read(
     max_observation_bytes: int,
     start_line: int = 1,
     end_line: int = 200,
+    start_byte_offset: int = 0,
 ) -> ToolResult:
     try:
         checker.refresh_record(task_id, memory_id)
         slice_ = store.read(
-            task_id, memory_id, start_line=start_line, end_line=end_line
+            task_id,
+            memory_id,
+            start_line=start_line,
+            end_line=end_line,
+            start_byte_offset=start_byte_offset,
         )
         output = _fit_memory_slice(slice_, max_observation_bytes)
     except HanCodeError as exc:
@@ -241,14 +246,19 @@ def _fit_memory_slice(slice_: MemorySlice, budget: int) -> dict[str, object]:
         output["end_line"] = slice_.start_line + len(kept) - 1
         output["next_start_line"] = slice_.start_line + len(kept)
         return output
+    # A single line does not fit: truncate within the line and expose a byte
+    # cursor so the remainder of this same line can be recovered next call.
     output["next_start_line"] = slice_.start_line
-    output["content"] = _largest_fitting_prefix(output, lines[0], budget)
+    prefix_chars = _largest_fitting_prefix_chars(output, lines[0], budget)
+    output["content"] = lines[0][:prefix_chars] + _TRUNCATION_MARKER
+    consumed_bytes = len(lines[0][:prefix_chars].encode("utf-8"))
+    output["next_byte_offset"] = slice_.start_byte_offset + consumed_bytes
     return output
 
 
-def _largest_fitting_prefix(
+def _largest_fitting_prefix_chars(
     output: dict[str, object], line: str, budget: int
-) -> str:
+) -> int:
     candidate = dict(output)
     candidate["content"] = _TRUNCATION_MARKER
     if _byte_len(candidate) > budget:
@@ -261,7 +271,7 @@ def _largest_fitting_prefix(
             low = middle
         else:
             high = middle - 1
-    return line[:low] + _TRUNCATION_MARKER
+    return low
 
 
 def _slice_dict(slice_: MemorySlice) -> dict[str, object]:
@@ -276,6 +286,7 @@ def _slice_dict(slice_: MemorySlice) -> dict[str, object]:
         "current_generation": slice_.current_generation,
         "stale": slice_.stale,
         "invalidated_by": slice_.invalidated_by,
+        "superseded_by": slice_.superseded_by,
         "invalidation_reason": slice_.invalidation_reason,
         "current_file_authoritative": slice_.current_file_authoritative,
         "warning": slice_.warning,
@@ -285,6 +296,8 @@ def _slice_dict(slice_: MemorySlice) -> dict[str, object]:
         "content": slice_.content,
         "content_truncated": slice_.content_truncated,
         "next_start_line": slice_.next_start_line,
+        "start_byte_offset": slice_.start_byte_offset,
+        "next_byte_offset": slice_.next_byte_offset,
     }
 
 
@@ -354,6 +367,7 @@ def _hit_dict(hit: MemorySearchHit) -> dict[str, object]:
         "current_generation": hit.current_generation,
         "stale": hit.stale,
         "invalidated_by": hit.invalidated_by,
+        "superseded_by": hit.superseded_by,
         "invalidation_reason": hit.invalidation_reason,
         "match_sources": list(hit.match_sources),
     }

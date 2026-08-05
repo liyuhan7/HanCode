@@ -105,6 +105,7 @@ def test_memory_query_slice_and_search_hit_are_immutable_slot_models() -> None:
         current_generation=0,
         stale=False,
         invalidated_by=None,
+        superseded_by=None,
         invalidation_reason=None,
         current_file_authoritative=True,
         warning=None,
@@ -131,6 +132,7 @@ def test_memory_query_slice_and_search_hit_are_immutable_slot_models() -> None:
         current_generation=0,
         stale=False,
         invalidated_by=None,
+        superseded_by=None,
         invalidation_reason=None,
         match_sources=("content",),
     )

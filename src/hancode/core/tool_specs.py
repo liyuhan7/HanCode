@@ -63,6 +63,11 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
                 },
                 "start_line": {"type": "integer", "minimum": 1, "default": 1},
                 "end_line": {"type": "integer", "minimum": 1, "default": 200},
+                "start_byte_offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                },
             },
             "required": ["memory_id"],
             "additionalProperties": False,
@@ -409,7 +414,10 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
             ],
             "additionalProperties": False,
         },
-        allowed_phases=frozenset({Phase.REVIEW}),
+        # CODE is allowed so an agent can re-declare remediation scope (planned
+        # paths) when a cross-file fix becomes necessary, instead of being
+        # locked out by remediation_planned_path_required.
+        allowed_phases=frozenset({Phase.REVIEW, Phase.CODE}),
         read_only=False,
     ),
     ToolSpec(

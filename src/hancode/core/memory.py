@@ -54,6 +54,7 @@ class MemorySlice:
     current_generation: int
     stale: bool
     invalidated_by: str | None
+    superseded_by: str | None
     invalidation_reason: str | None
     current_file_authoritative: bool
     warning: str | None
@@ -63,6 +64,8 @@ class MemorySlice:
     content: str
     content_truncated: bool
     next_start_line: int | None
+    start_byte_offset: int = 0
+    next_byte_offset: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +85,7 @@ class MemorySearchHit:
     current_generation: int
     stale: bool
     invalidated_by: str | None
+    superseded_by: str | None
     invalidation_reason: str | None
     match_sources: tuple[str, ...]
 
@@ -299,6 +303,7 @@ class MemorySnapshot:
     workspace_generation: int
     latest_by_path: tuple[tuple[str, str], ...]
     invalidated_by: tuple[tuple[str, str], ...]
+    superseded_by: tuple[tuple[str, str], ...]
     total_bytes: int
 
 

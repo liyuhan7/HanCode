@@ -133,3 +133,105 @@ def test_packer_persists_external_content_change_as_invalidation(tmp_path: Path)
         '{"outcome":"invalidated","reason_by_path":{"src/main.py":"content_changed"},'
         '"source":"context_fingerprint_probe"}'
     )
+
+
+def test_recent_events_keep_substantive_records_over_memory_access(
+    tmp_path: Path,
+) -> None:
+    task_root = _workspace(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    read_record = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.CODE,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/main.py.",
+            paths=("src/main.py",),
+            blob=MemoryBlob.text("VALUE = 1\n"),
+        ),
+    ).record
+    for index in range(8):
+        store.append(
+            "task-001",
+            MemoryRecordDraft(
+                phase=Phase.CODE,
+                kind=MemoryKind.MEMORY_ACCESS,
+                tool_name="memory_search",
+                success=True,
+                summary=f'{{"outcome":"succeeded","returned_count":{index}}}',
+            ),
+        )
+
+    memory = MemoryContextPacker(
+        project_root=tmp_path,
+        config=load_config(tmp_path, "task-001"),
+        store=store,
+    ).build(
+        task_id="task-001",
+        phase=Phase.CODE,
+        state=load_state(task_root),
+        observation=None,
+        source_snippets={},
+    )
+
+    kinds = [event.kind for event in memory.recent_events]
+    access_events = [k for k in kinds if k is MemoryKind.MEMORY_ACCESS]
+    assert read_record.memory_id in {event.memory_id for event in memory.recent_events}
+    assert len(access_events) == 2
+    # Substantive records precede the retained memory-access summaries.
+    assert kinds.index(MemoryKind.TOOL_RESULT) < kinds.index(MemoryKind.MEMORY_ACCESS)
+    # The full access history remains persisted even though context is trimmed.
+    stored = store.load("task-001").snapshot.records
+    assert sum(1 for r in stored if r.kind is MemoryKind.MEMORY_ACCESS) == 8
+
+
+def test_unrelated_write_generation_keeps_current_file_hot(tmp_path: Path) -> None:
+    task_root = _workspace(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("A = 1\n", encoding="utf-8")
+    store = FilesystemMemoryStore(tmp_path)
+    record = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.SPEC,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read src/a.py.",
+            paths=("src/a.py",),
+            blob=MemoryBlob.text("A = 1\n"),
+        ),
+    ).record
+    store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.SPEC,
+            kind=MemoryKind.INVALIDATION,
+            tool_name="write_file",
+            success=True,
+            summary='{"outcome":"succeeded","reason":"source_write"}',
+            paths=("src/b.py",),
+        ),
+    )
+
+    memory = MemoryContextPacker(
+        project_root=tmp_path,
+        config=load_config(tmp_path, "task-001"),
+        store=store,
+    ).build(
+        task_id="task-001",
+        phase=Phase.SPEC,
+        state=load_state(task_root),
+        observation=None,
+        source_snippets={},
+    )
+
+    assert memory.workspace_generation == 1
+    assert memory.file_index[0].memory_id == record.memory_id
+    assert memory.file_index[0].record_generation == 0
+    assert memory.file_index[0].current_generation == 1
+    assert memory.file_index[0].hot_eligible is True
+    assert memory.hot_contents[0].memory_id == record.memory_id
+    assert memory.hot_contents[0].content == "A = 1\n"

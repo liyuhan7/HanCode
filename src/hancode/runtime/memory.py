@@ -14,6 +14,8 @@ from hancode.core.state import TaskState
 from hancode.storage.memory import FilesystemMemoryStore
 from hancode.tooling.memory_tools import MemoryFreshnessChecker
 
+_MAX_RECENT_MEMORY_ACCESSES = 2
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryEventContext:
@@ -118,6 +120,16 @@ class MemoryContextPacker:
         hot_contents = self._hot_contents(
             selected, snapshot.workspace_generation, state, observation, source_snippets
         )
+        substantive = [
+            record
+            for record in snapshot.records
+            if record.kind is not MemoryKind.MEMORY_ACCESS
+        ][-self.config.max_memory_recent_events:]
+        accesses = [
+            record
+            for record in snapshot.records
+            if record.kind is MemoryKind.MEMORY_ACCESS
+        ][-_MAX_RECENT_MEMORY_ACCESSES:]
         recent = tuple(
             MemoryEventContext(
                 memory_id=record.memory_id, seq=record.seq, phase=record.phase, kind=record.kind,
@@ -126,7 +138,7 @@ class MemoryContextPacker:
                 workspace_generation=record.workspace_generation,
                 stale=record.memory_id in invalidated_by,
             )
-            for record in snapshot.records[-self.config.max_memory_recent_events:]
+            for record in (*substantive, *accesses)
         )
         return MemoryContext(snapshot.workspace_generation, recent, file_index, hot_contents)
 
@@ -141,7 +153,6 @@ class MemoryContextPacker:
                 break
             if (
                 record.media_type is not MemoryMediaType.TEXT
-                or record.workspace_generation != generation
                 or path in source_snippets
                 or record.memory_id == observed_memory_id
             ):
@@ -186,7 +197,7 @@ def _file_context(path: str, record: MemoryRecord, generation: int) -> MemoryFil
         path=path, memory_id=record.memory_id, phase=record.phase, seq=record.seq,
         content_sha256=record.content_sha256, blob_bytes=record.blob_bytes,
         record_generation=record.workspace_generation, current_generation=generation,
-        hot_eligible=(record.media_type is MemoryMediaType.TEXT and record.workspace_generation == generation),
+        hot_eligible=record.media_type is MemoryMediaType.TEXT,
     )
 
 

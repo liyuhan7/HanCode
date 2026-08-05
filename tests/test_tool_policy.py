@@ -42,6 +42,7 @@ from hancode.core.delivery_evidence import DeliveryEvidence
                 "memory_read",
                 "memory_search",
                 "read_file",
+                "record_remediation",
                 "record_test_strategy",
                 "search_text",
                 "write_file",
@@ -528,6 +529,36 @@ def test_remediation_paths_remain_enforced_after_first_applied_write(
 
     assert result.allowed is False
     assert result.denied_rule == "remediation_planned_path_required"
+
+
+def test_record_remediation_allowed_in_code_phase_when_test_failed(
+    tmp_path: Path,
+) -> None:
+    """A failed-test remediation may be re-declared in CODE to expand scope."""
+    state = replace(
+        _state(Phase.CODE, latest_test_status="failed"),
+        latest_test_failure_digest="a" * 64,
+    )
+
+    decision = _policy(tmp_path).evaluate(
+        action=_action(
+            "record_remediation",
+            Phase.CODE,
+            {
+                "failure_digest": "a" * 64,
+                "kind": "modify_source",
+                "diagnosis": "Expand remediation to include index.html.",
+                "planned_paths": [".hancode/src/index.html"],
+                "question": None,
+            },
+            "Update remediation planned paths for cross-file fix.",
+        ),
+        phase=Phase.CODE,
+        state=state,
+    )
+
+    assert decision.allowed is True
+    assert decision.denied_rule is None
 
 
 def _policy(
