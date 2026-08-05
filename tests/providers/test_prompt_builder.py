@@ -466,3 +466,33 @@ def test_deliver_system_prompt_guides_get_diff_evidence() -> None:
     system_content = prompt.messages[0].content
     assert "get_diff" in system_content
     assert "diff evidence" in system_content
+
+
+def test_code_system_prompt_guides_remediation_scope_source() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(phase=Phase.CODE),
+        tool_catalog=_make_catalog(),
+    )
+    system_content = prompt.messages[0].content
+    assert "remediation_scope" in system_content
+    assert "test_remediation.json" in system_content
+    assert "not in task memory" in system_content
+
+
+def test_review_system_prompt_persists_remediation_record() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(phase=Phase.REVIEW),
+        tool_catalog=_make_catalog(),
+    )
+    system_content = prompt.messages[0].content
+    assert "test_remediation.json" in system_content
+    assert "task memory" in system_content
+
+
+def test_system_contract_forbids_retrying_same_memory_tool_after_failed_read() -> None:
+    from hancode.providers.prompt_contract import BASE_SYSTEM_CONTRACT
+
+    assert "switch to a different" in BASE_SYSTEM_CONTRACT
+    assert "read_file" in BASE_SYSTEM_CONTRACT

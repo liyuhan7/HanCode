@@ -186,7 +186,7 @@ class FilesystemMemoryStore:
         if record is None:
             raise _memory_not_found(state.current_phase)
         if record.blob_ref is None or record.media_type is None:
-            raise _memory_content_unavailable(state.current_phase)
+            raise _memory_content_unavailable(state.current_phase, task_id)
         memory_root = task_path(self._project_root, task_id) / "memory"
         blobs_root = memory_root / "blobs"
         evicted = _read_evicted_manifest(memory_root, state.current_phase)
@@ -1317,13 +1317,14 @@ def _memory_not_found(phase: Phase) -> HanCodeError:
     )
 
 
-def _memory_content_unavailable(phase: Phase) -> HanCodeError:
+def _memory_content_unavailable(phase: Phase, task_id: str) -> HanCodeError:
     return _memory_error(
         "memory_content_unavailable",
         "The requested memory record does not contain readable content.",
         phase,
         "memory_blob_required",
-        "Choose a memory record that carries a persisted blob.",
+        "Memory holds only file blobs; read internal decisions such as "
+        f"remediation via read_file at .hancode/tasks/{task_id}/test_remediation.json.",
     )
 
 

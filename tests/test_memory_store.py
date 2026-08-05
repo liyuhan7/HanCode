@@ -142,6 +142,7 @@ def test_read_reports_stable_errors_for_missing_content_and_range(tmp_path: Path
 
     assert missing.value.structured_error.error_code == "memory_not_found"
     assert unavailable.value.structured_error.error_code == "memory_content_unavailable"
+    assert "test_remediation.json" in unavailable.value.structured_error.suggested_fix
     assert invalid_range.value.structured_error.error_code == "memory_invalid_record"
 
 

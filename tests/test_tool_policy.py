@@ -531,6 +531,39 @@ def test_remediation_paths_remain_enforced_after_first_applied_write(
     assert result.denied_rule == "remediation_planned_path_required"
 
 
+def test_remediation_denial_suggested_fix_lists_planned_paths(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / ".hancode" / "tasks" / "task-001").mkdir(parents=True)
+    decision = RemediationDecision(
+        schema_version=1,
+        task_id="task-001",
+        failure_digest="a" * 64,
+        kind=RemediationKind.MODIFY_SOURCE,
+        diagnosis="Fix the declared implementation file.",
+        planned_paths=("src/a.py", "src/b.py"),
+        question=None,
+        created_at="2026-07-31T00:00:00+00:00",
+        digest="pending",
+    )
+    decision = replace(decision, digest=digest_remediation(decision))
+    TestRemediationStore(tmp_path).save_remediation(decision)
+    state = replace(
+        _state(Phase.CODE, latest_test_status="failed"),
+        latest_remediation_digest=decision.digest,
+    )
+
+    result = _policy(tmp_path).evaluate(
+        action=_write_action(Phase.CODE, "src/other.py"),
+        phase=Phase.CODE,
+        state=state,
+    )
+
+    assert result.allowed is False
+    assert result.denied_rule == "remediation_planned_path_required"
+    assert "src/a.py" in result.suggested_fix
+    assert "src/b.py" in result.suggested_fix
+
+
 def test_record_remediation_allowed_in_code_phase_when_test_failed(
     tmp_path: Path,
 ) -> None:

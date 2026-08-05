@@ -18,7 +18,12 @@ from hancode.core.test_strategy import TestCoverageItem
 from hancode.storage.test_strategies import TestStrategyStore
 from hancode.storage.test_remediations import TestRemediationStore
 from hancode.runtime.test_remediation import build_test_failure_record
-from hancode.core.test_remediation import FailureCategory
+from hancode.core.test_remediation import (
+    FailureCategory,
+    RemediationDecision,
+    RemediationKind,
+    digest_remediation,
+)
 from hancode.storage.workspace import init_project_workspace, init_task_workspace
 from hancode.storage.delivery_evidence import DeliveryEvidenceStore
 from hancode.storage.memory import FilesystemMemoryStore
@@ -170,6 +175,116 @@ def test_review_context_projects_passed_failure_as_resolved_audit(tmp_path: Path
 
     assert "test_failure" not in context["sections"]
     assert context["sections"]["last_test_failure"]["digest"] == failure.digest
+
+
+def test_code_phase_context_injects_remediation_scope_for_active_failure(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    remediation = RemediationDecision(
+        schema_version=1,
+        task_id="task-001",
+        failure_digest="a" * 64,
+        kind=RemediationKind.MODIFY_SOURCE,
+        diagnosis="Expand the back-to-top button into the source markup.",
+        planned_paths=(".hancode/src/index.html", ".hancode/src/style.css"),
+        question=None,
+        created_at="2026-08-01T00:00:00+00:00",
+        digest="pending",
+    )
+    remediation = replace(remediation, digest=digest_remediation(remediation))
+    TestRemediationStore(project_root).save_remediation(remediation)
+    state = replace(
+        _state(
+            task_root,
+            goal="Fix the failing behavior.",
+            artifact_names=("SPEC.md", "PLAN.md"),
+        ),
+        latest_test_status="failed",
+        latest_remediation_digest=remediation.digest,
+    )
+
+    context = build_context(
+        project_root,
+        "task-001",
+        Phase.CODE,
+        load_config(project_root, "task-001"),
+        state=state,
+    )
+
+    assert context["sections"]["remediation_scope"] == {
+        "kind": "modify_source",
+        "planned_paths": [".hancode/src/index.html", ".hancode/src/style.css"],
+        "digest": remediation.digest,
+    }
+
+
+def test_code_phase_context_omits_remediation_scope_without_active_failure(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    state = replace(
+        _state(
+            task_root,
+            goal="Implement the assignment.",
+            artifact_names=("SPEC.md", "PLAN.md"),
+        ),
+        latest_test_status="none",
+    )
+
+    context = build_context(
+        project_root,
+        "task-001",
+        Phase.CODE,
+        load_config(project_root, "task-001"),
+        state=state,
+    )
+
+    assert "remediation_scope" not in context["sections"]
+
+
+def test_code_phase_context_rejects_stale_remediation_binding(tmp_path: Path) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    remediation = RemediationDecision(
+        schema_version=1,
+        task_id="task-001",
+        failure_digest="a" * 64,
+        kind=RemediationKind.MODIFY_SOURCE,
+        diagnosis="Fix the declared source file.",
+        planned_paths=("src/a.py",),
+        question=None,
+        created_at="2026-08-01T00:00:00+00:00",
+        digest="pending",
+    )
+    remediation = replace(remediation, digest=digest_remediation(remediation))
+    TestRemediationStore(project_root).save_remediation(remediation)
+    state = replace(
+        _state(
+            task_root,
+            goal="Fix the failing behavior.",
+            artifact_names=("SPEC.md", "PLAN.md"),
+        ),
+        latest_test_status="failed",
+        latest_remediation_digest="b" * 64,
+    )
+
+    with pytest.raises(HanCodeError) as error:
+        build_context(
+            project_root,
+            "task-001",
+            Phase.CODE,
+            load_config(project_root, "task-001"),
+            state=state,
+        )
+
+    assert error.value.structured_error.error_code == "test_failure_invalid"
+    assert error.value.structured_error.phase == "code"
 
 
 def test_code_phase_context_requires_spec_and_plan(tmp_path: Path) -> None:

@@ -354,3 +354,11 @@ def test_registered_tool_without_schema_is_rejected_even_with_no_arguments(
 
     assert isinstance(result, ParseError)
     assert result.error_code == "invalid_action_args"
+
+
+def test_memory_search_description_redirects_remediation_lookups() -> None:
+    from hancode.core.tool_specs import TOOL_SPEC_BY_NAME
+
+    description = TOOL_SPEC_BY_NAME["memory_search"].description
+    assert "test_remediation.json" in description
+    assert "NOT stored here" in description

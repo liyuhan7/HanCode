@@ -281,7 +281,9 @@ class ToolPolicy:
                 phase,
                 "The write target is outside remediation planned_paths.",
                 "remediation_planned_path_required",
-                "Modify only a path declared by the current remediation decision.",
+                "Allowed planned_paths: "
+                + ", ".join(sorted(decision.planned_paths))
+                + ". Modify only a path declared by the current remediation decision.",
             )
         return None
 

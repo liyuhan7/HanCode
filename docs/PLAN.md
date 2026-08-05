@@ -7792,3 +7792,30 @@ MockLLM Demo 固定演示：读取 A(v1) → 其他工具调用 → 销毁并恢
 - `read()` 对已淘汰正文返回新错误 `memory_content_evicted`（非 `_INTEGRITY_ERRORS`，作为失败 ToolResult，不阻塞循环）；`search()` 跳过已淘汰 blob 内容匹配。`memory_id`、事件日志、seq/generation 语义不变。
 - 新增回归：superseded 大 blob 在配额压力下被淘汰且 manifest/审计正确、record 元数据保留；已淘汰正文 `memory_read` 返回 `memory_content_evicted`。
 - 专项验证：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 56 passed；`storage/memory.py`、`tooling/memory_tools.py` 与测试 Ruff 通过；两源文件 MyPy 通过；`git diff --check` 无空白错误。
+
+### S13 追踪修复：remediation 范围直达模型（消除 read_file 死循环）
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成；全量 pytest + Ruff + MyPy 通过 |
+| 依赖 | S13-R11（recent 分层）之后 |
+| 开发方式 | TDD；先红后绿 |
+
+目标：task-003 trace 显示模型 56 次 read_file（23 次读 index.html）、8 次 edit_file 全被 `remediation_planned_path_required` 拒绝后陷入 read→edit→denied→memory_search 循环。根因是 CODE 阶段看不到 remediation 决策，模型被迫去 memory 猜。目标是让 `planned_paths` 对模型始终可见，消除"查找"需求。
+
+修改范围（5 点）：
+
+1. `src/hancode/runtime/context.py`：CODE 阶段存在 failed 状态与 remediation 时注入 `sections.remediation_scope`（kind/planned_paths/digest）；stale binding 抛 `test_failure_invalid`；`_TRUNCATION_ORDER[CODE]` 末位加 `remediation_scope`。
+2. `src/hancode/policy/tool_policy.py`：`_evaluate_remediation_path` 拒绝时 suggested_fix 携带排序后的允许 planned_paths。
+3. `src/hancode/providers/prompt_contract.py`：CODE 契约指引读 remediation_scope/test_remediation.json 且明言 remediation 不入 memory；REVIEW 契约声明决策持久化位置；`BASE_SYSTEM_CONTRACT` 决策程序新增"读失败后切换读法而非重试同一 memory 工具"。
+4. `src/hancode/core/tool_specs.py`：memory_search 描述声明内部决策不入 memory；`src/hancode/storage/memory.py` `_memory_content_unavailable` suggested_fix 指引改读 test_remediation.json。
+5. 测试：`tests/test_context_builder.py`（注入/省略/stale 三用例）、`tests/test_tool_policy.py`（拒绝消息含路径）、`tests/test_memory_store.py`（suggested_fix 含 test_remediation.json）、`tests/test_action_schema.py`（memory_search 描述）、`tests/providers/test_prompt_builder.py`（契约断言）。
+
+边界：不改 remediation 决策本身（modify_test 不含源码路径属决策问题，不在本轮）；不改 Context 预算策略；不改 memory 存储格式。
+
+验证结果（2026-08-05）：
+
+- 全量 pytest：`1607 passed, 17 skipped`。
+- Ruff：`All checks passed!`（context/tool_policy/prompt_contract/tool_specs/storage_memory + 5 测试文件）。
+- MyPy：`Success: no issues found in 5 source files`。
+- 提交：未提交；保留 `main` 工作区改动。

@@ -4,6 +4,27 @@
 
 ---
 
+### 2026-08-05 — S13 追踪修复 — remediation 范围直达模型（消除 read_file 死循环）
+
+- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：分析 `.hancode/tasks/task-003` trace，发现模型 56 次 read_file 中 23 次读 index.html、8 次 edit_file 全被 remediation planned_paths policy 拒绝，陷入 read→edit→denied→memory_search 循环。根因：CODE 阶段看不到 remediation 决策，模型被迫去 memory 里猜。用户批准按 5 个修改点实施。
+- 实现摘要：
+  - 修改点 1（确定性兜底）：`context.py` 在 CODE 阶段有 failed 状态且 remediation 存在时注入 `sections.remediation_scope`（kind/planned_paths/digest），stale binding 抛结构化错误；`_TRUNCATION_ORDER[CODE]` 末位加入 `remediation_scope`（最后才被截断）。
+  - 修改点 2（确定性兜底）：`tool_policy.py` 的 `_evaluate_remediation_path` 拒绝 `remediation_planned_path_required` 时 suggested_fix 直接列出允许的 planned_paths。
+  - 修改点 3（提示词）：`prompt_contract.py` CODE 契约明确"读 sections.remediation_scope / test_remediation.json，不要用 memory_read 查 remediation"；REVIEW 契约声明 remediation 持久化到 test_remediation.json。
+  - 修改点 4（去误导）：`tool_specs.py` memory_search 描述声明内部决策不入 memory；`storage/memory.py` `_memory_content_unavailable` 的 suggested_fix 指引改读 `.hancode/tasks/<task>/test_remediation.json`。
+  - 修改点 5（纪律）：`BASE_SYSTEM_CONTRACT` 决策程序新增"读工具失败后切换不同读法，不重试同一 memory 工具"。
+- 验证：
+  - 全量 pytest：`1607 passed, 17 skipped`。
+  - Ruff：`All checks passed!`（5 源文件 + 5 测试文件）。
+  - MyPy：`Success: no issues found in 5 source files`。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户确认执行全部 5 个修改点。
+- 剩余风险：remediation_scope 注入依赖 `latest_test_status == "failed"`；`modify_test` 类 remediation 的 planned_paths 仍可能不含目标源码路径，属决策正确性问题而非可见性问题，未在本轮改变。
+
+---
+
 ### 2026-08-04 — S13-R9 — 容量闭环（可审计历史 Blob 淘汰）
 
 - 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。

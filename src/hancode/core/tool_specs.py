@@ -78,8 +78,10 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="memory_search",
         description=(
-            "Search summaries, recorded paths, and verified blob text in the current "
-            "task. Use memory_read to retrieve a matching blob."
+            "Search tool-call summaries, recorded file paths, and verified "
+            "file-content blobs in task runtime memory. Internal decisions such "
+            "as test_remediation or test_failure are NOT stored here; read them "
+            "via read_file at .hancode/tasks/<task>/test_remediation.json."
         ),
         args_schema={
             "type": "object",

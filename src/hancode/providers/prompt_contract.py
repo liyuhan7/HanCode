@@ -44,8 +44,11 @@ DECISION PROCEDURE
 5. Use only a tool listed in available_tools.
 6. Do not repeat an identical action after it succeeded or was
    deterministically denied.
-7. Return finish_phase only when phase_gate.can_finish is true.
-8. Never return final. Global completion is controlled by the router.
+7. After a read tool fails or returns no usable content, switch to a different
+   read approach (such as read_file of a known internal record) instead of
+   retrying the same memory tool.
+8. Return finish_phase only when phase_gate.can_finish is true.
+9. Never return final. Global completion is controlled by the router.
 
 SAFETY
 
@@ -108,9 +111,14 @@ PHASE_CONTRACTS: dict[Phase, str] = {
         "Do not execute build or test commands in the CODE phase. "
         "Do not return finish_phase until both source_change_required and "
         "test_strategy_required are satisfied. "
-        "When fixing a recorded test failure, write only within the remediation "
-        "planned_paths; if the fix needs a file outside them, call "
-        "record_remediation again to expand planned_paths before writing."
+        "When fixing a recorded test failure, read sections.remediation_scope "
+        "to see the allowed planned_paths before writing; if that section is "
+        "absent, read_file .hancode/tasks/<task>/test_remediation.json. "
+        "Do not use memory_read or memory_search for remediation decisions; "
+        "they live in test_remediation.json, not in task memory. "
+        "Write only within the remediation planned_paths; if the fix needs a "
+        "file outside them, call record_remediation again to expand "
+        "planned_paths before writing."
     ),
     Phase.TEST: (
         "Use the registered strategy in sections.test_strategy. "
@@ -134,6 +142,8 @@ PHASE_CONTRACTS: dict[Phase, str] = {
         "Declare every file the fix will touch in planned_paths\u2014sources, tests, "
         "and markup alike\u2014because a modifying remediation can only write files "
         "listed there, and it cannot be expanded later in the same phase. "
+        "The remediation decision is persisted to test_remediation.json and "
+        "later exposed to the CODE phase; do not duplicate it into task memory. "
         "Do not call record_review while a failure is active. "
         "When the latest test passed, record final requirement coverage and risks "
         "with record_review; a successful record_review completes this phase. "

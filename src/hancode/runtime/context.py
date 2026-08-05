@@ -48,7 +48,7 @@ _TRUNCATION_ORDER = {
         "course_context",
         "spec",
     ),
-    Phase.CODE: ("source_snippets", "protected_patterns", "plan", "spec"),
+    Phase.CODE: ("source_snippets", "protected_patterns", "plan", "spec", "remediation_scope"),
     Phase.TEST: ("checkpoint", "changed_files", "test_strategy", "plan"),
     Phase.REVIEW: ("checkpoint", "changed_files", "test_report", "plan", "spec"),
     Phase.DELIVER: ("trace_summary", "review", "test_report", "plan", "spec"),
@@ -170,6 +170,7 @@ def build_context(
         _add_source_snippets(sections, risks, resolved_project_root, current_state, config)
         if config.test_command is not None:
             sections["test_command_candidate"] = redact_text(config.test_command)
+        _add_remediation_scope(sections, current_state, resolved_project_root, task_id)
     if phase in {Phase.TEST, Phase.REVIEW}:
         sections["changed_files"] = _canonical_json(
             _safe_changed_files(current_state, config, risks)
@@ -609,6 +610,37 @@ def _safe_changed_files(
 def _is_link(path: Path) -> bool:
     is_junction = getattr(path, "is_junction", None)
     return path.is_symlink() or bool(is_junction and is_junction())
+
+
+def _add_remediation_scope(
+    sections: dict[str, object],
+    state: TaskState,
+    project_root: Path,
+    task_id: str,
+) -> None:
+    if (
+        state.latest_test_status != "failed"
+        or state.latest_remediation_digest is None
+    ):
+        return
+    try:
+        remediation_store = TestRemediationStore(project_root)
+        remediation = remediation_store.load_remediation(task_id)
+        if remediation.digest != state.latest_remediation_digest:
+            raise ValueError("stale remediation binding")
+        sections["remediation_scope"] = {
+            "kind": remediation.kind.value,
+            "planned_paths": list(remediation.planned_paths),
+            "digest": remediation.digest,
+        }
+    except (HanCodeError, ValueError):
+        raise _context_error(
+            "test_failure_invalid",
+            "The retained remediation record is missing or invalid.",
+            Phase.CODE,
+            "valid_test_remediation_required",
+            "Recreate the remediation record from the latest review decision.",
+        ) from None
 
 
 def _add_checkpoint_summary(
