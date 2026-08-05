@@ -18,6 +18,15 @@ from hancode.providers.base import (
     ToolDescriptor,
     build_provider_tool_definitions,
 )
+from hancode.providers.capability import (
+    ENCODING_RETRYABLE_ERROR_CODES,
+    ProviderCapabilityProfile,
+    classify_capability_failure,
+    initial_profile,
+    next_encoding_on_protocol_failure,
+    next_profile_for_feature,
+    profile_label,
+)
 from hancode.providers.errors import ProviderError
 from hancode.providers.prompt_builder import PromptBuilder, ProviderPrompt
 from hancode.providers.strict_schema import (
@@ -59,9 +68,11 @@ class _TransportFailure:
 
 
 @dataclass(frozen=True, slots=True)
-class _AutoDowngrade(Exception):
-    next_action_mode: ProviderActionMode
-    error_code: str
+class _ProfileDowngrade(Exception):
+    """Raised internally to request a monotonic capability-profile transition."""
+
+    next_profile: ProviderCapabilityProfile
+    reason_code: str
 
 
 class OpenAICompatibleProvider:
@@ -102,36 +113,84 @@ class OpenAICompatibleProvider:
         )
         self._interaction_enabled = interaction_enabled
         self._event_sink = event_sink
-        self._effective_mode: ProviderActionMode | None = None
-        self._emitted_fallbacks: set[tuple[ProviderActionMode, ProviderActionMode]] = set()
+        self._auto = self._response_mode == "auto"
+        self._effective_profile: ProviderCapabilityProfile | None = None
+        self._emitted_fallbacks: set[tuple[str, str]] = set()
+        # Bound the negotiation so a misbehaving provider cannot loop forever.
+        self._max_transitions = 12
 
     def next_action(self, context: Mapping[str, object]) -> dict[str, object]:
         phase = _context_phase(context)
-        action_mode: ProviderActionMode = self._effective_mode or (
-            "native_tools_strict" if self._response_mode == "auto" else self._response_mode
-        )
+        profile = self._effective_profile or initial_profile(self._response_mode)
+        visited: set[str] = set()
+        # Per-encoding protocol retry budget (HTTP 200 but undecodable action).
+        encoding_attempts = 0
+        transitions = 0
         while True:
             try:
-                action = self._request_action(context, phase, action_mode)
-                self._effective_mode = action_mode
+                action = self._request_action(context, phase, profile)
+                self._effective_profile = profile
                 return action
-            except _AutoDowngrade as downgrade:
-                self._emit_fallback(phase, action_mode, downgrade)
-                action_mode = downgrade.next_action_mode
+            except _ProfileDowngrade as downgrade:
+                transitions += 1
+                if transitions > self._max_transitions:
+                    raise
+                self._emit_fallback(phase, profile, downgrade)
+                profile = downgrade.next_profile
+                encoding_attempts = 0
+            except ProviderError as exc:
+                # HTTP 200 protocol failures drive encoding transitions in auto
+                # mode: retry the same encoding once, then advance (P0-4).
+                if not (
+                    self._auto
+                    and exc.structured_error.error_code in ENCODING_RETRYABLE_ERROR_CODES
+                ):
+                    raise
+                if encoding_attempts < 1:
+                    encoding_attempts += 1
+                    continue
+                next_profile = next_encoding_on_protocol_failure(profile)
+                if next_profile is None:
+                    raise
+                label = profile_label(profile)
+                if label in visited:
+                    raise
+                visited.add(label)
+                transitions += 1
+                if transitions > self._max_transitions:
+                    raise
+                self._emit_fallback(
+                    phase,
+                    profile,
+                    _ProfileDowngrade(
+                        next_profile=next_profile,
+                        reason_code=exc.structured_error.error_code,
+                    ),
+                )
+                profile = next_profile
+                encoding_attempts = 0
 
     def _request_action(
-        self, context: Mapping[str, object], phase: Phase, action_mode: ProviderActionMode
+        self,
+        context: Mapping[str, object],
+        phase: Phase,
+        profile: ProviderCapabilityProfile,
     ) -> dict[str, object]:
+        encoding = profile.action_encoding
+        is_native = encoding == "native_tools"
+        # json_object and prompt_json both rely on an embedded action contract
+        # in the user message; prompt_json additionally sends no response_format.
+        embed_action_schema = encoding in {"json_object", "prompt_json"}
         prompt = self._prompt_builder.build(
             context=context,
             tool_catalog=self._tool_catalog,
             interaction_enabled=self._interaction_enabled,
-            embed_action_schema=action_mode == "json_object",
-            native_tool_calling=action_mode in {"native_tools_strict", "native_tools"},
+            embed_action_schema=embed_action_schema,
+            native_tool_calling=is_native,
         )
         strict_projection = (
             StrictSchemaProjection.project(prompt.action_schema)
-            if action_mode == "json_schema"
+            if encoding == "json_schema" and profile.strict_json_schema
             else None
         )
         tool_definitions = self._tool_definitions_for_phase(phase)
@@ -140,12 +199,12 @@ class OpenAICompatibleProvider:
                 definition.name: definition.projection
                 for definition in tool_definitions
             }
-            if action_mode == "native_tools_strict"
+            if is_native and profile.strict_tools
             else {}
         )
         request = self._build_request(
             prompt,
-            action_mode=action_mode,
+            profile=profile,
             strict_projection=strict_projection,
             strict_tool_projections=strict_tool_projections,
             tool_definitions=tool_definitions,
@@ -153,16 +212,22 @@ class OpenAICompatibleProvider:
         response = self._send_with_retry(
             request,
             phase,
-            allow_auto_capability_error=self._response_mode == "auto",
+            allow_auto_capability_error=self._auto,
         )
         if response.status_code >= 400:
-            downgrade = _auto_downgrade(action_mode, response)
-            if downgrade is not None:
-                raise downgrade
+            if self._auto:
+                failure = classify_capability_failure(response)
+                if failure is not None:
+                    next_profile = next_profile_for_feature(profile, failure.feature)
+                    if next_profile is not None:
+                        raise _ProfileDowngrade(
+                            next_profile=next_profile,
+                            reason_code=failure.reason_code,
+                        )
             raise _transport_failure_error(
                 _classify_transport_failure(response.status_code), phase.value
             )
-        if action_mode in {"native_tools_strict", "native_tools"}:
+        if is_native:
             return _decode_native_tool_call(
                 response,
                 phase=phase,
@@ -209,7 +274,7 @@ class OpenAICompatibleProvider:
         self,
         prompt: ProviderPrompt,
         *,
-        action_mode: ProviderActionMode,
+        profile: ProviderCapabilityProfile,
         strict_projection: StrictSchemaProjection | None = None,
         strict_tool_projections: Mapping[str, StrictSchemaProjection] | None = None,
         tool_definitions: tuple[ProviderToolDefinition, ...] | None = None,
@@ -218,25 +283,29 @@ class OpenAICompatibleProvider:
             {"role": msg.role, "content": msg.content}
             for msg in prompt.messages
         ]
+        encoding = profile.action_encoding
 
-        if action_mode == "json_schema":
+        if encoding == "json_schema":
+            json_schema: dict[str, object] = {
+                "name": "hancode_action",
+                "schema": dict(
+                    strict_projection.provider_schema
+                    if strict_projection is not None
+                    else prompt.action_schema
+                ),
+            }
+            if profile.strict_json_schema:
+                json_schema["strict"] = True
             response_format: dict[str, object] | None = {
                 "type": "json_schema",
-                "json_schema": {
-                    "name": "hancode_action",
-                    "strict": True,
-                    "schema": dict(
-                        strict_projection.provider_schema
-                        if strict_projection is not None
-                        else prompt.action_schema
-                    ),
-                },
+                "json_schema": json_schema,
             }
-        elif action_mode == "json_object":
+        elif encoding == "json_object":
             response_format = {
                 "type": "json_object",
             }
         else:
+            # native_tools and prompt_json send no response_format.
             response_format = None
 
         body: dict[str, object] = {
@@ -247,17 +316,19 @@ class OpenAICompatibleProvider:
         }
         if response_format is not None:
             body["response_format"] = response_format
-        if action_mode in {"native_tools_strict", "native_tools"}:
+        if encoding == "native_tools":
             body["tools"] = [
                 _native_tool_definition(
                     definition,
-                    strict=action_mode == "native_tools_strict",
+                    strict=profile.strict_tools,
                     strict_projection=(strict_tool_projections or {}).get(definition.name),
                 )
                 for definition in (tool_definitions or self._tool_definitions)
             ]
-            body["tool_choice"] = "required"
-            body["parallel_tool_calls"] = False
+            if profile.tool_choice_required:
+                body["tool_choice"] = "required"
+            if profile.disable_parallel_tool_calls:
+                body["parallel_tool_calls"] = False
         headers = {
             "Authorization": f"Bearer {self._credential}",
             "Content-Type": "application/json",
@@ -273,24 +344,31 @@ class OpenAICompatibleProvider:
         )
 
     def _emit_fallback(
-        self, phase: Phase, from_mode: ProviderActionMode, downgrade: _AutoDowngrade
+        self,
+        phase: Phase,
+        from_profile: ProviderCapabilityProfile,
+        downgrade: _ProfileDowngrade,
     ) -> None:
-        key = (from_mode, downgrade.next_action_mode)
-        if key in self._emitted_fallbacks:
-            self._effective_mode = downgrade.next_action_mode
-            return
+        from_label = profile_label(from_profile)
+        to_label = profile_label(downgrade.next_profile)
         if self._event_sink is None:
-            self._effective_mode = downgrade.next_action_mode
             return
-        self._event_sink.emit(ProviderEvent(
-            kind="mode_fallback",
-            phase=phase,
-            from_mode=from_mode,
-            to_mode=downgrade.next_action_mode,
-            reason_code=downgrade.error_code,
-        ))
+        key = (from_label, to_label)
+        if key in self._emitted_fallbacks:
+            return
+        # Trace emission is best-effort: a failing sink must not abort an
+        # otherwise successful capability negotiation (P1-3).
+        try:
+            self._event_sink.emit(ProviderEvent(
+                kind="mode_fallback",
+                phase=phase,
+                from_mode=from_label,
+                to_mode=to_label,
+                reason_code=downgrade.reason_code,
+            ))
+        except Exception:
+            return
         self._emitted_fallbacks.add(key)
-        self._effective_mode = downgrade.next_action_mode
 
     def _send_with_retry(
         self,
@@ -385,41 +463,6 @@ def _classify_transport_failure(status_code: int) -> _TransportFailure:
         f"The provider returned an unexpected status: {status_code}.",
         retryable=False,
     )
-
-
-def _auto_downgrade(
-    action_mode: ProviderActionMode, response: ProviderResponse
-) -> _AutoDowngrade | None:
-    body = response.json_body
-    if not isinstance(body, dict):
-        return None
-    error = body.get("error")
-    if not isinstance(error, dict):
-        return None
-    error_code = error.get("code")
-    parameter = error.get("param")
-    if error_code not in {"unsupported_parameter", "unsupported_value"}:
-        return None
-    if not isinstance(parameter, str):
-        return None
-    if action_mode == "native_tools_strict" and parameter in {
-        "strict",
-        "tools[0].function.strict",
-    }:
-        return _AutoDowngrade("native_tools", error_code)
-    if action_mode in {"native_tools_strict", "native_tools"} and parameter in {
-        "tools",
-        "tool_choice",
-        "parallel_tool_calls",
-    }:
-        return _AutoDowngrade("json_schema", error_code)
-    if (
-        action_mode == "json_schema"
-        and error_code == "unsupported_value"
-        and parameter == "response_format.type"
-    ):
-        return _AutoDowngrade("json_object", error_code)
-    return None
 
 
 def _network_failure() -> _TransportFailure:

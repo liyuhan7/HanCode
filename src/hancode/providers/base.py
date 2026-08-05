@@ -42,8 +42,11 @@ class ProviderToolDefinition:
 class ProviderEvent:
     kind: Literal["mode_fallback"]
     phase: Phase
-    from_mode: ProviderActionMode
-    to_mode: ProviderActionMode
+    # Capability-profile labels are richer than ProviderActionMode (e.g. the
+    # intermediate native states native_tools_no_parallel / native_tools_basic),
+    # so the fallback event carries plain strings.
+    from_mode: str
+    to_mode: str
     reason_code: str
 
 

@@ -301,6 +301,10 @@ def _valid_record(**overrides: object) -> ApprovalRecord:
     return ApprovalRecord(**kwargs)
 
 
+@pytest.mark.skipif(
+    approvals_module.os.name != "nt",
+    reason="Transient replace-lock retry is only enabled on Windows.",
+)
 def test_save_approval_manifest_retries_a_transient_windows_replace_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

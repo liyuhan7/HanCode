@@ -1074,6 +1074,10 @@ def test_load_rejects_linked_memory_path(
     assert exc_info.value.structured_error.error_code == "memory_path_link_not_allowed"
 
 
+@pytest.mark.skipif(
+    not hasattr(Path, "is_junction"),
+    reason="Path.is_junction is only available on Python 3.12+.",
+)
 def test_load_rejects_junction_memory_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

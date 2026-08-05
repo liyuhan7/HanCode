@@ -861,18 +861,43 @@ def test_auto_reuses_last_accepted_effective_mode_across_calls() -> None:
     ]
 
 
-def test_auto_fallback_sink_failure_is_not_wrapped_as_provider_error() -> None:
+def test_auto_fallback_sink_failure_does_not_abort_negotiation() -> None:
+    # Trace emission is best-effort: a failing sink must not prevent an
+    # otherwise successful capability downgrade from completing (P1-3).
     class _FailingSink:
         def emit(self, event: object) -> None:
             raise RuntimeError("trace persistence failed")
 
+    native_success = ProviderResponse(
+        status_code=200,
+        headers={},
+        json_body={
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": '{"path": "README.md", "reason": null}',
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        body_size=100,
+    )
     transport = _ScriptedTransport([
         ProviderResponse(
             status_code=400,
             headers={},
             json_body={"error": {"code": "unsupported_parameter", "param": "strict"}},
             body_size=100,
-        )
+        ),
+        native_success,
     ])
     provider = _make_provider(
         transport=transport,
@@ -880,8 +905,10 @@ def test_auto_fallback_sink_failure_is_not_wrapped_as_provider_error() -> None:
         event_sink=_FailingSink(),
     )
 
-    with pytest.raises(RuntimeError, match="trace persistence failed"):
-        provider.next_action(_make_context())
+    action = provider.next_action(_make_context())
+
+    assert action["tool_name"] == "read_file"
+    assert "strict" not in transport.requests[1].json_body["tools"][0]["function"]
 
 
 def test_auto_fails_closed_for_an_unrecognized_capability_error() -> None:
@@ -899,6 +926,213 @@ def test_auto_fails_closed_for_an_unrecognized_capability_error() -> None:
         )
     ])
     provider = _make_provider(transport=transport, response_mode="auto")
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.next_action(_make_context())
+
+    assert exc_info.value.structured_error.error_code == "provider_request_rejected"
+    assert len(transport.requests) == 1
+
+
+# --- Capability-profile negotiation (monotonic capability removal) ---------
+
+
+def _native_read_file_success() -> ProviderResponse:
+    return ProviderResponse(
+        status_code=200,
+        headers={},
+        json_body={
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": '{"path": "README.md", "reason": null}',
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        body_size=100,
+    )
+
+
+def _capability_error(param: str, code: str = "unsupported_parameter") -> ProviderResponse:
+    return ProviderResponse(
+        status_code=400,
+        headers={},
+        json_body={"error": {"code": code, "param": param}},
+        body_size=100,
+    )
+
+
+def test_auto_drops_parallel_tool_calls_without_leaving_native() -> None:
+    transport = _ScriptedTransport([
+        _capability_error("strict"),
+        _capability_error("parallel_tool_calls"),
+        _native_read_file_success(),
+    ])
+    provider = _make_provider(transport=transport, response_mode="auto")
+
+    action = provider.next_action(_make_context())
+
+    assert action["tool_name"] == "read_file"
+    assert len(transport.requests) == 3
+    # After parallel_tool_calls is rejected we stay on native tools, only the
+    # offending field is removed.
+    third = transport.requests[2].json_body
+    assert "tools" in third
+    assert "parallel_tool_calls" not in third
+    assert third["tool_choice"] == "required"
+
+
+def test_auto_drops_tool_choice_without_leaving_native() -> None:
+    transport = _ScriptedTransport([
+        _capability_error("strict"),
+        _capability_error("parallel_tool_calls"),
+        _capability_error("tool_choice"),
+        _native_read_file_success(),
+    ])
+    provider = _make_provider(transport=transport, response_mode="auto")
+
+    action = provider.next_action(_make_context())
+
+    assert action["tool_name"] == "read_file"
+    fourth = transport.requests[3].json_body
+    assert "tools" in fourth
+    assert "tool_choice" not in fourth
+    assert "parallel_tool_calls" not in fourth
+
+
+def test_auto_normalizes_indexed_strict_param_path() -> None:
+    # A non-zero tools index must still be recognized as a strict rejection.
+    transport = _ScriptedTransport([
+        _capability_error("tools[3].function.strict"),
+        _native_read_file_success(),
+    ])
+    provider = _make_provider(transport=transport, response_mode="auto")
+
+    action = provider.next_action(_make_context())
+
+    assert action["tool_name"] == "read_file"
+    assert len(transport.requests) == 2
+    assert "strict" not in transport.requests[1].json_body["tools"][0]["function"]
+
+
+def test_auto_coarse_tools_rejection_tries_non_strict_native_first() -> None:
+    # A strict request rejected with a coarse param="tools" should first try
+    # non-strict native before abandoning the native family (P0-6).
+    transport = _ScriptedTransport([
+        _capability_error("tools"),
+        _native_read_file_success(),
+    ])
+    provider = _make_provider(transport=transport, response_mode="auto")
+
+    action = provider.next_action(_make_context())
+
+    assert action["tool_name"] == "read_file"
+    assert len(transport.requests) == 2
+    second = transport.requests[1].json_body
+    assert "tools" in second
+    assert "strict" not in second["tools"][0]["function"]
+
+
+def test_auto_message_only_capability_error_triggers_downgrade() -> None:
+    # Providers that omit param but describe the issue in the message must
+    # still trigger a capability downgrade (strong confidence).
+    transport = _ScriptedTransport([
+        ProviderResponse(
+            status_code=400,
+            headers={},
+            json_body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Strict function calling is not supported",
+                }
+            },
+            body_size=100,
+        ),
+        _native_read_file_success(),
+    ])
+    provider = _make_provider(transport=transport, response_mode="auto")
+
+    action = provider.next_action(_make_context())
+
+    assert action["tool_name"] == "read_file"
+    assert "strict" not in transport.requests[1].json_body["tools"][0]["function"]
+
+
+def test_auto_relaxes_json_schema_strict_before_json_object() -> None:
+    transport = _ScriptedTransport([
+        # Leave native family entirely.
+        _capability_error("tools"),  # -> non-strict native
+        _capability_error("tools"),  # -> json_schema strict
+        _capability_error("response_format.json_schema.strict"),  # -> non-strict json_schema
+        _ok_response(),
+    ])
+    provider = _make_provider(transport=transport, response_mode="auto")
+
+    action = provider.next_action(_make_context())
+
+    assert action["type"] == "finish_phase"
+    fourth = transport.requests[3].json_body
+    assert fourth["response_format"]["type"] == "json_schema"
+    assert "strict" not in fourth["response_format"]["json_schema"]
+
+
+def test_auto_falls_back_to_prompt_json_when_response_format_unsupported() -> None:
+    transport = _ScriptedTransport([
+        _capability_error("tools"),  # native strict -> non-strict native
+        _capability_error("tools"),  # -> json_schema strict
+        _capability_error("response_format.type"),  # -> json_object
+        _capability_error("response_format"),  # -> prompt_json
+        _ok_response(),
+    ])
+    provider = _make_provider(transport=transport, response_mode="auto")
+
+    action = provider.next_action(_make_context())
+
+    assert action["type"] == "finish_phase"
+    final = transport.requests[4].json_body
+    assert "response_format" not in final
+    assert "tools" not in final
+    # prompt_json embeds the action contract in the user message.
+    payload = __import__("json").loads(final["messages"][1]["content"])
+    assert "output_contract" in payload
+
+
+def test_auto_advances_encoding_on_http200_protocol_failure() -> None:
+    # Provider accepts native tools (HTTP 200) but returns content instead of a
+    # tool call. After one same-encoding retry, negotiation advances encoding.
+    missing_tool_call = ProviderResponse(
+        status_code=200,
+        headers={},
+        json_body={"choices": [{"message": {"content": "no tool call here"}}]},
+        body_size=100,
+    )
+    transport = _ScriptedTransport([
+        _capability_error("strict"),  # -> non-strict native
+        missing_tool_call,            # native attempt 1
+        missing_tool_call,            # native attempt 2 (same encoding retry)
+        _ok_response(),               # json_schema strict succeeds
+    ])
+    provider = _make_provider(transport=transport, response_mode="auto")
+
+    action = provider.next_action(_make_context())
+
+    assert action["type"] == "finish_phase"
+    assert transport.requests[3].json_body["response_format"]["type"] == "json_schema"
+
+
+def test_explicit_mode_does_not_auto_downgrade() -> None:
+    # Non-auto modes must not negotiate: a capability error is terminal.
+    transport = _ScriptedTransport([_capability_error("strict")])
+    provider = _make_provider(transport=transport, response_mode="native_tools_strict")
 
     with pytest.raises(ProviderError) as exc_info:
         provider.next_action(_make_context())
