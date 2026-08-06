@@ -113,7 +113,7 @@ _POSITIVE_INTEGER_FIELDS = tuple(
     for field in _INTEGER_FIELDS
     if field != "retry_budget" and field not in _PROVIDER_INTEGER_FIELDS
 )
-_STRING_LIST_FIELDS = ("protected_patterns", "writable_roots")
+_STRING_LIST_FIELDS = ("protected_patterns", "writable_roots", "submission_paths")
 _SUPPORTED_LLM_PROVIDERS = frozenset(
     {"mock", "openai_compatible", "anthropic", "local"}
 )
@@ -168,6 +168,7 @@ _ACTIVE_CONFIG_FIELDS = frozenset(
         "max_memory_hot_contents",
         "protected_patterns",
         "writable_roots",
+        "submission_paths",
         "provider_base_url",
         "provider_timeout_seconds",
         "provider_max_retries",
@@ -215,6 +216,7 @@ class HanCodeConfig:
     max_trace_events: int
     protected_patterns: tuple[str, ...]
     writable_roots: tuple[Path, ...]
+    submission_paths: tuple[str, ...] = ()
     max_memory_blob_bytes: int = 1_048_576
     max_memory_task_bytes: int = 33_554_432
     max_memory_recent_events: int = 8
@@ -318,6 +320,10 @@ def _build_config(
         writable_roots=tuple(
             _resolve_writable_root(resolved_project_root, value)
             for value in writable_root_values
+        ),
+        submission_paths=tuple(
+            _validate_submission_path(resolved_project_root, value)
+            for value in cast(list[str], project_data["submission_paths"])
         ),
         provider_base_url=cast(str | None, project_data["provider_base_url"]),
         provider_timeout_seconds=cast(int, project_data["provider_timeout_seconds"]),
@@ -552,6 +558,38 @@ def _resolve_writable_root(project_root: Path, configured_path: str) -> Path:
     if candidate == project_root:
         raise _invalid_project_config_error("writable_roots")
     return candidate
+
+
+def _validate_submission_path(project_root: Path, configured_path: str) -> str:
+    """Validate a submission path stays inside the project and outside .hancode.
+
+    Accepts an exact project-relative file or directory path. Rejects absolute
+    paths (POSIX or Windows), parent-directory escapes, symlink escapes, the
+    runtime workspace itself, and any path inside .hancode.
+    """
+    if not isinstance(configured_path, str) or not configured_path.strip():
+        raise _invalid_project_config_error("submission_paths")
+    normalized = configured_path.strip()
+    path = Path(normalized)
+    windows_path = PureWindowsPath(normalized)
+    if (
+        path.is_absolute()
+        or windows_path.is_absolute()
+        or ".." in path.parts
+        or ".." in windows_path.parts
+        or normalized in {"", ".", "./"}
+    ):
+        raise _config_path_outside_project_root_error()
+    candidate = (project_root / path).resolve()
+    hancode_root = (project_root / ".hancode").resolve()
+    if (
+        not candidate.is_relative_to(project_root)
+        or candidate == project_root
+        or candidate == hancode_root
+        or hancode_root in candidate.parents
+    ):
+        raise _config_path_outside_project_root_error()
+    return normalized
 
 
 def _merge_protected_patterns(project_patterns: list[str]) -> tuple[str, ...]:

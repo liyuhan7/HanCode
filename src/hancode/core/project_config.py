@@ -46,6 +46,7 @@ PROJECT_CONFIG_DEFAULT_ITEMS: tuple[tuple[str, object], ...] = (
     ("max_memory_hot_contents", 2),
     ("writable_roots", ("src", "tests")),
     ("protected_patterns", ()),
+    ("submission_paths", ()),
     ("interaction_mode", "disabled"),
     ("max_interactions_per_phase", 8),
     ("max_interaction_question_chars", 2_048),

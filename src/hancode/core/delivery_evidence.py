@@ -61,10 +61,16 @@ class DeliveryResult(DeliveryEvidence):
 
     status: TaskStatus
     blockers: tuple[str, ...]
+    submission_eligible: bool = False
+    learning_contract_status: str = "unknown"
+    learning_warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "status": self.status.value,
+            "submission_eligible": self.submission_eligible,
+            "learning_contract_status": self.learning_contract_status,
+            "learning_warnings": list(self.learning_warnings),
             "task_id": self.task_id,
             "requirements": [
                 {

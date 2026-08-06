@@ -21,6 +21,68 @@ def test_config_loads_defaults(tmp_path: Path) -> None:
     )
 
 
+def test_submission_paths_default_is_empty(tmp_path: Path) -> None:
+    init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.submission_paths == ()
+
+
+def test_submission_paths_accept_relative_paths(tmp_path: Path) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    data = json.loads(project_file.read_text(encoding="utf-8"))
+    data["submission_paths"] = ["src", "README.md"]
+    project_file.write_text(json.dumps(data), encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.submission_paths == ("src", "README.md")
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "/etc/passwd",
+        "C:/Windows",
+        "../outside",
+        "src/../../escape",
+        ".hancode",
+        ".hancode/tasks",
+    ],
+)
+def test_submission_paths_reject_escape(tmp_path: Path, bad_path: str) -> None:
+    workspace = init_project_workspace(
+        tmp_path,
+        project_id="course-project",
+        course_name="AI4SE",
+        assignment_name="Coding Agent Harness",
+    )
+    project_file = workspace / "project.json"
+    data = json.loads(project_file.read_text(encoding="utf-8"))
+    data["submission_paths"] = [bad_path]
+    project_file.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(HanCodeError) as exc_info:
+        load_config(tmp_path)
+
+    assert exc_info.value.to_dict()["error_code"] in {
+        "config_path_outside_project_root",
+        "invalid_project_config",
+    }
+
+
 def test_legacy_config_loads_runtime_memory_defaults_without_rewriting(
     tmp_path: Path,
 ) -> None:

@@ -1826,7 +1826,7 @@ HanCode MVP 完成的总体标准是：
 
 功能完成判定：
 
-- 代码修改后必须运行相关测试，或在 `TEST_REPORT.md` 中记录未测试原因。
+- 代码修改后必须运行相关测试，或在 `TEST_REPORT.md` 中记录未测试原因；未测试风险记录到 `TEST_REPORT.md`，缺少测试或审查记录时必须在 `risks[]` 中说明。
 - Action 可携带可选 `command`。省略时使用项目配置命令；显式命令必须经过人工审批，且审批 digest 绑定完整 Action args，resume 时不得替换命令。
 - `run_tests` 只执行单条 argv：使用 `shlex.split`、固定 `cwd`、`shell=False`、捕获输出和 `check=False`，拒绝 `&&`、`||`、管道、重定向、分号等 shell 操作符，不提供通用 shell 或自动安装依赖。
 - 测试命令、审批预览/记录、stdout、stderr 和错误摘要在写入 `ToolResult`、state、trace 或报告前必须脱敏；缺少或为空的 fallback 命令不得启动进程。

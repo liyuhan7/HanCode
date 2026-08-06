@@ -377,6 +377,57 @@ def test_load_state_fails_closed_when_junction_probe_is_indeterminate(
     assert error.value.to_dict()["error_code"] == "state_parse_error"
 
 
+def test_load_legacy_state_without_learning_fields(tmp_path: Path) -> None:
+    task_root = _init_task(tmp_path)
+    state_file = task_root / "state.json"
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+    data.pop("learning_contract_version", None)
+    data["artifacts"] = {
+        "SPEC.md": False,
+        "PLAN.md": False,
+        "TEST_REPORT.md": False,
+        "REVIEW.md": False,
+        "KNOWLEDGE.md": False,
+        "DELIVERABLES.md": False,
+    }
+    state_file.write_text(json.dumps(data), encoding="utf-8")
+
+    state = load_state(task_root)
+
+    assert state.learning_contract_version is None
+    assert state.artifacts["IMPLEMENTATION.md"] is False
+
+
+def test_new_task_initializes_learning_contract_v1(tmp_path: Path) -> None:
+    task_root = _init_task(tmp_path)
+
+    state = load_state(task_root)
+
+    assert state.learning_contract_version == 1
+
+
+def test_state_tracks_implementation_artifact(tmp_path: Path) -> None:
+    task_root = _init_task(tmp_path)
+
+    state = load_state(task_root)
+
+    assert "IMPLEMENTATION.md" in state.artifacts
+    assert state.artifacts["IMPLEMENTATION.md"] is False
+
+
+def test_reading_legacy_state_does_not_upgrade_contract_version(tmp_path: Path) -> None:
+    task_root = _init_task(tmp_path)
+    state_file = task_root / "state.json"
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+    data.pop("learning_contract_version", None)
+    state_file.write_text(json.dumps(data), encoding="utf-8")
+
+    load_state(task_root)
+
+    persisted = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "learning_contract_version" not in persisted
+
+
 def _init_task(project_root: Path) -> Path:
     init_project_workspace(
         project_root,

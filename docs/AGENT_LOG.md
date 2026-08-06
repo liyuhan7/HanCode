@@ -4,6 +4,49 @@
 
 ---
 
+### 2026-08-06 — S14-R2~R7 — 学习证据链、五步交付、发布 Profile 与反思服务
+
+- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：按 `docs/deliver计划.md` 逐 R 推进，重心放在编码，专项测试为主，1-7 完成后统一全量。旁路新建学习证据链，不侵入既有 AgentLoop 主循环以避免大范围回归。
+- 实现摘要：
+  - R2：`delivery_support/renderer.py`（generated/student 分区，仅重写 generated 区、标记歧义 fail-closed、secret 扫描、幂等）；`app/learning_service.py` 的 `record_requirements`/`record_plan`/`record_change` 三闭环（事件→快照→稳定 ID→引用校验→渲染 SPEC/PLAN/IMPLEMENTATION）。
+  - R3：`LearningService` 扩展 `record_test_attempt`（`T-*`）/`record_failure`（`F-*`）/`record_recovery`（`REC-*`）与 TEST_REPORT.md 渲染，历史失败不被后续通过覆盖。
+  - R4：`runtime/traceability_builder.py`（8 种关系链 + 严格 covered 判定）；`record_review`（REVIEW.md）/`record_knowledge`（KnowledgeCard→KNOWLEDGE.md，evidence_refs 与 transfer_example 硬约束）。
+  - R5：`delivery_support/collector.py` + `validator.py`（Collect→Validate，S14.6 硬门禁/warning）；`DeliveryResult` 增 `submission_eligible`/`learning_contract_status`/`learning_warnings`（默认值向后兼容）；`DeliveryService.evaluate_learning`（旧任务标 `legacy_unverified`，不改历史状态）。
+  - R6：`storage/export.py` 的 `ExportProfile` + `export_task_profile`（submission/learning/audit，显式 allow-list、staging 原子发布、防覆盖、自描述 manifest，排除 state/trace/memory/凭据/原始 checkpoint）；`DeliveryService.export_profile` facade。
+  - R7：`app/reflection_service.py`（`learning/reflections.json` 权威 + revision 乐观锁 + secret 拒绝 + 投影学生区）；`app/learning_inspection_service.py`（只读 overview）。
+  - 后续接线项（未做，避免侵入主循环大范围回归）：`DeliveryPipeline` 完全 cutover、AgentLoop 成功修改后自动 `record_change`、SPEC/PLAN phase 拒绝 `write_file`、CLI/TUI `--profile` 与 Textual 学习/反思组件。
+- 验证：
+  - S14 专项 pytest：12 个 `tests/test_s14_*.py` 共 80 passed。
+  - 全量 pytest：`1699 passed, 17 skipped, 1 failed`；唯一失败 `test_course_project_scaffold.py::test_code_change_requires_test_or_risk_note` 经 `git stash` 确认为基线既有失败（断言 SPEC.md 文本，与 S14 代码无关）。
+  - 全仓 Ruff：`All checks passed!`；MyPy：`src/hancode` 145 源文件无错误。
+  - 修复：`load_state` 对显式为 null 的 `learning_contract_version` 兼容（save_state 总是写出该键），修复由此引发的 `test_cli_tasks` 3 项回归。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户要求重心在编码、逐任务推进、专项为主、最后全量。
+- 剩余风险：上列后续接线项未实施；`test_course_project_scaffold` 的既有失败需由 SPEC 文本维护单独处理（非本轮范围）；build/demo/三种 export E2E 未纳入本轮（可在接线任务一并补充）。
+
+---
+
+### 2026-08-06 — S14-R1 — 学习证据模型、事件 Store 与状态/配置兼容
+
+- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：按 `docs/deliver计划.md` 的 S14 执行计划推进 R1，用户批准的三项决策——事件命名采用 SPEC 冻结的 9 种；RecoveryEvidence 使用独立 `REC-*` 前缀；digest 复用现有 `delivery_coverage_digest`（不新增 `delivery_evidence_digest`）。旁路新建学习证据链，不改 `DeliveryPipeline`。
+- 实现摘要：
+  - R1.1：`core/state.py` 增 `learning_contract_version` 与 `IMPLEMENTATION.md` artifact（load 兼容旧 6 键/新 7 键并归一化，旧 state 读取不自动升级）；`core/config.py`+`core/project_config.py` 增 `submission_paths`（仅项目内相对路径，`_validate_submission_path` 拒绝绝对/`..`/`.hancode` 内部/符号链接逃逸）；`storage/workspace.py` 初始化 `learning/` 目录与 7 键 artifacts、`learning_contract_version=1`。
+  - R1.2：`core/learning_evidence.py` 九个 frozen 证据模型 + `LearningSnapshot`、`TraceabilityLink`；`EvidenceKind` 与 ID 格式化/校验/解析函数集中管理前缀与位宽。
+  - R1.3：`storage/learning_store.py` append-only 哈希链事件日志（9 种 event_type）+ `evidence.json` 派生投影（可删可重建）；task identity/seq/previous_digest/schema 校验，尾部半行只取完整前缀，中间损坏/digest 断裂 fail-closed。
+- 验证：
+  - 专项 pytest：`tests/test_s14_learning_store.py tests/test_s14_learning_models.py tests/test_state.py tests/test_config.py tests/test_workspace.py tests/test_memory_store.py` 238 passed。
+  - 相关回归：`tests/test_phases.py tests/test_phase_gate.py tests/test_router.py tests/test_tool_policy.py tests/test_export.py tests/test_delivery.py tests/test_agent_loop.py` 205 passed。
+  - Ruff/MyPy：新增与改动文件通过。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户批准 3 项契约决策并要求重心放在编码、逐任务推进、专项测试为主、全量留到 R1-R7 完成后。
+- 剩余风险：架构 §S14.2 的 ID 前缀表仍写 7 种，`REC-*` 需在后续 R3 契约变动时补记；`learning_store` 尚未接入 Recorder 与 Pipeline（R2 起接入）；全量 pytest/build/demo/export E2E 留待收尾统一执行。
+
+---
+
 ### 2026-08-05 — S13 追踪修复 — remediation 范围直达模型（消除 read_file 死循环）
 
 - 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。

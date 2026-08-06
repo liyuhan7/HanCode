@@ -255,11 +255,13 @@ def test_task_workspace_initializes_required_artifacts(tmp_path: Path) -> None:
         "artifacts": {
             "SPEC.md": False,
             "PLAN.md": False,
+            "IMPLEMENTATION.md": False,
             "TEST_REPORT.md": False,
             "REVIEW.md": False,
             "KNOWLEDGE.md": False,
             "DELIVERABLES.md": False,
         },
+        "learning_contract_version": 1,
     }
     for artifact in (
         "SPEC.md",
@@ -357,11 +359,13 @@ def test_task_workspace_state_json_contains_all_required_fields(tmp_path: Path) 
     assert state["artifacts"] == {
         "SPEC.md": False,
         "PLAN.md": False,
+        "IMPLEMENTATION.md": False,
         "TEST_REPORT.md": False,
         "REVIEW.md": False,
         "KNOWLEDGE.md": False,
         "DELIVERABLES.md": False,
     }
+    assert state["learning_contract_version"] == 1
 
 
 def test_task_workspace_init_preserves_existing_state_and_trace(tmp_path: Path) -> None:

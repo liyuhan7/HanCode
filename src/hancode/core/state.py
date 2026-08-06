@@ -51,6 +51,7 @@ _STATE_FIELDS = frozenset(
         "remediation_applied",
         "test_strategy_digest",
         "active_failure",
+        "learning_contract_version",
     }
 )
 _OPTIONAL_STATE_FIELDS = frozenset(
@@ -69,10 +70,14 @@ _OPTIONAL_STATE_FIELDS = frozenset(
         "test_attempt_seq",
         "remediation_applied",
         "active_failure",
+        "learning_contract_version",
     }
 )
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
-_ARTIFACT_NAMES = frozenset(
+# Legacy state.json (learning_contract_version is None) omits IMPLEMENTATION.md.
+# The S14 learning contract adds it; both shapes load, defaulting the missing
+# key to False. New tasks persist the full 7-key set.
+_LEGACY_ARTIFACT_NAMES = frozenset(
     {
         "SPEC.md",
         "PLAN.md",
@@ -81,6 +86,16 @@ _ARTIFACT_NAMES = frozenset(
         "KNOWLEDGE.md",
         "DELIVERABLES.md",
     }
+)
+_ARTIFACT_NAMES = _LEGACY_ARTIFACT_NAMES | {"IMPLEMENTATION.md"}
+_ARTIFACT_ORDER = (
+    "SPEC.md",
+    "PLAN.md",
+    "IMPLEMENTATION.md",
+    "TEST_REPORT.md",
+    "REVIEW.md",
+    "KNOWLEDGE.md",
+    "DELIVERABLES.md",
 )
 _TEST_STATUSES = frozenset({"none", "passed", "failed"})
 
@@ -120,6 +135,7 @@ class TaskState:
     test_attempt_seq: int = 0
     remediation_applied: bool = False
     active_failure: FailureRecord | None = None
+    learning_contract_version: int | None = None
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -163,8 +179,13 @@ class TaskState:
             raise _invalid_state_field("rollback_done")
         if not _is_bool_mapping(self.phase_completed, _PHASE_NAMES):
             raise _invalid_state_field("phase_completed")
-        if not _is_bool_mapping(self.artifacts, _ARTIFACT_NAMES):
+        if not _is_artifact_mapping(self.artifacts):
             raise _invalid_state_field("artifacts")
+        if self.learning_contract_version is not None and (
+            not _is_nonnegative_int(self.learning_contract_version)
+            or self.learning_contract_version < 1
+        ):
+            raise _invalid_state_field("learning_contract_version")
         if self.delivery_coverage_digest is not None and (
             not isinstance(self.delivery_coverage_digest, str)
             or len(self.delivery_coverage_digest) != 64
@@ -285,7 +306,10 @@ class TaskState:
         object.__setattr__(
             self, "phase_completed", MappingProxyType(dict(self.phase_completed))
         )
-        object.__setattr__(self, "artifacts", MappingProxyType(dict(self.artifacts)))
+        normalized_artifacts = {
+            name: bool(self.artifacts.get(name, False)) for name in _ARTIFACT_ORDER
+        }
+        object.__setattr__(self, "artifacts", MappingProxyType(normalized_artifacts))
 
 
 def load_state(task_root: Path) -> TaskState:
@@ -327,7 +351,7 @@ def load_state(task_root: Path) -> TaskState:
             phase_completed=_required_bool_mapping(
                 data, "phase_completed", _PHASE_NAMES
             ),
-            artifacts=_required_bool_mapping(data, "artifacts", _ARTIFACT_NAMES),
+            artifacts=_required_artifact_mapping(data),
             delivery_coverage_digest=(
                 None
                 if "delivery_coverage_digest" not in data
@@ -399,6 +423,11 @@ def load_state(task_root: Path) -> TaskState:
                 if "active_failure" not in data
                 else _optional_failure(data)
             ),
+            learning_contract_version=(
+                None
+                if data.get("learning_contract_version") is None
+                else _required_int(data, "learning_contract_version")
+            ),
         )
     except (OSError, UnicodeError, ValueError):
         raise _state_parse_error() from None
@@ -456,7 +485,8 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "rollback_required": state.rollback_required,
         "rollback_done": state.rollback_done,
         "phase_completed": dict(state.phase_completed),
-        "artifacts": dict(state.artifacts),
+        "artifacts": {name: state.artifacts[name] for name in _ARTIFACT_ORDER},
+        "learning_contract_version": state.learning_contract_version,
         "delivery_coverage_digest": state.delivery_coverage_digest,
         "pending_checkpoint_recovery_id": state.pending_checkpoint_recovery_id,
         "interaction_seq": state.interaction_seq,
@@ -562,6 +592,20 @@ def _required_bool_mapping(
     return dict(value)
 
 
+def _required_artifact_mapping(data: Mapping[str, object]) -> dict[str, bool]:
+    value = data.get("artifacts")
+    if (
+        not isinstance(value, dict)
+        or set(value) not in (_LEGACY_ARTIFACT_NAMES, _ARTIFACT_NAMES)
+        or any(
+            not isinstance(key, str) or not isinstance(item, bool)
+            for key, item in value.items()
+        )
+    ):
+        raise ValueError("Task state field is invalid: artifacts.")
+    return {name: bool(value.get(name, False)) for name in _ARTIFACT_ORDER}
+
+
 def _required_interactions(
     data: Mapping[str, object],
 ) -> tuple[InteractionRecord, ...]:
@@ -634,6 +678,19 @@ def _is_bool_mapping(value: object, expected_keys: frozenset[str]) -> bool:
     return (
         isinstance(value, Mapping)
         and set(value) == expected_keys
+        and all(isinstance(item, bool) for item in value.values())
+    )
+
+
+def _is_artifact_mapping(value: object) -> bool:
+    """Accept legacy (6-key) or full S14 (7-key) artifact maps.
+
+    Legacy state.json omits IMPLEMENTATION.md; both shapes are valid and the
+    missing key is normalized to False. Unknown keys are rejected.
+    """
+    return (
+        isinstance(value, Mapping)
+        and set(value) in (_LEGACY_ARTIFACT_NAMES, _ARTIFACT_NAMES)
         and all(isinstance(item, bool) for item in value.values())
     )
 

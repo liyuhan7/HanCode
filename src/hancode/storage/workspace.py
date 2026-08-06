@@ -17,6 +17,7 @@ _PROJECT_MARKDOWN_FILES = {
 _TASK_ARTIFACTS = (
     "SPEC.md",
     "PLAN.md",
+    "IMPLEMENTATION.md",
     "TEST_REPORT.md",
     "REVIEW.md",
     "KNOWLEDGE.md",
@@ -146,8 +147,13 @@ def init_task_workspace(
             )
         )
 
+    learning_dir = task_workspace / "learning"
+    if _is_link(learning_dir):
+        raise _workspace_file_link_error("learning")
+
     task_workspace.mkdir(exist_ok=True)
     checkpoints_dir.mkdir(exist_ok=True)
+    learning_dir.mkdir(exist_ok=True)
 
     for filename in ("trace.jsonl", "history.jsonl"):
         path = task_workspace / filename
@@ -195,6 +201,7 @@ def init_task_workspace(
                 "deliver": False,
             },
             "artifacts": {artifact: False for artifact in _TASK_ARTIFACTS},
+            "learning_contract_version": 1,
         }
         state_file.write_text(
             json.dumps(initial_state, ensure_ascii=False, indent=2) + "\n",
