@@ -147,8 +147,8 @@ class StringListEditor(ModalScreen[tuple[str, ...] | None]):
     def _refresh_values(self) -> None:
         view = self.query_one("#config-list-values", ListView)
         view.clear()
-        for index, value in enumerate(self._values):
-            view.append(ListItem(Label(value, markup=False), id=f"config-list-item-{index}"))
+        for value in self._values:
+            view.append(ListItem(Label(value, markup=False)))
 
 
 __all__ = ["ConfigConfirmDialog", "CredentialEditorDialog", "StringListEditor"]

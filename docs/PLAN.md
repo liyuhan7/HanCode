@@ -7819,3 +7819,90 @@ MockLLM Demo 固定演示：读取 A(v1) → 其他工具调用 → 销毁并恢
 - Ruff：`All checks passed!`（context/tool_policy/prompt_contract/tool_specs/storage_memory + 5 测试文件）。
 - MyPy：`Success: no issues found in 5 source files`。
 - 提交：未提交；保留 `main` 工作区改动。
+
+## S14：Deliver 学习发布管线
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [~] R0 文档契约已完成；R1-R7 运行时实现未开始 |
+| 依赖 | S4 统一 Delivery Pipeline、S10-R1 测试失败恢复、S13 Runtime Memory |
+| 开发方式 | R0 文档冻结；R1 起逐任务 RED → GREEN → REFACTOR |
+
+### 问题与成功标准
+
+当前 Deliver 能证明最终文件、测试和需求覆盖状态，但不能稳定回答学生为什么选择当前方案、经历了哪些失败、如何修复，以及经验如何迁移。S14 将 Deliver 定义为把结构化过程证据编译成提交包、学习包和审计包的发布阶段，而不是由 LLM 在末尾重新阅读完整 Trace 并自由总结。
+
+成功标准：结构化证据是唯一机器权威源；Markdown 是可重新生成且保留学生笔记的学习视图；核心需求具备 `R-* → D-* → C-* → T-* / F-* → K-*` 可追踪链；硬门禁只决定能否 `completed`，学习质量不足写入 `learning_warnings`；发布可选择 `submission`、`learning`、`audit` 三种 Profile。
+
+### 冻结边界
+
+- 保持现有六阶段和 `completed / blocked / failed` 终态，不新增学习专用 TaskStatus。
+- `state.json` 仍是任务生命周期权威；`learning/evidence.json` 与 `learning/traceability.json` 是学习证据与关系权威；Markdown 不参与反向重建机器状态。
+- Deliver 不修改业务代码，不从完整 Trace 临时推断设计理由，不接受无有效证据引用的知识结论。
+- 自动生成区域与学生区域分离；重新渲染只替换 `<!-- hancode:generated:start/end -->` 包围的内容。
+- 本轮 R0 只修改 `docs/SPEC.md`、`docs/系统架构.md`、`docs/PLAN.md`、`docs/AGENT_LOG.md`，不修改运行时代码、模板或测试。
+
+### S14-R0：SPEC 与架构契约冻结
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已完成；SPEC、架构、PLAN、AGENT_LOG 已同步 |
+| 允许修改 | `docs/SPEC.md`、`docs/系统架构.md`、`docs/PLAN.md`、`docs/AGENT_LOG.md` |
+| 非目标 | Python 实现、模板落盘、CLI/TUI、export 行为变更 |
+
+验收：文档同时定义三类发布包、七份阶段 Markdown、稳定证据 ID、追加式学习事件、`KnowledgeCard`、五步发布管线、硬门禁/学习告警、generated/student 分区、三种导出 Profile，以及后续 R1-R7 的依赖顺序；定向检索不得遗留“Deliver 只检查两个文件存在即可完成”的权威描述。
+
+### S14-R1：学习证据领域模型与 Store
+
+新增 `RequirementEvidence`、`DecisionEvidence`、`ChangeEvidence`、`TestAttemptEvidence`、`FailureEvidence`、`RecoveryEvidence`、`KnowledgeCard`、`TraceabilityLink` 与稳定 ID 校验；实现 `learning/events.jsonl`、`learning/evidence.json`、`learning/traceability.json` 的 task identity、schema、digest、原子写入、追加/重放和链接拒绝。不得复用 Runtime Memory 作为交付证据源。
+
+预期 Red：损坏或跨 task 证据 fail-closed；重复/未知 ID 拒绝；事件只能追加；同一输入确定性生成相同 digest。
+
+### S14-R2：Code 学习记录与学生笔记保护
+
+实现 `IMPLEMENTATION.md`，由 checkpoint、Diff、changed files、需求/计划/测试 ID 确定性生成事实部分；LLM 解释只能引用真实符号和证据 ID。所有阶段 Markdown 支持 generated/student 分区，重渲染不得覆盖学生的“我的理解 / 仍不理解 / 教师或同伴反馈”。
+
+预期 Red：`test_implementation_report_links_diff_and_checkpoint`、`test_render_preserves_student_notes`、越界或不存在引用拒绝。
+
+### S14-R3：历史测试尝试与失败修复链
+
+将测试证据从单一 `latest_test_report_sha256` 扩展为 `test_attempts[] + latest_test_attempt_id`；`latest_test_status` 继续供路由使用。`TEST_REPORT.md` 渲染全部有效尝试，并把 `FailureEvidence`、`RecoveryEvidence` 与后续验证测试串成完整链。
+
+预期 Red：`test_delivery_preserves_failed_test_attempts`；失败历史不能被最终通过覆盖；存在失败历史时必须验证 `F-* → C-* → T-*`。
+
+### S14-R4：需求追踪与 KnowledgeCard
+
+实现需求追踪矩阵和带证据引用的 `KnowledgeCard`。`record_knowledge` 只接受结构化卡片；每个 `evidence_refs` 必须存在、属于当前 task 且类型允许。卡片包含 problem、context、principle、solution、applicable/not-applicable、common mistake 和 transfer example。
+
+预期 Red：`test_core_requirement_has_full_traceability_chain`、`test_knowledge_card_requires_valid_evidence_refs`、`test_delivery_rejects_ungrounded_learning_claims`。
+
+### S14-R5：Delivery 编排、Validator 与 Artifact Renderer
+
+将现有 `DeliveryPipeline` 收敛为编排器，内部协作 `LearningEvidenceCollector`、`TraceabilityBuilder`、`DeliveryValidator`、`ArtifactRenderer`、`DeliveryPublisher`，依次执行 Collect → Validate → Synthesize → Reflect → Publish。先实现硬门禁与 `learning_warnings`，再渲染 `IMPLEMENTATION.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`。
+
+预期 Red：核心需求无实现/测试证据、最新测试/Build/Diff 失效、知识引用无效、敏感信息命中均阻止 completed；缺候选方案、反思、迁移示例或“为什么”只产生 warning。
+
+### S14-R6：Submission / Learning / Audit 发布 Profile
+
+扩展 `hancode export --profile submission|learning|audit`。Submission 仅包含课程提交所需 README、`DELIVERABLES.md`、源码和 manifest；Learning 包含 `LEARNING_INDEX.md`、SPEC、PLAN、IMPLEMENTATION、TEST_REPORT、REVIEW、KNOWLEDGE 与 `final.diff`；Audit 包含 manifest、结构化证据、脱敏 Trace、checkpoint manifest 和需求追踪。三个 Profile 使用 staging 原子发布、防覆盖和 fail-closed 路径检查。
+
+预期 Red：`test_submission_export_excludes_internal_runtime_files`、`test_learning_export_contains_all_phase_artifacts`；Audit 不导出 checkpoint 原始快照、凭据、Runtime Memory blob 或未脱敏 Trace。
+
+### S14-R7：TUI 反思与学习浏览
+
+在不改变硬门禁的前提下，增加自测问题、学生反思、KnowledgeCard 与追踪链浏览；未填写仅显示 `learning_warnings`。TUI 继续只通过 Application Service 读写，不直接解析或覆盖结构化证据。
+
+### S14 依赖顺序与最终质量门
+
+```text
+R0 文档契约
+→ R1 证据模型与 Store
+→ R2 Implementation/学生笔记
+→ R3 测试历史
+→ R4 Traceability/KnowledgeCard
+→ R5 Validator/Renderer/编排
+→ R6 三类发布 Profile
+→ R7 TUI 反思与浏览
+```
+
+每个实现任务独立完成 TDD 与相关回归；S14 最终统一运行全量 pytest、Ruff、MyPy、`uv sync --locked --extra dev`、离线 build、Mock Demo、三种 export E2E 和 `git diff --check`。没有新鲜证据不得把对应任务标记为完成。

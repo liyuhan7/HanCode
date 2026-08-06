@@ -31,19 +31,19 @@ HanCode 的目标用户是正在完成编程类课程项目的学生。这类学
 
 ### 用户故事 3：Code — 受控编码与修改记录
 
-作为一名学生，我希望 HanCode 只在允许的 code phase 修改业务代码，并在修改前记录 checkpoint、在修改后记录 changed files，以便我能够知道本轮 AI 到底改了什么，并为后续审查阶段提供回退依据。
+作为一名学生，我希望 HanCode 只在允许的 code phase 修改业务代码，并在修改前记录 checkpoint、在修改后记录 changed files，同时生成可追溯的 `IMPLEMENTATION.md`，以便我能够知道本轮 AI 到底改了什么、为什么这样改、如何验证，并为后续审查阶段提供回退依据。
 
 ### 用户故事 4：Test — 测试失败经验沉淀
 
-作为一名学生，我希望 HanCode 在代码修改后运行测试并记录测试命令、测试结果、失败现象和错误摘要，以便我能够复盘测试失败如何暴露问题，而不是只看到 AI 修复后的结果。
+作为一名学生，我希望 HanCode 在代码修改后运行测试并保留全部有效测试尝试、失败现象、诊断、修复和复测关系，以便我能够复盘“失败 → 定位 → 修改 → 再验证”的过程，而不是只看到最终一次测试快照。
 
 ### 用户故事 5：Review — 作业要求覆盖检查
 
-作为一名学生，我希望 HanCode 在交付前根据需求说明、测试结果和 checkpoint 信息审查实现是否覆盖课程作业要求、是否存在未测试风险、是否需要回退或继续修改，以便我能判断“完成”是否真实成立。
+作为一名学生，我希望 HanCode 在交付前建立从需求、设计、实现到测试证据的追踪矩阵，审查实现是否覆盖课程作业要求、是否存在未测试风险、是否需要回退或继续修改，以便我能判断“完成”是否真实成立，并解释这一结论的证据。
 
 ### 用户故事 6：Deliver — 最终复盘与知识沉淀
 
-作为一名学生，我希望 HanCode 在最终交付时整理本次任务的需求理解、设计决策、测试经验、错误修复和可复用知识，以便我在完成课程项目后仍能复盘学习过程，并把经验迁移到后续项目。
+作为一名学生，我希望 HanCode 在最终交付时把结构化过程证据发布为课程提交包、个人学习包和教师审计包，并将需求理解、设计决策、测试经验、错误修复转化为有证据引用的可迁移知识，以便我既能提交项目，也能复盘学习过程和解释结论来源。
 
 ## 4. 功能性需求
 
@@ -66,10 +66,10 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 | --- | --- | --- |
 | UR-1 | BR-1 | 学生能够在 spec phase 将课程作业要求整理为 `SPEC.md`，并在缺少 `SPEC.md` 时无法进入代码修改。 |
 | UR-2 | BR-2 | 学生能够在 plan phase 生成 `PLAN.md`，记录实现步骤、设计理由、预计改动文件和验证方式。 |
-| UR-3 | BR-4 | 学生能够在 code phase 让 Agent 修改业务代码，但每次修改前必须创建 checkpoint，并记录本轮 changed files。 |
-| UR-4 | BR-3 | 学生能够在 test phase 运行测试，并把测试命令、测试结果、失败原因和未测试风险记录到 `TEST_REPORT.md`。 |
-| UR-5 | BR-5 | 学生能够在 review phase 检查实现是否覆盖作业要求、代码质量是否可接受、测试是否充分，以及是否需要 rollback。 |
-| UR-6 | BR-6 | 学生能够在 deliver phase 生成 `DELIVERABLES.md` 和 `KNOWLEDGE.md`，完成最终交付清单与学习复盘。 |
+| UR-3 | BR-4 | 学生能够在 code phase 让 Agent 修改业务代码，但每次修改前必须创建 checkpoint，并将 changed files、Diff、理由和验证引用渲染到 `IMPLEMENTATION.md`。 |
+| UR-4 | BR-3 | 学生能够在 test phase 运行测试，并把全部有效测试尝试、失败原因、诊断、修复、复测和未测试风险记录到 `TEST_REPORT.md`。 |
+| UR-5 | BR-5 | 学生能够在 review phase 通过需求追踪矩阵检查实现是否覆盖作业要求、代码质量是否可接受、测试是否充分，以及是否需要 rollback。 |
+| UR-6 | BR-6 | 学生能够在 deliver phase 从结构化证据生成 `DELIVERABLES.md` 和 `KNOWLEDGE.md`，并按 `submission`、`learning`、`audit` Profile 发布提交、学习和审计材料。 |
 | UR-8 | BR-3, BR-4, BR-5 | 学生能够查看本轮代码变化（Diff）、测试报告、Build 结果和 Checkpoint 列表，以便理解 AI 辅助编码过程中发生了什么。 |
 
 ### 4.3 系统级需求
@@ -170,8 +170,8 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 
 ##### FR-12：课程项目上下文构造
 
-- 输入：`course_context.md`、`project_memory.md`、`experience.md`、SPEC、PLAN、TEST_REPORT、REVIEW、KNOWLEDGE 和 trace 摘要。
-- 行为：按当前 phase 构造课程项目上下文；code phase 必须看到 SPEC 和 PLAN；review phase 必须看到测试结果、changed files 和 checkpoint 信息；deliver phase 必须看到 SPEC、PLAN、TEST_REPORT、REVIEW 和 trace 摘要。
+- 输入：`course_context.md`、`project_memory.md`、`experience.md`、阶段 Markdown、当前 task 的结构化学习证据、运行时记忆和 trace 摘要。
+- 行为：按当前 phase 构造课程项目上下文；code phase 必须看到 SPEC 和 PLAN；review phase 必须看到测试结果、changed files、checkpoint 和追踪关系；deliver phase 必须看到经校验、压缩的学习证据和追踪矩阵，不得重新加载完整 trace 后凭印象总结。
 - 输出：面向课程项目任务的结构化上下文。
 - 边界条件：课程要求、评分标准、提交格式和教师限制条件优先于历史经验。
 - 错误处理：关键课程上下文缺失时在输出中标记风险，不得假装已覆盖作业要求。
@@ -194,34 +194,34 @@ HanCode 的功能性需求按业务需求、用户级需求和系统级需求三
 
 ##### FR-15：测试报告与审查记录
 
-- 输入：测试命令、测试输出、结构化失败记录、changed files、SPEC、PLAN、checkpoint 信息和未测试说明。
-- 行为：在 test phase 生成或更新 `TEST_REPORT.md` 与任务级 `test_failure.json`；测试失败时 review phase 通过独立 `record_remediation` 记录绑定 failure digest 的修复决策，测试通过后的最终 review 才生成或更新 `REVIEW.md`。
-- 输出：测试报告、失败记录、修复决策和最终审查记录。
-- 边界条件：代码修改后必须运行绑定测试策略；无法运行测试时必须记录环境原因。失败修复只能修改决策声明且未受保护的路径，不能修改教师测试或评分文件。
+- 输入：测试命令、测试输出、全部 `TestAttemptEvidence`、结构化失败/修复记录、changed files、SPEC、PLAN、checkpoint 信息和未测试说明。
+- 行为：每次 test phase 执行都追加一条测试尝试；`latest_test_status` 只用于路由，不覆盖历史。测试失败时 review phase 通过独立 `record_remediation` 记录绑定 failure digest 的修复决策，后续修改和复测分别绑定 `C-*`、`T-*`，最终 `TEST_REPORT.md` 渲染全部有效尝试，`REVIEW.md` 渲染需求追踪矩阵。
+- 输出：测试尝试历史、失败记录、修复决策、失败到复测的证据链、测试报告和最终审查记录。
+- 边界条件：代码修改后必须运行绑定测试策略；无法运行测试时必须记录环境原因。失败修复只能修改决策声明且未受保护的路径，不能修改教师测试或评分文件；最终通过不得删除、覆盖或隐藏先前有效失败。
 - 错误处理：测试失败必须进入 remediation review；源码、测试、策略、环境、人工输入和 rollback 使用确定性分流。相同失败不得无限重试，也不得在没有新鲜通过证据时返回 completed。
 
 ##### FR-16：Knowledge Delivery
 
-- 输入：SPEC、PLAN、TEST_REPORT、REVIEW、trace 摘要、最终文件状态和课程交付要求。
-- 行为：deliver phase 生成 `DELIVERABLES.md` 和 `KNOWLEDGE.md`，整理交付物清单、需求覆盖、测试情况、关键设计决策、错误修复经验和可迁移知识。
-- 输出：最终课程项目交付摘要、交付物清单和知识沉淀文件。
-- 边界条件：deliver phase 不应修改业务代码；缺少 `KNOWLEDGE.md` 或 `DELIVERABLES.md` 时不得返回 completed 状态。
-- 错误处理：缺少测试或审查记录时必须在 `risks[]` 中说明；若核心需求已覆盖且测试通过，最终状态可为 `completed`；若核心需求未覆盖或测试未通过，最终状态应为 `blocked` 或 `failed`，不引入额外状态值。
+- 输入：经校验的 Requirement、Decision、Change、TestAttempt、Failure、Recovery、Review、KnowledgeCard 和 Traceability 证据，最终文件状态、课程交付要求及学生反思区。
+- 行为：deliver phase 按 `Collect → Validate → Synthesize → Reflect → Publish` 编排，将结构化证据渲染为 `SPEC.md`、`PLAN.md`、`IMPLEMENTATION.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 和索引型 `DELIVERABLES.md`，再按 Profile 发布提交包、学习包和审计包。
+- 输出：`export/submission/`、`export/learning/`、`export/audit/`，以及最终 `DeliveryResult`、`learning_warnings` 和结构化发布清单。
+- 边界条件：deliver phase 不应修改业务代码；Markdown 只是结构化证据的渲染视图；LLM 不得发明无证据学习结论；重新渲染不得覆盖学生笔记；学习质量不足只进入 `learning_warnings`，不新增 TaskStatus。
+- 错误处理：核心需求缺少有效实现或测试证据、最新测试未通过、已配置 Build 未通过、最终 Diff 无效、KnowledgeCard 引用无效、存在失败历史却没有“失败 → 诊断 → 修复 → 验证”闭环，或发布内容命中敏感信息时不得返回 `completed`；若仅缺候选方案、学生反思、迁移示例或修改理由，则允许完成并记录 `learning_warnings`。
 
 ##### FR-18：受控开发查询、Test 与 Build 工具
 
 - 输入：当前 task 状态、checkpoint 数据、配置的 test/build 命令，或经审批的显式测试命令。
-- 行为：提供 `get_diff`、`run_tests`、`run_build`、`read_test_report`、`list_checkpoints`、`record_remediation`、`record_review` 和 `record_knowledge`。`record_remediation` 只在失败测试的 review phase 接受当前 failure digest、修复类型、诊断、计划路径和可选人工问题。
-- 输出：结构化 ToolResult，包含文件变更摘要、Build 状态、测试报告摘要、失败修复确认、checkpoint 列表或审查/知识写入确认。
+- 行为：提供 `get_diff`、`run_tests`、`run_build`、`read_test_report`、`list_checkpoints`、`record_remediation`、`record_review` 和 `record_knowledge`。`record_remediation` 只在失败测试的 review phase 接受当前 failure digest、修复类型、诊断、计划路径和可选人工问题；`record_knowledge` 只接受结构化 `KnowledgeCard[]`，并在落盘前验证全部 `evidence_refs`。
+- 输出：结构化 ToolResult，包含文件变更摘要、Build 状态、测试报告摘要、失败修复确认、checkpoint 列表、需求追踪关系或 KnowledgeCard 写入确认。
 - 边界条件：Diff 不依赖 Git，仅使用 checkpoint before snapshot 与当前 workspace 对比；Build 命令只能来自 `config.build_command`，模型不得传入任意命令；`run_tests` 的显式命令必须经过 `ApprovalCategory.RUN_TESTS`，并以 `shlex.split` + `shell=False` 执行，拒绝 shell 操作符；`read_test_report` 不接受任意路径；`list_checkpoints` 只返回当前 task；完整 Diff 和 Build 输出不进入 Trace。
 - 错误处理：stale failure digest、越界修复路径、checkpoint 损坏、snapshot 缺失、Build 超时或命令缺失时返回结构化错误，不静默失败。
 
 ##### FR-19：统一 Delivery Pipeline
 
-- 输入：真实测试结果（ToolResult）、结构化需求覆盖（`RequirementCoverage`）、知识条目（`KnowledgeItem`）、AgentRunResult。
-- 行为：`DeliveryPipeline` 统一负责 `TEST_REPORT.md`（根据真实测试结果自动生成）、`REVIEW.md`（通过 `record_review` 工具结构化生成）、`KNOWLEDGE.md`（通过 `record_knowledge` 工具结构化生成）和 `DELIVERABLES.md`（`finalize` 时自动生成）的权威写入；构造 `DeliveryResult` 作为最终交付状态。
-- 输出：交付物文件、`DeliveryResult`、`evidence.json`。
-- 边界条件：模型不得通过 `write_file` 手写 `TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 或 `DELIVERABLES.md`；交付状态不得由 DemoRunner 或 TUI 手工推进；所有入口（CLI/TUI/Demo）共用同一 `DeliveryService`。
+- 输入：真实测试/Build/Diff/Checkpoint 结果、结构化学习事件与证据、追踪关系、AgentRunResult、学生笔记区域和发布 Profile。
+- 行为：`DeliveryPipeline` 只负责编排 `LearningEvidenceCollector`、`TraceabilityBuilder`、`DeliveryValidator`、`ArtifactRenderer`、`DeliveryPublisher`；结构化证据先持久化和校验，再统一渲染七份阶段 Markdown，并构造 `DeliveryResult`。
+- 输出：交付物文件、`DeliveryResult`、`learning/events.jsonl`、`learning/evidence.json`、`learning/traceability.json` 和 Profile-specific manifest。
+- 边界条件：模型不得通过 `write_file` 手写 `IMPLEMENTATION.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 或 `DELIVERABLES.md`；`record_knowledge` 只接受结构化 `KnowledgeCard[]`；交付状态不得由 DemoRunner 或 TUI 手工推进；所有入口（CLI/TUI/Demo）共用同一 `DeliveryService`。
 - 错误处理：交付证据写入失败时尝试补偿回滚；补偿失败则将 Task 标记为 `inconsistent`。
 
 ##### FR-20：Checkpoint-Based Diff
@@ -293,7 +293,7 @@ HanCode 必须把凭据安全、文件边界和工具治理作为基础安全要
 - HanCode 应提供清晰的 CLI 使用方式，使学生能够围绕 task 和 phase 执行课程项目流程。
 - CLI 命令应能表达 project、task、phase、demo、test、review、deliver 等核心操作，不要求复杂 Web UI。
 - 错误信息必须说明失败原因、被哪条规则拒绝、当前 phase 或 workspace 状态，以及学生下一步应补充的产物或操作。
-- 阶段产物文件命名应稳定，包括 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`。
+- 阶段产物文件命名应稳定，包括 `SPEC.md`、`PLAN.md`、`IMPLEMENTATION.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`。
 - Demo 应展示 `spec → plan → code → test → review → deliver` 完整流程，并能让学习者和评估者观察 trace、checkpoint、测试报告和知识沉淀。
 - 最终输出应使用结构化结果，包含状态、task ID、需求覆盖、文件变更、测试结果、checkpoint、rollback、交付物、知识条目、风险和下一步建议。
 - 对学生而言，HanCode 不应只输出最终代码，而应让需求理解、计划、测试、审查和复盘过程都能被读取和解释。
@@ -505,16 +505,18 @@ spec
 → plan
 → 生成 PLAN.md
 → code
-→ checkpoint 后修改业务代码
+→ checkpoint 后修改业务代码，并生成/更新 IMPLEMENTATION.md
 → test
-→ 生成 TEST_REPORT.md
+→ 追加 TestAttemptEvidence，并生成包含历史尝试的 TEST_REPORT.md
 → review
-→ 生成 REVIEW.md，并判断继续修改、记录风险或 rollback
+→ 生成需求追踪矩阵与 REVIEW.md，并判断继续修改、记录风险或 rollback
 → deliver
-→ 生成 DELIVERABLES.md 和 KNOWLEDGE.md
+→ Collect → Validate → Synthesize → Reflect → Publish
+→ 生成 KNOWLEDGE.md 与索引型 DELIVERABLES.md
+→ 按 submission / learning / audit Profile 发布
 ```
 
-`WorkspaceRouter` 负责确定性阶段路由。缺少 `SPEC.md` 时进入 `spec`；缺少 `PLAN.md` 时进入 `plan`；测试失败时进入 `review`；缺少 `KNOWLEDGE.md` 或 `DELIVERABLES.md` 时进入 `deliver`。LLM 不能自行决定跳过这些阶段。
+`WorkspaceRouter` 负责确定性阶段路由。缺少 `SPEC.md` 时进入 `spec`；缺少 `PLAN.md` 时进入 `plan`；测试失败时进入 `review`；交付硬门禁尚未校验或交付索引尚未发布时进入 `deliver`。LLM 不能自行决定跳过这些阶段，也不能通过创建空 Markdown 绕过交付验证。
 
 ### 6.6 失败恢复数据流
 
@@ -667,12 +669,75 @@ classDiagram
         +pruned: bool
     }
 
-    class KnowledgeItem {
+    class RequirementEvidence {
+        +id: str
+        +original_requirement: str
+        +student_interpretation: str
+        +acceptance_evidence_refs: list[str]
+        +priority: str
+    }
+
+    class DecisionEvidence {
+        +id: str
+        +requirement_refs: list[str]
+        +selected_option: str
+        +rationale: str
+        +rejected_options: list[str]
+    }
+
+    class ChangeEvidence {
+        +id: str
+        +requirement_refs: list[str]
+        +decision_refs: list[str]
+        +checkpoint_id: str
+        +changed_files: list[str]
+        +diff_sha256: str
+        +test_refs: list[str]
+    }
+
+    class TestAttemptEvidence {
+        +id: str
+        +command_digest: str
+        +status: str
+        +passed: int
+        +failed: int
+        +change_refs: list[str]
+    }
+
+    class FailureEvidence {
+        +id: str
+        +test_ref: str
         +category: str
-        +summary: str
-        +detail: str
-        +source_phase: Phase
-        +source_trace_id: str
+        +symptom: str
+        +root_cause: str
+        +recovery_ref: str
+    }
+
+    class RecoveryEvidence {
+        +id: str
+        +failure_ref: str
+        +change_refs: list[str]
+        +verification_test_ref: str
+    }
+
+    class KnowledgeCard {
+        +id: str
+        +category: str
+        +problem: str
+        +context: str
+        +principle: str
+        +solution: str
+        +evidence_refs: list[str]
+        +applicable_when: str
+        +not_applicable_when: str
+        +common_mistake: str
+        +transfer_example: str
+    }
+
+    class TraceabilityLink {
+        +source_id: str
+        +target_id: str
+        +relation: str
     }
 
     class MemoryRecord {
@@ -700,7 +765,12 @@ classDiagram
     Task "1" --> "0..*" Checkpoint : 保存
     Task "1" --> "0..*" MemoryRecord : 持久化运行时记忆
     Action ..> Task : 由 LLM/MockLLM 产生，经 ActionParser 解析
-    KnowledgeItem ..> Task : 由 deliver phase 聚合写入 KNOWLEDGE.md
+    RequirementEvidence ..> Task : 需求证据
+    DecisionEvidence ..> Task : 设计证据
+    ChangeEvidence ..> Task : 实现证据
+    TestAttemptEvidence ..> Task : 测试证据
+    FailureEvidence ..> RecoveryEvidence : 失败修复
+    KnowledgeCard ..> TraceabilityLink : 引用已验证证据
 ```
 
 ### 7.3 实体到文件的映射
@@ -717,10 +787,29 @@ classDiagram
 | Runtime Memory Event | `.hancode/tasks/<task_id>/memory/events.jsonl` | JSONL | 保存当前 task 的工具摘要、快照引用、访问和失效事件，只追加不原地修改。 |
 | Runtime Memory Index | `.hancode/tasks/<task_id>/memory/index.json` | JSON | 保存可由合法事件前缀恢复的派生索引、容量、generation 和当前文件映射。 |
 | Runtime Memory Blob | `.hancode/tasks/<task_id>/memory/blobs/<sha256>.txt\|json` | UTF-8 text / JSON | 保存经过既有工具安全处理后的内容寻址 payload；同内容只保存一份。 |
-| 阶段产物 | `.hancode/tasks/<task_id>/{SPEC,PLAN,TEST_REPORT,REVIEW,KNOWLEDGE,DELIVERABLES}.md` | Markdown | 保存课程项目任务的需求、计划、测试、审查、知识沉淀和交付清单。 |
-| KnowledgeItem | `.hancode/tasks/<task_id>/KNOWLEDGE.md` | Markdown | 由 deliver phase 聚合本次任务的课程知识点、设计决策和错误修复经验。 |
+| 阶段产物 | `.hancode/tasks/<task_id>/{SPEC,PLAN,IMPLEMENTATION,TEST_REPORT,REVIEW,KNOWLEDGE,DELIVERABLES}.md` | Markdown | 结构化证据的学生可读渲染视图；generated 区域可重建，学生区域不得覆盖。 |
+| Learning Events | `.hancode/tasks/<task_id>/learning/events.jsonl` | JSONL | 追加保存需求理解、决策、修改、测试、失败、修复、审查和知识提取事件。 |
+| Learning Evidence | `.hancode/tasks/<task_id>/learning/evidence.json` | JSON | 保存当前 task 经校验的结构化学习证据与 digest。 |
+| Traceability | `.hancode/tasks/<task_id>/learning/traceability.json` | JSON | 保存稳定 ID 之间的有向关系和需求覆盖矩阵。 |
+| KnowledgeCard | `.hancode/tasks/<task_id>/KNOWLEDGE.md` | Markdown | 由经验证的结构化卡片渲染问题、原则、解法、证据、适用边界和迁移练习。 |
 
 其中 Project 是项目级实体，除 `.hancode/project.json` 中的机器可读元数据外，还包含 `project_memory.md`、`course_context.md` 和 `experience.md` 三个附属文档。三者不单独驱动状态机，但会被 ContextBuilder 按 phase 选择性纳入上下文。
+
+`learning/events.jsonl` 至少支持以下追加式事件；事件保存结构化 ID 和引用，不保存未经脱敏的大段正文：
+
+```text
+RequirementUnderstood
+DecisionRecorded
+ChangeApplied
+TestExecuted
+FailureDiagnosed
+FixApplied
+RollbackExecuted
+RequirementReviewed
+KnowledgeExtracted
+```
+
+`learning/evidence.json` 可以由合法事件前缀确定性重建，但 Markdown 不得作为重建输入。`learning/traceability.json` 只能引用同一 task 中已通过 schema、identity、digest 和存在性校验的证据。
 
 ### 7.4 `state.json` 状态约束
 
@@ -739,6 +828,7 @@ classDiagram
   "artifacts": {
     "SPEC.md": true,
     "PLAN.md": true,
+    "IMPLEMENTATION.md": false,
     "TEST_REPORT.md": false,
     "REVIEW.md": false,
     "KNOWLEDGE.md": false,
@@ -756,6 +846,7 @@ classDiagram
 - `current_phase` 只能是 `spec`、`plan`、`code`、`test`、`review`、`deliver` 之一。
 - `status` 只能是 `created`、`running`、`blocked`、`failed`、`completed`、`inconsistent` 之一。
 - `artifacts` 记录阶段产物是否已经由 Harness 成功写入。
+- `IMPLEMENTATION.md` 的存在表示已有至少一个经验证的 `ChangeEvidence` 被渲染；空文件或手工创建不满足 code/deliver 证据要求。
 - 当 `write_file` 成功写入阶段产物时，ToolExecutor 必须同步更新 `state.json.artifacts`。
 - `files_changed` 在 code phase 的 `edit_file` / `write_file` 成功修改业务代码后更新；test phase 和 review phase 只能读取该字段，不应继续写入。
 - `delivery_coverage_digest` 仅在 `DELIVERABLES.md` 由 Harness 成功写入并同步 state 后保存；它绑定最终状态使用的需求覆盖证据；旧 state 缺失此字段按 `null` 兼容加载；不得从 Markdown 内容反向重建或覆盖它。
@@ -768,7 +859,7 @@ classDiagram
 
 `TraceEvent` 是事件级执行轨迹，不限于工具调用。它用于回答 Agent 在哪个 phase、做了什么动作、工具是否被允许、失败如何回灌、是否创建 checkpoint、是否发生 rollback 等问题。
 
-每条 TraceEvent 必须包含 `event_id`。`event_id` 在同一 task 内唯一，例如 `evt-000001`，用于被 `KnowledgeItem.source_trace_id` 稳定引用。`state_transition` 记录状态变化，例如 phase 从 `code` 切换到 `review`、`retry_budget_remaining` 从 1 减到 0；无状态变化的事件该字段为 `null`。
+每条 TraceEvent 必须包含 `event_id`。`event_id` 在同一 task 内唯一，例如 `evt-000001`，可作为结构化证据的来源引用，但 KnowledgeCard 应优先引用稳定的 `R-* / D-* / C-* / T-* / F-*` 证据 ID。`state_transition` 记录状态变化，例如 phase 从 `code` 切换到 `review`、`retry_budget_remaining` 从 1 减到 0；无状态变化的事件该字段为 `null`。
 
 事件类型至少包括：
 
@@ -1166,7 +1257,34 @@ uv run pytest
 
 项目模板必须默认忽略本地凭据文件、明文环境变量文件、运行时 workspace、缓存目录和不应进入课程提交包的本地状态。
 
-如果课程要求提交 `.hancode/` 中的部分产物，例如 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 或 `DELIVERABLES.md`，HanCode 应提供导出命令，而不是直接提交整个 `.hancode/`。
+HanCode 不直接提交整个 `.hancode/`，而是按用途发布三个互相隔离的 Profile：
+
+```text
+export/submission/
+├── README.md
+├── DELIVERABLES.md
+├── source/
+└── delivery_manifest.json
+
+export/learning/
+├── LEARNING_INDEX.md
+├── SPEC.md
+├── PLAN.md
+├── IMPLEMENTATION.md
+├── TEST_REPORT.md
+├── REVIEW.md
+├── KNOWLEDGE.md
+└── final.diff
+
+export/audit/
+├── delivery_manifest.json
+├── evidence.json
+├── trace.sanitized.jsonl
+├── checkpoint_manifest/
+└── requirement_traceability.json
+```
+
+学生日常复盘使用 learning，课程提交使用 submission，教师、答辩或 Harness 机制验证使用 audit。三类内容不得合并为一个巨大的 `DELIVERABLES.md`。
 
 默认忽略模式和导出命令形态沉淀在 `docs/系统架构.md` 的默认忽略与导出规则章节。
 
@@ -1174,6 +1292,7 @@ uv run pytest
 
 - trace 中的敏感字段。
 - checkpoint 原始快照。
+- Runtime Memory 的 `events.jsonl`、`index.json` 和 blob。
 - `.env`。
 - 本地 provider 配置。
 - 明文 key、token 或 secret。
@@ -1342,7 +1461,8 @@ HanCode 使用 JSON + Markdown + JSONL 的文件组合。
 | `manifest.json` | JSON | 适合保存 checkpoint 元数据和文件哈希。 |
 | `project_memory.md` | Markdown | 学生可读，适合保存项目结构、技术栈和编码约束。 |
 | `course_context.md` | Markdown | 学生可读，适合保存课程要求、评分标准和提交格式。 |
-| `SPEC.md` / `PLAN.md` / `TEST_REPORT.md` / `REVIEW.md` / `KNOWLEDGE.md` / `DELIVERABLES.md` | Markdown | 适合课程项目产物、复盘和交付。 |
+| 七份阶段 Markdown | Markdown | `SPEC` / `PLAN` / `IMPLEMENTATION` / `TEST_REPORT` / `REVIEW` / `KNOWLEDGE` / `DELIVERABLES` 是结构化学习证据的学生可读视图。 |
+| Learning Evidence / Traceability | JSON / JSONL | 作为学习证据和关系的机器权威源，支持校验、重放、digest 和确定性渲染。 |
 
 理由：
 
@@ -1473,7 +1593,7 @@ Typer + Textual + Rich
 - 优先展示 phase 流程。
 - 优先展示 trace 和工具调用。
 - 优先展示 checkpoint 和 rollback 状态。
-- 优先展示 `TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md` 和 `DELIVERABLES.md`。
+- 优先展示 `IMPLEMENTATION.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、追踪链和 `DELIVERABLES.md`。
 - 不引入复杂 Web UI。
 - 不让表现层承载 Harness Core 逻辑。
 
@@ -1500,7 +1620,8 @@ HanCode MVP 完成的总体标准是：
 - `hancode demo --provider mock` 可以在无网络、无真实 API key 的环境下运行。
 - Demo 能生成 `.hancode/project.json`。
 - Demo 能生成 `.hancode/tasks/task-001/state.json`。
-- Demo 能生成 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`DELIVERABLES.md`、`KNOWLEDGE.md`。
+- Demo 能生成 `SPEC.md`、`PLAN.md`、`IMPLEMENTATION.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`。
+- Demo 能生成 `learning/events.jsonl`、`learning/evidence.json`、`learning/traceability.json`，Markdown 结论可追溯到其中的稳定证据 ID。
 - Demo 能生成 `trace.jsonl`，且 trace 中包含 phase 切换、action、policy、tool、checkpoint、test、review、deliver 事件。
 - Demo 至少展示一次业务代码修改前 checkpoint 创建。
 - Demo 至少展示一次测试执行，并把结果写入 `TEST_REPORT.md`。
@@ -1565,7 +1686,7 @@ HanCode MVP 完成的总体标准是：
 - 缺少 `PLAN.md` 标志时，WorkspaceRouter 必须路由到 `plan` phase。
 - 测试失败时，WorkspaceRouter 必须路由到 `review` phase。
 - retry budget 耗尽且存在可用 checkpoint 时，WorkspaceRouter 必须返回 `review` phase，并标记 rollback required。
-- 缺少 `KNOWLEDGE.md` 或 `DELIVERABLES.md` 标志时，WorkspaceRouter 必须路由到 `deliver` phase。
+- 交付硬门禁尚未校验、交付证据 digest 失效或交付索引尚未由 Harness 发布时，WorkspaceRouter 必须路由到 `deliver` phase；不得仅以两个 Markdown 文件存在判定完成。
 - 所有前置产物、测试、审查和交付条件满足时，WorkspaceRouter 可以返回 completed 路由结果。
 - WorkspaceRouter 不直接修改 state、不执行工具、不创建 checkpoint、不执行 rollback。
 
@@ -1578,7 +1699,7 @@ HanCode MVP 完成的总体标准是：
 - code phase 上下文必须包含 `SPEC.md` 和 `PLAN.md`。
 - test phase 上下文包含测试命令、changed files 和计划中的验证步骤。
 - review phase 上下文包含 `TEST_REPORT.md`、changed files、checkpoint 信息和需求覆盖依据。
-- deliver phase 上下文包含 SPEC、PLAN、TEST_REPORT、REVIEW 和 trace 摘要。
+- deliver phase 上下文包含经校验的 learning evidence、需求追踪矩阵、最新测试/Build/Diff 状态和必要的阶段 Markdown 摘要，不包含完整 trace。
 - 当前 observation、runtime memory 和原有 phase context 在同一次预算处理中完成，最终 canonical JSON 长度不超过 `max_context_chars`。
 - 自动注入最近工具摘要、有效文件索引和预算允许的热点文件正文；旧 generation 或已失效快照不得作为当前正文自动注入。
 - 不同 task 的 memory、history、trace 和 checkpoint 不混入当前上下文。
@@ -1719,13 +1840,17 @@ HanCode MVP 完成的总体标准是：
 
 功能完成判定：
 
-- deliver phase 生成 `DELIVERABLES.md`。
-- deliver phase 生成 `KNOWLEDGE.md`。
-- 缺少 `KNOWLEDGE.md` 时不能返回 `completed`。
-- 缺少 `DELIVERABLES.md` 时不能返回 `completed`。
-- `KNOWLEDGE.md` 包含需求理解、设计决策、测试经验、错误修复和可复用知识。
-- `DELIVERABLES.md` 包含最终交付物清单。
-- 最终结构化结果包含状态、task ID、需求覆盖、文件变更、测试结果、checkpoint、rollback、交付物、知识条目、风险和下一步建议。
+- deliver phase 依次执行 Collect、Validate、Synthesize、Reflect、Publish；失败时记录停止步骤和结构化原因。
+- deliver phase 生成 `KNOWLEDGE.md` 与索引型 `DELIVERABLES.md`，并能发布 submission、learning、audit 三种 Profile。
+- `IMPLEMENTATION.md` 将每个 `C-*` 修改绑定到真实需求、计划、checkpoint、Diff、changed files 和测试证据。
+- `TEST_REPORT.md` 保留全部有效测试尝试；最终通过不得覆盖先前失败；存在失败历史时至少形成一条 `F-* → C-* → T-*` 验证闭环。
+- `REVIEW.md` 包含 `requirement → decision → change → test → status → risk` 追踪矩阵，并解释“为什么认为完成”。
+- `KNOWLEDGE.md` 由结构化 `KnowledgeCard` 渲染，每张卡必须引用当前 task 中真实存在的证据 ID。
+- `DELIVERABLES.md` 只作为最终状态、运行/测试方式、提交文件、覆盖摘要、学习资料和审计 digest 的首页，不重复其他文档正文。
+- 缺少核心需求的实现/测试证据、最新测试未通过、已配置 Build 未通过、最终 Diff 无效、知识引用无效、失败闭环缺失或敏感信息未消除时不能返回 `completed`。
+- 缺少候选方案、学生反思、迁移示例、自测回答或修改理由时记录 `learning_warnings`，但不新增状态值，也不单独阻止课程提交。
+- 重新渲染只替换 generated 区域，不覆盖学生填写的理解、疑问或教师/同伴反馈。
+- 最终结构化结果包含状态、task ID、需求覆盖、文件变更、测试结果、checkpoint、rollback、交付物、KnowledgeCard、`learning_warnings`、风险和下一步建议。
 - 存在未测试风险但核心需求已覆盖且测试通过时，最终结果为 `status=completed`，并在 `risks[]` 中记录未测试项。
 - 存在未测试风险且核心需求未覆盖或测试未通过时，最终结果为 `status=blocked`。
 - 最终结果不得引入额外风险状态值。
@@ -1800,7 +1925,7 @@ HanCode MVP 完成的总体标准是：
 
 | PathClassifier zone | 允许行为 | 验收规则 |
 | --- | --- | --- |
-| `artifact` | 写入 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md` 等阶段产物。 | 只允许在对应 phase 写入对应产物；成功后必须同步 `state.json.artifacts`。 |
+| `artifact` | 写入 `SPEC.md`、`PLAN.md` 及由专用 Renderer 生成的 `IMPLEMENTATION.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`。 | 只允许在对应 phase 写入对应产物；确定性交付产物不得走通用写工具；成功后必须同步 `state.json.artifacts`。 |
 | `source` | 修改或创建业务代码文件。 | 只允许 code phase；必须有 `reason`；修改前必须创建 checkpoint；修改后必须记录 changed files。 |
 | `protected` / `out_of_scope` | 作业说明、老师测试、评分脚本、样例数据、workspace 外路径或无法归类路径。 | 默认拒绝；只有用户明确授权且不违反课程约束时才允许处理受保护文件。 |
 
@@ -1817,7 +1942,7 @@ ContextBuilder 测试必须使用明确的 include / exclude 断言：
 | `code` | `SPEC.md`、`PLAN.md`、允许修改范围 | 其他 task trace、`.env`、完整历史 trace。 |
 | `test` | 测试命令、changed files、计划中的验证步骤 | 其他 task history、凭据内容。 |
 | `review` | `TEST_REPORT.md`、changed files、latest checkpoint、需求覆盖依据 | 完整 checkpoint 文件内容、其他 task trace。 |
-| `deliver` | SPEC、PLAN、TEST_REPORT、REVIEW、trace summary | 完整 trace、完整 checkpoint 快照。 |
+| `deliver` | learning evidence、traceability、最新测试/Build/Diff 状态、阶段摘要 | 完整 trace、完整 checkpoint 快照、Runtime Memory blob。 |
 
 ContextBuilder 必须支持 `max_context_chars` 和 `max_trace_events` 配置。超过限制时只能纳入摘要，不能无界加载历史。
 
@@ -1837,25 +1962,51 @@ TraceLogger、FeedbackBuilder、ResultBuilder、ContextBuilder 和错误处理�
 
 #### 10.21.4 Markdown 产物最低结构
 
-Markdown 产物验收只检查必需结构，不判断文风。
+Markdown 产物验收检查结构、证据引用和学生区域保护，不判断文风。所有可重渲染文档使用以下分区：
 
-`KNOWLEDGE.md` 必须至少包含以下标题：
+```markdown
+<!-- hancode:generated:start -->
+由结构化证据生成的内容。
+<!-- hancode:generated:end -->
 
-- 需求理解
-- 设计决策
-- 测试经验
-- 错误修复
-- 可复用模式
+## 我的理解
 
-每个标题下至少有 1 条条目。每条 KnowledgeItem 必须包含 `source_phase`，且至少 1 条条目必须包含 `source_trace_id`，或引用 `TEST_REPORT.md` / `REVIEW.md` 中的证据。
+## 我仍然不理解的地方
 
-`REVIEW.md` 必须包含需求覆盖表，字段为：
-
-```text
-requirement_id | status | evidence | risk
+## 教师或同伴反馈
 ```
 
-其中 `status` 只能是 `covered`、`partial`、`missing`、`untested`。
+重新生成只能替换 generated 区域；缺失、重复或交错标记必须 fail-closed，不得猜测学生内容边界。
+
+七份阶段 Markdown 的最低结构如下：
+
+| 文件 | 必需结构 | 核心证据 |
+| --- | --- | --- |
+| `SPEC.md` | 任务目标；需求清单；输入/输出/边界；课程约束；不确定项与假设；阶段自测问题 | `RequirementEvidence (R-*)` |
+| `PLAN.md` | 候选方案；最终选择；舍弃原因；实现步骤；风险；回退策略；阶段自测问题 | `DecisionEvidence (D-*)`、计划步骤 `P-*` |
+| `IMPLEMENTATION.md` | 修改批次；对应需求/计划；checkpoint；changed files；做了什么；为什么；未选实现；验证方式 | `ChangeEvidence (C-*)`、Diff、Checkpoint |
+| `TEST_REPORT.md` | 测试策略；全部测试尝试；失败记录；修复与复测；尚未验证内容；测试经验 | `TestAttemptEvidence (T-*)`、`FailureEvidence (F-*)`、`RecoveryEvidence` |
+| `REVIEW.md` | 需求追踪矩阵；代码质量；测试充分性；已知限制；偏离计划；是否适合交付 | `TraceabilityLink`、Review Evidence |
+| `KNOWLEDGE.md` | 每张卡的问题、上下文、原则、解法、证据、适用/不适用场景、常见错误、迁移练习 | `KnowledgeCard (K-*)` |
+| `DELIVERABLES.md` | 最终状态；如何运行/测试；提交文件；覆盖摘要；学习资料索引；限制；审计 digest | `DeliveryResult`、manifest、evidence digest |
+
+`REVIEW.md` 的追踪矩阵字段固定为：
+
+```text
+requirement_id | decision_ids | change_ids | test_ids | status | evidence | risk
+```
+
+其中 `status` 只能是 `covered`、`partial`、`missing`、`untested`。核心需求要判为 `covered`，必须至少存在一个有效实现证据和一个当前有效测试证据。
+
+`KnowledgeCard` 不再接受只有 `summary + detail + source_trace_id` 的弱结构。每张卡必须包含 `problem`、`context`、`principle`、`solution`、`evidence_refs`、`applicable_when`、`not_applicable_when`、`common_mistake`、`transfer_example`；所有引用必须存在于当前 task 的 `learning/evidence.json` 或合法 Trace/Checkpoint/Artifact 索引中。
+
+学习证据 ID 使用稳定前缀：需求 `R-*`、设计 `D-*`、计划 `P-*`、修改 `C-*`、测试 `T-*`、失败 `F-*`、知识 `K-*`。系统必须能验证至少以下完整链：
+
+```text
+R-* → D-* → C-* → T-*
+F-* → RecoveryEvidence → C-* → T-*
+R-* / D-* / C-* / T-* / F-* → K-*
+```
 
 #### 10.21.5 结构化错误与策略拒绝
 
@@ -1929,7 +2080,7 @@ HanCode 的工具能力按调用方和领域作用划分为三类。
 | 工具 | 领域作用 |
 | --- | --- |
 | `read_file`、`list_files`、`search_text` | 理解项目结构、课程要求和已有代码。 |
-| `write_file`（artifact zone） | 生成或更新 `SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`。 |
+| `write_file`（artifact zone） | 生成或更新 `SPEC.md`、`PLAN.md`；其他确定性交付 Markdown 只能由专用 ArtifactRenderer 写入。 |
 | `write_file` / `edit_file`（source zone） | 只在 code phase 修改允许范围内的业务代码。 |
 | `run_tests` | 运行配置 fallback 或经人工审批的显式单条测试命令，产生客观反馈信号。 |
 | `rollback_last_checkpoint` | 在失败后恢复到明确 checkpoint。 |
@@ -2020,10 +2171,14 @@ Task Workspace 除阶段产物外，还保存单次任务的运行时记忆：
 | --- | --- |
 | `SPEC.md` | 本次任务的课程项目需求分析。 |
 | `PLAN.md` | 本次任务的实现计划和验证依据。 |
-| `TEST_REPORT.md` | 测试命令、测试结果、失败原因和未测试风险。 |
-| `REVIEW.md` | 需求覆盖、代码质量、测试结果和 rollback 建议。 |
-| `KNOWLEDGE.md` | 本次任务沉淀的课程知识点、关键设计决策和错误修复经验。 |
-| `DELIVERABLES.md` | 最终交付物清单。 |
+| `IMPLEMENTATION.md` | 修改批次、需求/计划、checkpoint、Diff、changed files、修改理由和验证引用。 |
+| `TEST_REPORT.md` | 全部有效测试尝试、失败诊断、修复、复测和未测试风险。 |
+| `REVIEW.md` | 需求追踪矩阵、代码质量、测试充分性、限制、计划偏离和交付判断。 |
+| `KNOWLEDGE.md` | 由证据引用有效的 KnowledgeCard 组成的可迁移学习材料。 |
+| `DELIVERABLES.md` | 最终状态、运行/测试方式、提交清单、覆盖摘要、学习资料索引和审计 digest。 |
+| `learning/events.jsonl` | 追加式学习事件，不从 Markdown 反向生成。 |
+| `learning/evidence.json` | 当前 task 的结构化学习证据权威源。 |
+| `learning/traceability.json` | 稳定证据 ID 之间的关系与需求覆盖矩阵。 |
 | `state.json` | 当前 task 的唯一机器状态源。 |
 | `trace.jsonl` | 事件级执行轨迹。 |
 | `checkpoints/` | 代码修改前快照与 rollback 元数据。 |
@@ -2125,7 +2280,7 @@ HanCode 的主要风险不在于单个功能是否能写出来，而在于 Agent
 | 风险 | 影响 | 缓解策略 |
 | --- | --- | --- |
 | ContextBuilder 加载过多历史 | 上下文膨胀，LLM 被旧信息干扰 | 按 phase 选择最小必要上下文；不同 task 的 trace、history、checkpoint 不混入当前任务。 |
-| ContextBuilder 加载过少信息 | code / review / deliver 阶段缺少关键依据 | code 必须包含 SPEC 和 PLAN；review 必须包含 TEST_REPORT、changed files、checkpoint；deliver 必须包含 SPEC、PLAN、TEST_REPORT、REVIEW 和 trace 摘要。 |
+| ContextBuilder 加载过少信息 | code / review / deliver 阶段缺少关键依据 | code 必须包含 SPEC 和 PLAN；review 必须包含测试、changed files、checkpoint 与需求证据；deliver 必须包含经校验 learning evidence、traceability 和最新测试/Build/Diff 状态。 |
 | Project Memory 与 Task Workspace 边界不清 | 长期经验污染单次任务判断 | project 级经验只作为辅助上下文，课程要求和当前 task 产物优先。 |
 | 文件在 HanCode 外部被修改 | 旧快照被当作当前正文注入 | 在注入和检索有效快照前复用安全路径边界校验脱敏内容摘要，不匹配即追加失效事件。 |
 | Memory 写入或失效记录失败 | 跨轮次证据丢失或旧正文污染决策 | 读取类持久化失败进入 `blocked`；成功 mutation/rollback 后失效失败进入 `inconsistent`。 |
@@ -2176,8 +2331,10 @@ HanCode 的主要风险不在于单个功能是否能写出来，而在于 Agent
 
 | 风险 | 影响 | 缓解策略 |
 | --- | --- | --- |
-| HanCode 变成普通代码生成工具 | 弱化“知识沉淀”目标 | spec、plan、test、review、deliver 六阶段必须产生可读产物。 |
-| KNOWLEDGE.md 变成空泛总结 | 学生无法迁移经验 | Knowledge 必须包含课程知识点、设计决策、测试失败、错误修复和可复用模式。 |
+| HanCode 变成普通代码生成工具 | 弱化“知识沉淀”目标 | 七份阶段 Markdown 必须由结构化证据串成可检索学习链。 |
+| KNOWLEDGE.md 变成空泛总结 | 学生无法迁移经验 | KnowledgeCard 必须给出问题、原则、解法、适用边界、常见错误、迁移练习和有效证据引用。 |
+| 最终通过覆盖失败历史 | 丢失最有价值的调试学习过程 | 测试尝试追加保存，最终报告必须保留失败、诊断、修复和复测链。 |
+| AI 总结被误认为学生真实理解 | 学习产物失真，重生成覆盖人工内容 | generated/student 分区；AI 只生成有证据内容，学生理解与反馈区域永不自动覆盖。 |
 | 只强调学习产物，忽略 Harness 机制 | 看起来像课程管理器而不是 Coding Agent Harness | §11 明确动作、反馈、危险动作、记忆和代码机制实现。 |
 | 课程要求与 Agent 计划冲突 | Agent 做出不符合评分标准的实现 | course_context 和 grading rubric 优先于 project experience。 |
 

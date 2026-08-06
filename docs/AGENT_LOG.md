@@ -2488,3 +2488,12 @@
 - TDD：改写与旧行为绑定的测试 `test_auto_fallback_sink_failure_*`（异常传播 → best-effort 完成协商）；新增去parallel/去tool_choice/native-only、索引路径归一化、coarse tools 先降 non-strict、message-only 错误降级、非严格 json_schema、prompt_json 兜底、HTTP 200 驱动编码转移、显式模式不降级共 10 项断言。
 - 验证：`tests/providers/` + `tests/test_provider_failure_loop.py` `143 passed`；`tests/test_agent_loop.py`+`test_config.py`+real_provider_smoke `141 passed, 1 skipped`；全量 pytest `1599 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 136 source files`；`hancode demo --provider mock` 输出 `completed`。
 - 剩余风险：真实 DeepSeek 端到端未跑（无凭据），仅以 scripted transport 验证收敛；prompt_json 兜底依赖弱模型能按 prompt 输出合法 JSON，若仍不合规将由 action schema 校验拦截并耗尽重试预算。
+
+### 2026-08-06 — S14-R0 Deliver 学习发布文档契约
+
+- 需求与判断：按用户给定设计，将 Deliver 从“文件存在/完成证明”重新定义为把结构化过程证据编译成提交包、学习包和审计包的发布阶段；本轮只做 Markdown 契约，不修改 Python、模板、CLI/TUI 或 export 实现。
+- PLAN 准入：先新增 S14 任务族。R0 冻结文档契约；R1-R7 依次覆盖学习证据模型与 Store、`IMPLEMENTATION.md` 与学生笔记保护、历史测试尝试、Traceability/KnowledgeCard、五步 Pipeline、三种发布 Profile、TUI 反思与浏览。
+- SPEC：新增七份阶段 Markdown、稳定 `R/D/P/C/T/F/K` ID、追加式 learning events、结构化 learning evidence/traceability、全部测试尝试、失败修复闭环、KnowledgeCard、generated/student 分区、硬门禁与 `learning_warnings`，并明确 Markdown 不是机器状态权威源。
+- 架构：升级为 v1.7；`DeliveryPipeline` 收敛为编排器，协作 `LearningEvidenceCollector`、`TraceabilityBuilder`、`DeliveryValidator`、`ArtifactRenderer`、`DeliveryPublisher`，执行 `Collect → Validate → Synthesize → Reflect → Publish`；发布分为 submission、learning、audit 三种显式 allow-list Profile。
+- 边界：保留 `state.json` 生命周期权威、现有六阶段和 `completed / blocked / failed`；Runtime Memory 与 Learning Evidence 分离；不以扩写 Markdown 模板冒充机制实现；未触碰工作区已有 TUI 配置代码与测试改动。
+- 验证：必需术语定向检查全部命中；旧的“双 Markdown 存在即可完成”门禁检索无命中；四份文档代码围栏均成对；generated 区域示例起止标记成对；`git diff --check -- docs/SPEC.md docs/PLAN.md docs/系统架构.md docs/AGENT_LOG.md` 通过。本轮没有代码改动，因此未运行 pytest、Ruff、MyPy 或 Build。

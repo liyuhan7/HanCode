@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from textual.app import App
-from textual.widgets import Button, Input, Static, Tabs
+from textual.widgets import Button, Input, ListView, Static, Tabs
 
 from hancode.app.auth_service import AuthService
 from hancode.app.config_service import ConfigService
@@ -12,6 +12,7 @@ from hancode.app.config_service import ConfigUpdateResult
 from hancode.app.credentials import CredentialProvider
 from hancode.interfaces.tui.config_dialogs import ConfigConfirmDialog
 from hancode.interfaces.tui.config_dialogs import CredentialEditorDialog
+from hancode.interfaces.tui.config_dialogs import StringListEditor
 from hancode.interfaces.tui.config_app import ConfigTuiApp
 from hancode.interfaces.tui.config_presenters import (
     CONFIG_GROUPS,
@@ -266,6 +267,52 @@ def test_config_screen_stores_hidden_api_key_in_keyring_only(tmp_path: Path) -> 
             )
 
     asyncio.run(_run())
+
+
+def test_string_list_editor_add_remove_add_does_not_duplicate_ids() -> None:
+    class HostApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.result: tuple[str, ...] | None = None
+            self._pushed = False
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                StringListEditor(title="可写目录", values=("src",)),
+                self._on_closed,
+            )
+
+        def _on_closed(self, result: tuple[str, ...] | None) -> None:
+            self.result = result
+
+    app = HostApp()
+
+    async def _run() -> None:
+        async with app.run_test(size=(90, 32)) as pilot:
+            await pilot.pause()
+            editor = app.screen
+            assert isinstance(editor, StringListEditor)
+
+            field = editor.query_one("#config-list-input", Input)
+            field.value = "tests"
+            await pilot.click("#config-list-add")
+            await pilot.pause()
+
+            view = editor.query_one("#config-list-values", ListView)
+            view.index = 1
+            await pilot.click("#config-list-remove")
+            await pilot.pause()
+
+            field = editor.query_one("#config-list-input", Input)
+            field.value = "docs"
+            await pilot.click("#config-list-add")
+            await pilot.pause()
+
+            await pilot.click("#config-list-done")
+            await pilot.pause()
+
+    asyncio.run(_run())
+    assert app.result == ("src", "docs")
 
 
 def test_config_screen_treats_environment_credential_as_read_only(
