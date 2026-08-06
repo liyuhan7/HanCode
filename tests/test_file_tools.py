@@ -462,6 +462,28 @@ def test_list_files_inside_workspace_is_recursive_and_sorted(tmp_path: Path) -> 
     )
 
 
+def test_list_files_prunes_dependency_and_cache_directories(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("main\n", encoding="utf-8")
+    for directory_name in (
+        ".git",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    ):
+        directory = tmp_path / directory_name / "nested"
+        directory.mkdir(parents=True)
+        (directory / "noise.txt").write_text("noise\n", encoding="utf-8")
+
+    result = list_files(tmp_path)
+
+    assert result.success is True
+    assert result.output == {"path": ".", "files": ["src/main.py"]}
+
+
 def test_list_files_supports_workspace_subdirectory(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("main\n", encoding="utf-8")
@@ -509,6 +531,24 @@ def test_search_text_inside_workspace_is_sorted_by_path_and_line(tmp_path: Path)
             "skipped_files": [],
         },
     )
+
+
+def test_search_text_prunes_dependency_and_cache_directories(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("needle\n", encoding="utf-8")
+    for directory_name in (".git", ".venv", "__pycache__", "node_modules"):
+        directory = tmp_path / directory_name
+        directory.mkdir()
+        (directory / "noise.txt").write_text("needle\n", encoding="utf-8")
+
+    result = search_text(tmp_path, "needle")
+
+    assert result.success is True
+    assert result.output == {
+        "query": "needle",
+        "matches": [{"path": "src/main.py", "line": 1, "text": "needle"}],
+        "skipped_files": [],
+    }
 
 
 def test_search_text_skips_non_utf8_and_credential_files(tmp_path: Path) -> None:

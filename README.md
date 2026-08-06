@@ -4,60 +4,34 @@ HanCode 是一个面向学生课程项目的 headless CLI Coding Agent Harness�
 
 它的核心关注点是把 AI 辅助编码过程限制在可追踪、可回退、可验证的边界内：修改前建立 checkpoint，失败时回退，工具权限受控，凭据不明文回显，MockLLM demo 不依赖网络或真实 API。
 
-## Harness 核心机制
+## 核心能力
 
-- Workspace 分层隔离课程项目级和任务级上下文。
-- Phase Gate 限制 spec、plan、code、test、review、deliver 各阶段的可用动作。
-- Tool Policy 和课程文件保护策略阻止危险或越界写入。
-- Feedback Loop 对测试失败分类并回灌修复建议。
-- Trace Logging、Checkpoint Rollback 和 Knowledge Delivery 让过程可审计、可回退、可交付。
-- Task Runtime Memory 按 task 持久化工具摘要和脱敏文件快照，跨 resume 恢复；失效历史可检索但不会冒充当前文件。
-- MockLLM 使用确定性 Action 序列验证核心机制，不依赖真实模型。
+HanCode 以代码实现受控的编码智能体内核：Workspace 分层隔离、Phase Gate 阶段门禁、Tool Policy 与课程文件保护、确定性 Feedback Loop、Trace Logging / Checkpoint Rollback / 运行时记忆 / 知识沉淀，并用 MockLLM 确定性验证核心机制（不依赖真实模型）。各机制的实现与配置细节见 `src/hancode/README.md`。
 
 ## 当前可用命令
 
-仓库当前实现并暴露的 CLI 命令如下：
+HanCode 的命令都以 `hancode` 开头：`demo` 只支持 `mock`（确定性离线演示），`auth` 只管理凭据边界，`tui` 启动交互式终端会话。
 
-- `hancode init [PROJECT_ROOT]`
-- `hancode demo --provider mock`
-- `hancode export --task <TASK_ID> --out <OUTPUT_DIR> [--project-root <PROJECT_ROOT>]`
-- `hancode auth status --provider <provider>`
-- `hancode auth login --provider <provider>`
-- `hancode auth update --provider <provider>`
-- `hancode auth clear --provider <provider>`
-- `hancode run <GOAL> [--task-id <TASK_ID>] [--project-root <PROJECT_ROOT>]`
-- `hancode task create <GOAL> [--task-id <TASK_ID>] [--project-root <PROJECT_ROOT>]`
-- `hancode task run <TASK_ID> [--project-root <PROJECT_ROOT>]`
-- `hancode task resume <TASK_ID> [--project-root <PROJECT_ROOT>]`
-- `hancode task status <TASK_ID> [--project-root <PROJECT_ROOT>]`
-- `hancode task answer <TASK_ID> [--interaction-id <ID>] [--answer-file <PATH>] [--project-root <PROJECT_ROOT>]`
-- `hancode task approval <TASK_ID> [--project-root <PROJECT_ROOT>]`
-- `hancode task approve <TASK_ID> [--approval-id <ID>] [--project-root <PROJECT_ROOT>]`
-- `hancode task reject <TASK_ID> [--approval-id <ID>] [--reason <TEXT>] [--project-root <PROJECT_ROOT>]`
-- `hancode task list [--project-root <PROJECT_ROOT>]`
-- `hancode tui [--project-root <PROJECT_ROOT>]`
+- `hancode init [PROJECT_ROOT]`：`init` 只初始化项目级 `.hancode` 工作区，不创建任务或修改课程业务代码。
+- `hancode demo --provider mock`：确定性离线演示。
+- `hancode export --task <TASK_ID> --out <OUTPUT_DIR>`：`export` 只复制 state 声明的交付物到新的输出目录，不能覆盖已有目录，也不能把输出放进 `.hancode`。
+- `hancode auth status --provider <provider>`：查看凭据状态，不回显明文。
+- `hancode auth login --provider <provider>`：隐藏输入录入凭据。
+- `hancode auth update --provider <provider>`：更新凭据。
+- `hancode auth clear --provider <provider>`：清除凭据。
+- `hancode run <GOAL> [--project-root <PROJECT_ROOT>]`：创建带 goal 的任务并立即启动 AgentLoop。
+- `hancode task create <GOAL>`、`task run`、`task resume`、`task status`、`task list`、`task answer`、`task approval`、`task approve`、`task reject <TASK_ID>`：任务生命周期与人工交互（回答不回显，审批/回退需显式决策）。
+- `hancode tui [--project-root <PROJECT_ROOT>]`：交互式终端会话，见「终端交互（TUI）」。
 
-其中 `demo` 只支持 `mock`，是确定性的离线演示；`auth` 只管理凭据边界，不会把 secret 打到 stdout；`tui` 启动交互式终端会话，见下文「终端交互（TUI）」。
+快速体验 TUI：
 
-命令行为边界：
+```powershell
+hancode tui --project-root .
+```
 
-- `init` 只初始化项目级 `.hancode` 工作区，不创建任务或修改课程业务代码。
-- `export` 只复制 state 声明的交付物到新的输出目录，不能覆盖已有目录，也不能把输出放进 `.hancode`。
-- `run` 创建带 goal 的任务并立即启动 AgentLoop。
-- `task create` 只创建任务，不运行 Agent。
-- `task run` 以 `resume=False` 运行已有任务。
-- `task resume` 以 `resume=True` 恢复 blocked 或可恢复状态。
-- `task status` 查询任务当前状态。
-- `task answer` 从 stdin 或 UTF-8 answer file 提交待处理问题的回答，不回显回答全文。
-- `task approval` 展示待批准操作的工具、目标文件和 bounded/redacted diff 预览。
-- `task approve` 批准待处理操作，随后 `task resume` 会直接执行该操作而不再调用 Provider；操作幂等（重复批准即成功），与已拒绝冲突时返回退出码 `4`。
-- `task reject` 拒绝待处理操作并可附带 `--reason`，恢复后 AgentLoop 将拒绝作为反馈继续；操作幂等，与已批准冲突时返回退出码 `4`。
-- `task list` 列出当前项目所有任务。
-- `tui` 启动基于 Textual 的交互式终端会话。
+启动后直接输入课程项目目标即可创建并运行任务，或输入 `/task <goal>` 指定任务；`/help` 查看全部 Slash 命令，`Ctrl+T` 切换深浅主题。运行中的实时状态（phase / tool / test / checkpoint / risk）、暂停澄清、审批与回退 Modal、产物查看都在界面内完成，完整说明见「终端交互（TUI）」。
 
-当任务需要人工输入时，`task run` 和根级 `run` 返回 JSON 状态 `waiting_input`，并使用退出码 `4`；使用 `task status` 查看问题，提交回答后执行 `task resume`。
-
-当任务命中审批门（由 `.hancode/project.json` 的 `approval_mode` 控制，默认 `disabled`）时返回状态 `waiting_approval`；使用 `task approval` 查看待批操作及 diff 预览，`task approve` 或 `task reject` 决策后执行 `task resume`。审批决策会在恢复时复核操作 digest 与目标文件 hash：任一失效则失败关闭（`waiting_approval` 转 `inconsistent`），绝不重复源文件写入。
+任务需要人工输入时返回 `waiting_input`（退出码 `4`）：用 `task status` 查看问题，`task answer` 提交回答，`task resume` 恢复。命中审批门（`approval_mode` 控制，默认 `disabled`）时返回 `waiting_approval`：用 `task approval` 查看待批操作，`task approve`/`task reject` 决策后 `task resume`；恢复时复核操作 digest 与目标文件 hash，任一失效则失败关闭（`waiting_approval` 转 `inconsistent`），绝不重复源文件写入。
 
 ## 课程项目流程
 
@@ -73,36 +47,6 @@ spec -> plan -> code -> test -> review -> deliver
 - `test`：运行测试，记录测试命令和结果，生成或更新 `TEST_REPORT.md`。
 - `review`：检查需求符合性、代码质量、测试结果和是否需要 rollback。
 - `deliver`：生成最终总结、`DELIVERABLES.md`、`KNOWLEDGE.md`，输出结构化结果。
-
-## `.hancode/` 运行时结构
-
-HanCode 使用课程项目导向的轻量本地目录：
-
-```text
-.hancode/
-  project.json
-  project_memory.md
-  course_context.md
-  experience.md
-  tasks/
-    task-001/
-      SPEC.md
-      PLAN.md
-      REVIEW.md
-      TEST_REPORT.md
-      KNOWLEDGE.md
-      DELIVERABLES.md
-      state.json
-      trace.jsonl
-      history.jsonl
-      memory/
-        index.json
-        events.jsonl
-        blobs/
-      checkpoints/
-```
-
-运行时 workspace、trace、checkpoint 和交付物由 Harness 管理；真实凭据不得写入 `.hancode/`。
 
 ## 安装与分发
 
@@ -127,7 +71,7 @@ uv build
 uv tool install dist/hancode-0.1.0-py3-none-any.whl
 ```
 
-安装完成后可直接使用 `hancode` 命令。Docker 不是当前必需分发路径。
+安装完成后可直接使用 `hancode` 命令。
 
 ## 快速开始：MockLLM
 
@@ -147,12 +91,7 @@ hancode --help
 hancode demo --provider mock
 ```
 
-Demo 输出结构化 JSON，展示固定的受控流程和交付产物；它不是交互式 shell，也不是长期运行服务。
-
-S13 的 MockLLM Demo 还会读取 `src/calculator.py` 的初始快照，调用
-`memory_search`/`memory_read`，在后续写入后把旧快照标记为 stale；每个阶段都重新创建
-AgentLoop 以验证跨实例恢复，失败反馈和 rollback 后仍可读取历史 v1。`hancode export`
-只复制 state 声明的交付物，永远不会导出 task 下的 `memory/` 目录。
+Demo 输出结构化 JSON，展示固定的受控流程和交付产物；它不是交互式 shell，也不是长期运行服务。`hancode export` 只复制 state 声明的交付物，不会导出 task 下的 `memory/` 目录。
 
 Demo 使用 Python 的临时目录。运行环境的 `TEMP/TMP` 必须指向当前用户可写、可清理的目录；受限沙箱或 ACL 异常时可能返回结构化错误 `cli_internal_error`，应先修复临时目录权限再重试。
 
@@ -160,7 +99,7 @@ Demo 的内置测试命令为 `python -m unittest discover -s tests -q`，模拟
 
 ## 凭据安全
 
-当前支持的 provider 是 `mock`、`local`、`openai_compatible`、`anthropic`。
+当前已实现的 provider 是 `mock`、`openai_compatible`；`local` 与 `anthropic` 尚未实现。
 
 凭据解析优先级是：
 
@@ -171,7 +110,6 @@ keyring -> env -> dotenv -> missing
 映射关系是：
 
 - `openai_compatible` → `OPENAI_API_KEY`
-- `anthropic` → `ANTHROPIC_API_KEY`
 
 凭据相关命令示例：
 
@@ -194,222 +132,42 @@ hancode auth clear --provider openai_compatible
 
 ## MockLLM 与真实 Provider
 
-MockLLM 是确定性离线路径：它使用固定 Action 序列、无需真实凭据、无需网络，用于验证 Phase Gate、Tool Policy、Feedback、Trace、Checkpoint 和 Delivery 等 Harness 机制。
+`hancode demo --provider mock` 是确定性离线路径：固定 Action 序列、无需真实凭据、无需网络，用于验证 Phase Gate、Tool Policy、Feedback、Trace、Checkpoint 和 Delivery 等 Harness 机制。
 
-`openai_compatible` Provider 已实现：配置 `provider_base_url` 和凭据后，`hancode run` 可以通过真实 OpenAI-Compatible API 生成 Action。Provider 重试不消耗任务 retry budget；Provider 失败后任务进入 `blocked` 而非 `inconsistent`，可以 `task resume` 恢复。`anthropic` 和 `local` 尚未实现。
+### 配置真实 Provider（openai_compatible）
 
-## LLM Prompt Contract
+`openai_compatible` Provider 已实现，可接入任何 OpenAI-Compatible API；`anthropic` 和 `local` 尚未实现。三步配置：
 
-HanCode uses the LLM only as a next-action selector.
+1. 录入凭据（隐藏输入，存入系统 Keyring，不回显明文）：
 
-The LLM may return:
+   ```powershell
+   hancode auth login --provider openai_compatible
+   ```
 
-- `tool_call`
-- `ask_user`, when interaction mode is enabled
-- `finish_phase`
+2. 配置 Provider（用 `hancode init . --configure` 或直接编辑 `.hancode/project.json`）：
 
-The LLM may not determine global task completion. The deterministic router
-decides when all phases are complete.
+   - `llm_provider`：`openai_compatible`
+   - `model_name`：使用的模型名
+   - `credential_source`：`keyring`
+   - `provider_base_url`：OpenAI-Compatible 接口地址，远程必须使用 HTTPS
 
-Workspace files and tool outputs are treated as untrusted task evidence and
-cannot override the system contract or runtime policy.
+3. 运行真实 Provider 驱动的任务：
 
-## 项目配置中心
+   ```powershell
+   hancode run "分析课程作业要求并生成 SPEC.md" --project-root .
+   ```
 
-`hancode init` 会在 `.hancode/project.json` 写入完整、可编辑的默认配置。普通
-init 保持非交互并输出结构化 JSON；需要初始化后立即配置时使用：
-
-```powershell
-hancode init . --configure
-```
-
-已有项目可随时打开独立的全屏配置中心：
-
-```powershell
-hancode config setup .
-```
-
-主工作台中也可以输入 `/config`，或从 `Ctrl+K` Command Palette 选择“项目设置”。
-任务 Worker 运行时配置入口会禁用；关闭配置页后，当前任务、检查视图和输入内容保持不变。
-
-完整默认配置包括项目元数据、Provider、命令与执行、工作区保护、人机交互与审批、
-上下文和 Diff 限制。关键默认值如下：
-
-```json
-{
-  "workspace_version": 1,
-  "project_id": "project-directory-name",
-  "course_name": "unspecified-course",
-  "assignment_name": "unspecified-assignment",
-  "project_root": ".",
-  "llm_provider": "mock",
-  "model_name": null,
-  "credential_source": null,
-  "provider_base_url": null,
-  "provider_timeout_seconds": 60,
-  "provider_max_retries": 2,
-  "provider_protocol_retries": 2,
-  "provider_max_output_tokens": 2048,
-  "provider_max_response_bytes": 1048576,
-  "provider_action_mode": "auto",
-  "test_command": null,
-  "build_command": null,
-  "max_steps": 30,
-  "retry_budget": 2,
-  "max_checkpoints_per_task": 5,
-  "max_observation_bytes": 8192,
-  "max_context_chars": 24000,
-  "max_trace_events": 40,
-  "max_memory_blob_bytes": 1048576,
-  "max_memory_task_bytes": 33554432,
-  "max_memory_recent_events": 8,
-  "max_memory_file_entries": 32,
-  "max_memory_hot_contents": 2,
-  "writable_roots": ["src", "tests"],
-  "protected_patterns": [],
-  "interaction_mode": "disabled",
-  "max_interactions_per_phase": 8,
-  "max_interaction_question_chars": 2048,
-  "max_interaction_answer_chars": 8192,
-  "approval_mode": "disabled",
-  "confirm_agent_rollback": true,
-  "confirm_agent_build": true,
-  "max_approvals_per_phase": 20,
-  "max_approval_payload_bytes": 262144,
-  "max_approval_preview_chars": 12000,
-  "max_rejection_reason_chars": 1024,
-  "max_diff_files": 100,
-  "max_diff_chars": 30000,
-  "max_diff_file_bytes": 524288,
-  "diff_context_lines": 3
-}
-```
-
-配置页快捷键：
-
-- `Ctrl+S`：查看变更并确认保存。
-- `Ctrl+R`：恢复当前分组默认值。
-- `Ctrl+T`：切换当前会话的深浅主题。
-- `Esc`：返回；存在未保存修改时先确认是否放弃。
-
-保存前会复用 ConfigLoader 的完整校验并通过同目录原子替换写入。取消、校验失败
-或写入失败不会改变原配置。`protected_patterns` 只表示用户追加规则，内置课程文件和
-凭据保护不能删除。
-
-Provider 分组可以安全管理 API Key：
-
-- Key 使用密码输入框，保存目标仅为操作系统 Keyring，不进入 `project.json`、日志或 Trace。
-- 页面只显示“未配置”、来源和安全掩码（末四位），不会回显完整 Key。
-- Keyring 凭据可以录入、更新和确认清除；环境变量与项目 `.env` 来源只读，需在来源处手动修改。
-- 保存 Key 后配置草稿会选择 `credential_source=keyring`，仍需 `Ctrl+S` 单独确认保存项目配置。
-
-Provider、策略和命令在下一次运行或恢复时生效；`retry_budget` 只影响之后新建的任务。
-
-`max_memory_blob_bytes`、`max_memory_task_bytes`、`max_memory_recent_events`、
-`max_memory_file_entries` 和 `max_memory_hot_contents` 属于“运行时记忆”限制。旧的
-`project.json` 缺少这些键时，ConfigLoader 只在内存补默认值；保存配置时才按规范顺序写回。
-Memory 事件日志和内容寻址 blob 是 task 内部运行时数据，不属于交付物或导出 allow-list。
-
-## 真实 Provider 配置
-
-在 `project.json` 中配置 `openai_compatible`：
-
-```json
-{
-  "llm_provider": "openai_compatible",
-  "model_name": "configured-model-name",
-  "credential_source": "keyring",
-  "provider_base_url": "https://example-provider.invalid/v1",
-  "provider_timeout_seconds": 60,
-  "provider_max_retries": 2,
-  "provider_protocol_retries": 2,
-  "provider_max_output_tokens": 2048,
-  "provider_max_response_bytes": 1048576,
-  "provider_action_mode": "auto",
-  "interaction_mode": "disabled",
-  "max_interactions_per_phase": 8,
-  "max_interaction_question_chars": 2048,
-  "max_interaction_answer_chars": 8192
-}
-```
-
-配置规则：
-
-- `provider_base_url` 对远程地址必须使用 HTTPS（`http://localhost` 允许用于本地调试）。
-- URL 禁止内嵌 username/password 或 query string。
-- `provider_timeout_seconds` 必须为正整数。
-- `provider_max_retries` 必须为非负整数。
-- `provider_protocol_retries` 必须为非负整数；它限定 AgentLoop 对 decode、schema 与 Action 解析协议失败的连续重试次数，默认 `2`，不消耗业务 `retry_budget`。
-- `provider_action_mode` 可选值为 `auto`（默认）、`native_tools_strict`、`native_tools`、`json_schema` 与 `json_object`。`auto` 只会在精确的 provider capability 错误上向更宽松模式降级。
-- 兼容迁移：旧 `provider_response_mode` 仅在单独出现时按只读别名读取；新旧键不能同时配置，新的配置文件不应再写入旧键。
-- API key 不允许出现在 `project.json` 中。
-
-配置凭据后运行：
-
-```powershell
-hancode auth login --provider openai_compatible
-hancode run "分析课程作业要求并生成 SPEC.md" --project-root .
-```
-
-## Headless 人机交互
-
-显式配置 `interaction_mode` 为 `ask_user` 后，Provider 才能请求人工输入：
-
-```json
-{
-  "interaction_mode": "ask_user"
-}
-```
-
-任务暂停后可查看问题并提交回答：
-
-```powershell
-hancode task status task-001 --project-root .
-hancode task answer task-001 --project-root .
-# 或：hancode task answer task-001 --answer-file answer.txt --project-root .
-hancode task resume task-001 --project-root .
-```
-
-回答会经过长度限制和脱敏后持久化；API key、密码、token 和其他凭据不得通过 ASK_USER 提供，凭据必须使用 `hancode auth login`。
+完整配置键、校验规则、Prompt 契约与真实 Provider 配置示例见 `src/hancode/README.md`。
 
 ## 终端交互（TUI）
 
-`hancode tui` 启动一个基于 Textual 的交互式终端会话，把上述 headless 能力包装成类似 Coding Agent 的实时界面：
+`hancode tui` 启动一个基于 Textual 的交互式终端会话，把 headless 能力包装成类似 Coding Agent 的实时界面：
 
 ```powershell
 hancode tui --project-root .
 ```
 
-会话内的完整链路：
-
-```text
-输入课程项目目标
-→ 创建并运行 task
-→ 实时展示 phase / tool / test / checkpoint / risk
-→ Agent 请求澄清时暂停并聚焦输入框
-→ 直接回答，自动 resume
-→ 查看允许的产物与最终状态
-```
-
-界面元素与命令：
-
-- 直接输入自然语言目标会创建并运行任务；任务等待输入时，输入内容作为回答并自动 resume。任务等待批准时，明文输入不会决策，必须使用 `/approve` 或 `/reject`。
-- Slash 命令：`/task <goal>`、`/tasks`、`/use <task-id>`、`/run`、`/resume`、`/approve`、`/reject <理由>`、`/status`、`/diff [task|latest] [path]`、`/test`、`/checkpoints`、`/delivery`、`/trace [event-id]`、`/artifacts`、`/open <name>`、`/export <directory>`、`/build`、`/rollback`、`/view focus|inspect`、`/theme dark|light`、`/clear`、`/help`、`/quit`。
-- 默认工作台使用中文阶段、状态和语义活动流；F2 在聚焦活动流和 Raw Trace 检查视图之间切换，技术标识仍保持原文。
-- `Ctrl+K` 打开状态感知操作菜单，`Ctrl+T` 切换当前会话的深浅主题；Inspector 展示任务、Diff、测试、审批、检查点、交付和产物摘要。
-- Approval 和 Rollback 使用显式 Modal；Y/N/Esc 只在 Modal 获得焦点时生效，窄终端自动切换为纵向布局。
-
-设计边界（TUI 只是展示层，不绕过 Harness 内核）：
-
-- TUI 只通过应用服务（TaskService / InteractionService / ApprovalService / InspectionService / ChangeInspectionService / DeliveryInspectionService / CheckpointInspectionService / DeliveryService / BuildService / RecoveryService）操作，不直接调用 AgentLoop、工具、state 或 trace 写入。
-- **审批需显式决策**：批准/拒绝是不可逆的外向操作，等待批准时明文输入被拒绝并提示使用 `/approve`、`/reject <理由>`，绝不由零散输入推断决策；决策后自动 resume（批准执行操作，拒绝作为反馈继续）。
-- Trace 先持久化成功才进入界面；界面观察失败不影响 AgentLoop 运行结果。
-- **回答不回显**：提交后只显示 `Answer submitted · N chars`，回答正文不进入界面、trace 或错误信息。
-- 产物预览使用固定 allow-list（`SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`），不浏览任意源码或凭据文件。
-- 同一会话同一时刻只运行一个任务；`/rollback` 必须显式确认，运行中不强制终止。
-- 不提供任意 shell passthrough，不接收 `!command`。
-
-`hancode tui` 是显式入口；非 TTY 环境不会隐式进入 TUI，`hancode --help` 始终可用。
+它提供创建并运行任务、实时展示 phase / tool / test / checkpoint / risk、请求澄清时暂停、直接回答自动 resume、查看允许的产物与最终状态。**回答不回显**，审批与回退走显式 Modal；完整 Slash 命令列表与设计边界见 `src/hancode/README.md`。
 
 ## 已知限制
 
@@ -445,4 +203,3 @@ uv run mypy src
 
 HanCode 的定位是课程项目场景里的受控 Coding Agent Harness，围绕 workspace 隔离、phase gate、trace logging、checkpoint rollback、工具治理、反馈闭环和凭据边界展开。
 
-当前版本不面向竞赛编程助手、大型自主软件开发 Agent、企业级 Agent 平台、多用户系统、复杂 Web 应用或 MCP 工具市场。

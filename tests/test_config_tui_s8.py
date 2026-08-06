@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from textual.app import App
 from textual.widgets import Button, Input, ListView, Static, Tabs
 
@@ -206,7 +207,10 @@ def test_config_action_is_disabled_while_worker_is_busy(tmp_path: Path) -> None:
     assert action.disabled_reason == "任务运行时不能修改项目设置。"
 
 
-def test_config_screen_stores_hidden_api_key_in_keyring_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize("paste_key", ["ctrl+v", "ctrl+shift+v", "shift+insert"])
+def test_config_screen_stores_hidden_api_key_in_keyring_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paste_key: str
+) -> None:
     _initialize(tmp_path)
     _configure_remote_provider(tmp_path)
     config_path = tmp_path / ".hancode" / "project.json"
@@ -228,6 +232,10 @@ def test_config_screen_stores_hidden_api_key_in_keyring_only(tmp_path: Path) -> 
 
     app = HostApp()
     secret = "fake-config-screen-secret-4f2a"
+    monkeypatch.setattr(
+        "hancode.interfaces.tui.config_dialogs._read_system_clipboard",
+        lambda: secret,
+    )
 
     async def _run() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
@@ -241,7 +249,9 @@ def test_config_screen_stores_hidden_api_key_in_keyring_only(tmp_path: Path) -> 
             assert isinstance(app.screen, CredentialEditorDialog)
             field = app.screen.query_one("#config-credential-input", Input)
             assert field.password is True
-            field.value = secret
+            await pilot.press(paste_key)
+            await pilot.pause()
+            assert field.value == secret
             await pilot.click("#config-credential-save")
             await pilot.pause()
 

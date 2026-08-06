@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 import os
 import hashlib
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import mkstemp
-from typing import Literal, cast
+from typing import Iterator, Literal, cast
 
 from hancode.policy.path_security import is_sensitive_path
 from hancode.tooling.registry import ToolResult
@@ -42,6 +43,19 @@ _PEM_PRIVATE_KEY = re.compile(
     r".*?"
     r"-----END (?P=label)-----",
     re.IGNORECASE | re.DOTALL,
+)
+_PRUNED_DIRECTORY_NAMES = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "env",
+        "__pycache__",
+        "node_modules",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
 )
 
 
@@ -250,8 +264,7 @@ def list_files(project_root: Path, path: str = ".") -> ToolResult:
 
     files: list[str] = []
     try:
-        candidates = resolved.target.rglob("*")
-        for candidate in candidates:
+        for candidate in _walk_files(resolved.root, resolved.target):
             safe_relative = _safe_relative_file(resolved.root, candidate)
             if safe_relative is not None and not is_sensitive_path(safe_relative):
                 files.append(safe_relative)
@@ -282,8 +295,7 @@ def search_text(project_root: Path, query: str) -> ToolResult:
     credential_files: dict[str, str] = {}
     credential_aliases: set[str] = set()
     try:
-        candidates = root.rglob("*")
-        for candidate in candidates:
+        for candidate in _walk_files(root, root):
             relative = _lexical_relative(root, candidate)
             if relative is None or not candidate.is_file():
                 continue
@@ -366,6 +378,57 @@ def _safe_relative_file(root: Path, candidate: Path) -> str | None:
     if not resolved.is_relative_to(root):
         return None
     return resolved.relative_to(root).as_posix()
+
+
+def _walk_files(project_root: Path, start_root: Path) -> Iterator[Path]:
+    """Yield workspace files while pruning noisy or unsafe directories early."""
+    if start_root.name.casefold() in _PRUNED_DIRECTORY_NAMES:
+        return
+
+    for current_root, dirnames, filenames in os.walk(
+        start_root,
+        topdown=True,
+        followlinks=False,
+        onerror=_raise_walk_error,
+    ):
+        current_path = Path(current_root)
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if _should_descend(project_root, current_path / dirname, dirname)
+        ]
+        yield from (current_path / filename for filename in filenames)
+
+
+def _should_descend(project_root: Path, candidate: Path, name: str) -> bool:
+    if name.casefold() in _PRUNED_DIRECTORY_NAMES or _is_link(candidate):
+        return False
+    try:
+        candidate.resolve().relative_to(project_root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
+def _raise_walk_error(error: OSError) -> None:
+    raise error
+
+
+def _is_link(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction) and is_junction():
+            return True
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+        return bool(
+            attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+    except FileNotFoundError:
+        return False
+    except (OSError, RuntimeError):
+        return True
 
 
 def _lexical_relative(root: Path, candidate: Path) -> str | None:

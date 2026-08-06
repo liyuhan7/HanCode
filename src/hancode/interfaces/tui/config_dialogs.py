@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
+
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
@@ -47,6 +52,25 @@ class ConfigConfirmDialog(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class CredentialInput(Input):
+    """Input that can read an external terminal clipboard on Ctrl+V."""
+
+    BINDINGS = [
+        *Input.BINDINGS,
+        Binding("ctrl+shift+v", "paste", "Paste from system clipboard", show=False),
+        Binding("shift+insert", "paste", "Paste from system clipboard", show=False),
+    ]
+
+    def action_paste(self) -> None:
+        clipboard = _read_system_clipboard()
+        if clipboard is None:
+            super().action_paste()
+            return
+        if not clipboard:
+            return
+        self.replace(clipboard.splitlines()[0], *self.selection)
+
+
 class CredentialEditorDialog(ModalScreen[str | None]):
     """Collect one credential without ever rendering it as plain text."""
 
@@ -64,7 +88,7 @@ class CredentialEditorDialog(ModalScreen[str | None]):
                 "凭据只写入操作系统 Keyring，不会进入 project.json、日志或 Trace。",
                 markup=False,
             )
-            yield Input(
+            yield CredentialInput(
                 placeholder="输入 API Key",
                 password=True,
                 id="config-credential-input",
@@ -98,6 +122,42 @@ class CredentialEditorDialog(ModalScreen[str | None]):
     def action_cancel(self) -> None:
         self.query_one("#config-credential-input", Input).value = ""
         self.dismiss(None)
+
+
+def _read_system_clipboard() -> str | None:
+    """Read the OS clipboard without invoking a shell or logging its content."""
+    if sys.platform == "win32":
+        commands = (
+            ("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"),
+            ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"),
+        )
+    elif sys.platform == "darwin":
+        commands = (("pbpaste",),)
+    else:
+        commands = (
+            ("wl-paste", "--no-newline"),
+            ("xclip", "-selection", "clipboard", "-o"),
+            ("xsel", "--clipboard", "--output"),
+        )
+
+    for command in commands:
+        if shutil.which(command[0]) is None:
+            continue
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=1.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return result.stdout
+    return None
 
 
 class StringListEditor(ModalScreen[tuple[str, ...] | None]):

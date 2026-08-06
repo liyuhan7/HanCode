@@ -102,6 +102,10 @@ def test_code_prompt_requires_behavioral_tests_and_strategy_registration() -> No
     system_content = prompt.messages[0].content
     assert "create project-native behavioral tests" in system_content
     assert "record_test_strategy" in system_content
+    assert "sections.writable_roots" in system_content
+    assert "writable_roots_warning" in system_content
+    assert "write_file" in system_content
+    assert "missing parent directories" in system_content
 
 
 def test_test_prompt_requires_exact_registered_command() -> None:

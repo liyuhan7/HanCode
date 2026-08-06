@@ -416,6 +416,34 @@ def test_code_phase_includes_policy_and_changed_source_snippets(tmp_path: Path) 
     assert "live-artifact-secret" not in _canonical_context(context)
 
 
+def test_code_context_warns_when_writable_roots_are_not_directories(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    (project_root / "src").mkdir()
+    (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    config = load_config(project_root, "task-001")
+
+    context = build_context(
+        project_root,
+        "task-001",
+        Phase.CODE,
+        config,
+        state=_state(
+            task_root,
+            goal="Implement the assignment.",
+            artifact_names=("SPEC.md", "PLAN.md"),
+        ),
+    )
+
+    warning = context["sections"]["writable_roots_warning"]
+    assert warning["missing"] == ["tests"]
+    assert "write_file" in warning["message"]
+    assert "list_files" in warning["next_action"]
+    assert (project_root / "tests").exists() is False
+
+
 def test_review_phase_includes_test_report_changed_files_and_checkpoint(tmp_path: Path) -> None:
     project_root, task_root = _workspace(tmp_path)
     (task_root / "SPEC.md").write_text("# Spec\n", encoding="utf-8")

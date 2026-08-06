@@ -403,10 +403,27 @@ _TEST_DISCOVERY_TOOLS = frozenset(
     }
 )
 _REVIEW_EVIDENCE_TOOLS = _TEST_DISCOVERY_TOOLS
+_CODE_EXPLORATION_TOOLS = frozenset(
+    {
+        "get_diff",
+        "list_checkpoints",
+        "list_files",
+        "memory_read",
+        "memory_search",
+        "read_file",
+        "read_test_report",
+        "search_text",
+    }
+)
 _MEMORY_INVALIDATION_RESERVATION_BYTES = 65_536
 _TEST_COMMAND_QUESTION = (
     "No executable behavioral test command was found. "
     "Provide one exact command to run, or add a project test runner before resuming."
+)
+_CODE_EXPLORATION_QUESTION = (
+    "CODE has repeated read-only exploration without a source write. "
+    "Use sections.writable_roots and write_file to create an allowed target, "
+    "or explain what is blocking progress."
 )
 
 
@@ -623,6 +640,8 @@ class AgentLoop:
         completed_test_discovery_actions: set[str] = set()
         completed_review_evidence_actions: set[str] = set()
         review_progress_warning = False
+        completed_code_exploration_actions: set[str] = set()
+        code_progress_warning = False
 
         def _result(
             status: TaskStatus,
@@ -1490,6 +1509,140 @@ class AgentLoop:
                         else ()
                     ),
                 )
+
+            code_exploration_key = _code_exploration_action_key(action, routing.phase)
+            if (
+                code_exploration_key is not None
+                and state.source_edits_this_phase == 0
+                and code_exploration_key in completed_code_exploration_actions
+            ):
+                if code_progress_warning:
+                    stalled_error = _code_progress_stalled_error(routing.phase)
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="code_exploration_stalled",
+                        phase=routing.phase,
+                        status="waiting" if self._interaction_enabled else "failed",
+                        observation={
+                            "reason": "repeated_code_exploration",
+                            "tool_name": action.tool_name,
+                            "source_edits_this_phase": state.source_edits_this_phase,
+                        },
+                        error_summary=(
+                            None
+                            if self._interaction_enabled
+                            else redact_text(stalled_error.message)
+                        ),
+                    )
+                    if trace_error is not None:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            trace_error,
+                            state,
+                        )
+                    if not self._interaction_enabled:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            stalled_error,
+                            state,
+                        )
+                    interaction_action = Action(
+                        type=ActionType.ASK_USER,
+                        phase=routing.phase,
+                        tool_name=None,
+                        args={"question": _CODE_EXPLORATION_QUESTION},
+                        reason="Repeated CODE exploration needs a concrete next step.",
+                    )
+                    try:
+                        state, interaction = self._request_user_input(
+                            task_id,
+                            state,
+                            interaction_action,
+                            routing.phase,
+                        )
+                    except HanCodeError as exc:
+                        state = self._block(task_id, state)
+                        return _result(
+                            TaskStatus.BLOCKED,
+                            step,
+                            tuple(tool_calls),
+                            observation,
+                            exc.structured_error,
+                            state,
+                        )
+                    trace_error = self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="interaction_requested",
+                        phase=routing.phase,
+                        status="waiting",
+                        observation={
+                            "interaction_id": interaction.interaction_id,
+                            "question_length": len(interaction.question),
+                            "reason": "code_exploration_stalled",
+                        },
+                    )
+                    return _result(
+                        TaskStatus.WAITING_INPUT,
+                        step,
+                        tuple(tool_calls),
+                        {
+                            "interaction_id": interaction.interaction_id,
+                            "question": interaction.question,
+                        },
+                        trace_error,
+                        state,
+                        risks=(
+                            (_trace_failure_risk(trace_error),)
+                            if trace_error is not None
+                            else ()
+                        ),
+                    )
+
+                code_progress_warning = True
+                trace_error = self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="code_exploration_repeated",
+                    phase=routing.phase,
+                    status="waiting",
+                    observation={
+                        "reason": "repeated_code_exploration",
+                        "tool_name": action.tool_name,
+                        "source_edits_this_phase": state.source_edits_this_phase,
+                    },
+                )
+                if trace_error is not None:
+                    state = self._block(task_id, state)
+                    return _result(
+                        TaskStatus.BLOCKED,
+                        step,
+                        tuple(tool_calls),
+                        observation,
+                        trace_error,
+                        state,
+                    )
+                observation = {
+                    "kind": "code_exploration_repeated",
+                    "summary": (
+                        "A completed read-only exploration was repeated without a source write."
+                    ),
+                    "next_action_hint": (
+                        "Use sections.writable_roots and write_file directly; "
+                        "do not repeat list_files, read_file, or search_text."
+                    ),
+                    "source_edits_this_phase": state.source_edits_this_phase,
+                }
+                continue
 
             decision = self._policy.evaluate(
                 action=action,
@@ -2426,6 +2579,13 @@ class AgentLoop:
                     completed_key = _test_discovery_action_key(action, routing.phase)
                     if completed_key is not None:
                         completed_test_discovery_actions.add(completed_key)
+                    if code_exploration_key is not None:
+                        is_new_code_exploration = (
+                            code_exploration_key not in completed_code_exploration_actions
+                        )
+                        completed_code_exploration_actions.add(code_exploration_key)
+                        if is_new_code_exploration:
+                            code_progress_warning = False
                 tool_calls.append(action.tool_name)
                 if requires_checkpoint:
                     if not tool_result.success:
@@ -6574,6 +6734,24 @@ def _test_discovery_action_key(action: Action, phase: Phase) -> str | None:
     )
 
 
+def _code_exploration_action_key(action: Action, phase: Phase) -> str | None:
+    if (
+        phase is not Phase.CODE
+        or action.type is not ActionType.TOOL_CALL
+        or action.tool_name not in _CODE_EXPLORATION_TOOLS
+    ):
+        return None
+    return json.dumps(
+        {
+            "tool_name": action.tool_name,
+            "args": dict(action.args),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _review_evidence_action_key(
     action: Action, phase: Phase, task_id: str
 ) -> str | None:
@@ -6606,6 +6784,19 @@ def _review_progress_stalled_error(phase: Phase) -> StructuredError:
         phase=phase.value,
         denied_rule="review_progress_required",
         suggested_fix="Record REVIEW.md from the available evidence before resuming.",
+    )
+
+
+def _code_progress_stalled_error(phase: Phase) -> StructuredError:
+    return StructuredError(
+        error_code="code_progress_stalled",
+        message="CODE repeated completed read-only exploration without a source write.",
+        phase=phase.value,
+        denied_rule="code_source_progress_required",
+        suggested_fix=(
+            "Use write_file under sections.writable_roots, or provide human guidance "
+            "before resuming."
+        ),
     )
 
 

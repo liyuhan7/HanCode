@@ -7986,3 +7986,89 @@ R0 文档契约
 ```
 
 每个实现任务独立完成 TDD 与相关回归；S14 最终统一运行全量 pytest、Ruff、MyPy、`uv sync --locked --extra dev`、离线 build、Mock Demo、三种 export E2E 和 `git diff --check`。没有新鲜证据不得把对应任务标记为完成。
+
+---
+
+## S15：CODE 可写目标发现与探索收敛
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 快速修复完成；专项与全量门禁通过 |
+| 分支 | `main` |
+| 依赖 | S13、S14 现有运行时 |
+| 开发方式 | 小任务快速实现，专项回归后全量门禁 |
+| 配置边界 | 不修改 `.hancode/project.json`，配置由用户后续调整 |
+| 工件边界 | 不修改 `.hancode/tasks/task-001/**` |
+
+### 目标
+
+修复 CODE 阶段无法从不存在的可写目录直接开始、`list_files` 输出被仓库噪声淹没，以及模型连续重复只读探索而没有 source write 时运行时无法纠偏的问题。
+
+### 小任务与允许修改文件
+
+1. **可写目标引导**：`src/hancode/runtime/context.py`、`src/hancode/providers/prompt_contract.py` 及对应上下文/提示词测试。Context 只告警，不提前创建目录；合法 `write_file` 已负责创建父目录。
+2. **遍历去噪**：`src/hancode/tooling/file_tools.py`、`tests/test_file_tools.py`。`list_files` 与 `search_text` 在进入目录前剪枝常见 VCS、虚拟环境、依赖和缓存目录，并保留现有路径安全与敏感信息保护。
+3. **CODE 无进展保护**：`src/hancode/runtime/agent_loop.py`、`tests/test_agent_loop.py`。CODE 阶段无 source write 时，重复成功只读探索先注入反馈，再重复则按交互配置进入 `ask_user` 或 `blocked`，不得重复派发工具。
+
+### 验收标准
+
+- `sections.writable_roots` 明确列出可写目标；不存在的目标目录有告警，模型可直接使用 `write_file` 创建。
+- 默认目录遍历不包含 `.git`、`.venv`、`__pycache__`、`node_modules`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache` 等噪声。
+- CODE 阶段连续重复只读探索且 `source_edits_this_phase == 0` 时，运行时产生明确反馈并最终阻止无进展循环。
+- 现有 TEST/REVIEW 重复探索保护、路径安全、审批和 checkpoint 行为不回归。
+
+### 验证
+
+专项运行 `tests/test_file_tools.py`、`tests/test_context_builder.py`、`tests/test_agent_loop.py`、`tests/providers/test_prompt_builder.py` 及相关路径/策略回归；完成后运行全量 pytest、Ruff、MyPy 和 `git diff --check`。验证结果回写本卡和 `docs/AGENT_LOG.md`。
+
+### 实际修复与验证（2026-08-06）
+
+- `runtime/context.py` 在 CODE context 中保留 `sections.writable_roots`，并对尚不存在的可写根注入 `writable_roots_warning`；不在上下文构建时创建目录。
+- `providers/prompt_contract.py` 明确可写根可能尚不存在，模型应直接调用 `write_file`，由工具创建缺失父目录，不应重复 `list_files` 或修改配置。
+- `tooling/file_tools.py` 使用 top-down walker，在进入目录前剪枝 `.git`、`.venv`、`venv`、`env`、`__pycache__`、`node_modules`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache`，并拒绝目录链接/越界路径；原敏感路径、凭据别名和 UTF-8 保护保持不变。
+- `runtime/agent_loop.py` 在 CODE 且 `source_edits_this_phase == 0` 时记录成功只读探索；重复动作先写 `code_exploration_repeated` 反馈，再重复时按交互配置进入 `WAITING_INPUT` 或以 `code_progress_stalled` 阻塞，重复动作不会再次派发。
+- 配置、task-001 工件、`core/config.py` 根目录安全限制均未修改。
+- 专项及相关回归：`462 passed, 4 skipped`。
+- 全量 pytest：`1707 passed, 17 skipped`。
+- 全仓 Ruff：`All checks passed!`。
+- 全仓 MyPy：`Success: no issues found in 145 source files`。
+- `git diff --check` 通过；全量测试首次 120 秒超时后使用更长超时复跑并通过，未发现测试断言失败。
+
+---
+
+## S16：TUI 凭据输入的系统剪贴板支持
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 快速修复完成；TUI 专项与静态检查通过 |
+| 分支 | `main` |
+| 依赖 | S8 配置中心、Textual Input |
+| 开发方式 | 小范围快速修复与专项回归 |
+| 安全边界 | API Key 只在内存中经过输入控件并写入 Keyring，不进入日志、Trace 或 `project.json` |
+
+### 根因
+
+Textual `Input` 的 `Ctrl+V` 只读取 Textual 自己维护的内部 clipboard，不读取操作系统剪贴板；外部终端粘贴还依赖 bracketed paste 支持。当前凭据输入框只继承默认行为，因此逐字输入可用，但常规系统剪贴板粘贴可能无内容。
+
+### 修改范围
+
+- `src/hancode/interfaces/tui/config_dialogs.py`：凭据输入控件支持 Windows/macOS/Linux 固定系统剪贴板命令，使用 `shell=False`、短超时和无日志输出；保留 Textual bracketed paste 与内部 clipboard 回退。
+- `tests/test_config_tui_s8.py`：覆盖 `Ctrl+V` 将系统剪贴板内容填入密码输入框且不改变脱敏/Keyring 行为。
+- `docs/PLAN.md`、`docs/AGENT_LOG.md`：记录任务与验证证据。
+
+### 验收标准
+
+- API Key 输入框逐字输入和系统剪贴板粘贴均可用。
+- 粘贴内容不显示明文，不写入 `project.json`、Trace 或普通日志。
+- 粘贴失败时不抛出未处理异常，仍可手动输入或使用终端 bracketed paste。
+
+### 实际修复与验证（2026-08-06）
+
+- 新增 `CredentialInput`，`Ctrl+V`、`Ctrl+Shift+V`、`Shift+Insert` 均优先读取系统剪贴板；Windows 使用 PowerShell `Get-Clipboard -Raw`，macOS 使用 `pbpaste`，Linux 依次尝试 `wl-paste`、`xclip`、`xsel`。
+- 所有外部命令使用固定参数、`shell=False`、1 秒超时和脱敏边界；剪贴板内容只进入当前输入控件，保留 Textual bracketed paste 与内部 clipboard 回退。
+- TUI 专项：`12 passed`。
+- Ruff：通过；MyPy：`config_dialogs.py` 无错误。
+- 相关配置/凭据回归：`130 passed, 1 skipped`。
+- 全量 pytest：`1709 passed, 17 skipped`。
+- 全仓 Ruff：通过；全仓 MyPy：`Success: no issues found in 145 source files`。
+- 本任务改动范围的 `git diff --check` 通过；全局检查仅命中并行修改的 `README.md` 文件末尾空行，未修改该非本任务文件。

@@ -904,9 +904,85 @@ def test_max_steps_prevents_infinite_loop() -> None:
     assert result.error is not None
     assert result.error.error_code == "max_steps_exceeded"
     assert len(llm.contexts) == 2
-    assert [action.tool_name for action in tools.actions] == ["read_file", "read_file"]
+    assert [action.tool_name for action in tools.actions] == ["read_file"]
     assert trace.events[-1].event_type == "run_blocked"
     assert trace.events[-1].observation == {"error_code": "max_steps_exceeded"}
+
+
+def test_code_repeated_exploration_warns_then_blocks_without_redispatch() -> None:
+    trace = SpyTraceAppender()
+    loop, _, _, _, tools, _ = _build_loop(
+        [_read_file_action()] * 3,
+        max_steps=3,
+        trace_appender=trace,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "code_progress_stalled"
+    assert [action.tool_name for action in tools.actions] == ["read_file"]
+    assert [event.event_type for event in trace.events][-2:] == [
+        "code_exploration_repeated",
+        "code_exploration_stalled",
+    ]
+
+
+def test_code_alternating_exploration_is_detected_without_source_write() -> None:
+    trace = SpyTraceAppender()
+    loop, _, _, _, tools, _ = _build_loop(
+        [
+            _read_file_action("src/root.py"),
+            _read_file_action("src/task.py"),
+            _read_file_action("src/root.py"),
+            _read_file_action("src/task.py"),
+        ],
+        max_steps=4,
+        trace_appender=trace,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "code_progress_stalled"
+    assert [action.args["path"] for action in tools.actions] == [
+        "src/root.py",
+        "src/task.py",
+    ]
+
+
+def test_code_exploration_stall_requests_user_input_when_enabled() -> None:
+    loop, _, _, _, tools, _ = _build_loop(
+        [_read_file_action()] * 3,
+        max_steps=3,
+        interaction_enabled=True,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.WAITING_INPUT
+    assert result.error is None
+    assert result.final_state.pending_interaction_id is not None
+    assert len(tools.actions) == 1
+
+
+def test_code_exploration_guard_is_disabled_after_source_edit() -> None:
+    trace = SpyTraceAppender()
+    loop, _, _, _, tools, _ = _build_loop(
+        [_read_file_action()] * 2,
+        max_steps=2,
+        state=replace(_task_state(), source_edits_this_phase=1),
+        trace_appender=trace,
+    )
+
+    loop.run("task-001")
+
+    assert [action.tool_name for action in tools.actions] == ["read_file", "read_file"]
+    assert not any(
+        event.event_type.startswith("code_exploration_") for event in trace.events
+    )
 
 
 @pytest.mark.parametrize("interaction_enabled", [False, True])
@@ -1868,12 +1944,12 @@ def _policy_config(project_root: Path) -> HanCodeConfig:
     )
 
 
-def _read_file_action() -> dict[str, object]:
+def _read_file_action(path: str = "src/example.py") -> dict[str, object]:
     return {
         "type": "tool_call",
         "phase": "code",
         "tool_name": "read_file",
-        "args": {"path": "src/example.py"},
+        "args": {"path": path},
         "reason": None,
     }
 

@@ -4,6 +4,47 @@
 
 ---
 
+### 2026-08-06 — S16 — TUI 凭据输入支持系统剪贴板
+
+- 使用的技能：未使用；沿用用户要求的 `main` 分支快速修复，不采用 TDD。
+- 根因：Textual 8.2.8 的 `Input.action_paste()` 只读取 Textual 内部 clipboard，不读取操作系统剪贴板；Windows Terminal 常用的 `Ctrl+Shift+V` 也未绑定到凭据输入控件。
+- 实现摘要：
+  - `interfaces/tui/config_dialogs.py` 新增 `CredentialInput`，覆盖 `Ctrl+V`、`Ctrl+Shift+V`、`Shift+Insert`，优先读取系统剪贴板，失败时回退 Textual 内部 clipboard。
+  - Windows 使用固定 PowerShell `Get-Clipboard -Raw` 命令，macOS 使用 `pbpaste`，Linux 依次使用 `wl-paste`/`xclip`/`xsel`；所有调用 `shell=False`、1 秒超时，不记录剪贴板内容。
+  - 保留原有密码掩码、Keyring 写入和 `project.json` 不落 secret 的行为；bracketed paste 仍由 Textual 原生 Input 处理。
+  - `test_config_tui_s8.py` 参数化覆盖三种快捷键，并继续验证 Keyring 存储和脱敏展示。
+- 验证：
+  - TUI 配置专项：`12 passed`。
+  - 相关配置/凭据回归：`130 passed, 1 skipped`。
+  - 全量 pytest：`1709 passed, 17 skipped`。
+  - Ruff：通过。
+  - MyPy：`config_dialogs.py` 无错误；全仓 `src` 145 个源文件无错误。
+  - 全局 `git diff --check` 仅命中并行修改的 `README.md` 文件末尾空行；本任务改动文件检查通过，未修改该文件。
+- 剩余风险：系统剪贴板读取依赖终端所在系统提供对应命令；若命令不可用，用户仍可逐字输入或使用终端 bracketed paste，不会抛出未处理异常。
+
+---
+
+### 2026-08-06 — S15 — CODE 可写目标发现、遍历去噪与无进展保护
+
+- 使用的技能：未使用；按用户要求直接在 `main` 分支快速修改，未采用 TDD。
+- 任务边界：不修改 `.hancode/project.json`、`.hancode/tasks/task-001/**` 或 `core/config.py`；配置由用户后续调整。
+- 实现摘要：
+  - `runtime/context.py` 在 CODE context 中对不存在的 `writable_roots` 注入 `writable_roots_warning`，明确首次合法 `write_file` 会创建父目录。
+  - `providers/prompt_contract.py` 明确以 `sections.writable_roots` 为权威目标，禁止因目录尚不存在而重复 `list_files` 或修改配置。
+  - `tooling/file_tools.py` 将 `rglob` 替换为 top-down 安全遍历，在下降前剪枝 `.git`、虚拟环境、依赖与缓存目录，并保留敏感路径、凭据别名、符号链接和项目根约束。
+  - `runtime/agent_loop.py` 新增 CODE 只读探索 action key；无 source write 时重复探索先反馈，继续重复按交互配置进入 `WAITING_INPUT` 或 `BLOCKED/code_progress_stalled`，不重复调用工具。
+  - 对应补充文件工具、上下文、提示词和 AgentLoop 回归测试；更新 `docs/PLAN.md` 的 S15 任务卡。
+- 验证：
+  - 专项及相关回归：`462 passed, 4 skipped`。
+  - 全量 pytest：`1707 passed, 17 skipped`。
+  - 全仓 Ruff：`All checks passed!`。
+  - 全仓 MyPy：`Success: no issues found in 145 source files`。
+  - `git diff --check` 通过。
+- 工作区备注：`README.md` 与 `src/hancode/README.md` 存在本任务未修改的并行工作区变化，已保留且未纳入本次修复。
+- 剩余风险：CODE 探索重复集合按单次 AgentLoop run 维护，跨进程 resume 不重建历史集合；后续若需跨 resume 检测，应单独设计持久化契约。
+
+---
+
 ### 2026-08-06 — S14-R2~R7 — 学习证据链、五步交付、发布 Profile 与反思服务
 
 - 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。

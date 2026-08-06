@@ -163,10 +163,21 @@ def build_context(
             sections["test_command"] = config.test_command
     if phase is Phase.CODE:
         sections["protected_patterns"] = list(config.protected_patterns)
-        sections["writable_roots"] = _writable_root_paths(
-            config,
-            resolved_project_root,
-        )
+        writable_roots = _writable_root_paths(config, resolved_project_root)
+        sections["writable_roots"] = writable_roots
+        missing_writable_roots = _missing_writable_root_paths(config, resolved_project_root)
+        if missing_writable_roots:
+            sections["writable_roots_warning"] = {
+                "missing": missing_writable_roots,
+                "message": (
+                    "Configured writable roots are not directories yet. "
+                    "A successful write_file action creates missing parent directories."
+                ),
+                "next_action": (
+                    "Use write_file directly under sections.writable_roots instead of "
+                    "repeating list_files."
+                ),
+            }
         _add_source_snippets(sections, risks, resolved_project_root, current_state, config)
         if config.test_command is not None:
             sections["test_command_candidate"] = redact_text(config.test_command)
@@ -909,6 +920,18 @@ def _writable_root_paths(config: HanCodeConfig, project_root: Path) -> list[str]
         except (OSError, RuntimeError, ValueError):
             continue
     return sorted(roots, key=str.casefold)
+
+
+def _missing_writable_root_paths(config: HanCodeConfig, project_root: Path) -> list[str]:
+    missing: list[str] = []
+    for writable_root in config.writable_roots:
+        try:
+            relative = writable_root.resolve().relative_to(project_root).as_posix()
+            if not writable_root.is_dir():
+                missing.append(relative)
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return sorted(set(missing), key=str.casefold)
 
 
 def _sanitize_trace_value(value: object, depth: int = 0) -> object:
