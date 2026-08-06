@@ -23,6 +23,7 @@ from hancode.app.build_service import BuildSummary
 from hancode.app.config_service import ConfigService, ConfigUpdateResult
 from hancode.app.inspection_service import ArtifactPreview, InspectionService
 from hancode.app.interaction_service import InteractionService
+from hancode.app.intervention_service import InterventionService
 from hancode.app.recovery_service import RecoveryService, RecoverySummary, RollbackPreview
 from hancode.app.task_service import TaskService
 from hancode.runtime.pause import PauseToken
@@ -141,6 +142,7 @@ class HanCodeTuiApp(App[None]):
         recovery_service: RecoveryService | None = None,
         approval_service: ApprovalService | None = None,
         config_service: ConfigService | None = None,
+        intervention_service: InterventionService | None = None,
         services: TuiServices | None = None,
     ) -> None:
         super().__init__()
@@ -152,6 +154,7 @@ class HanCodeTuiApp(App[None]):
         self._rollback_modal_open = False
         self._drawer_requested = False
         self._config_service = config_service or ConfigService()
+        self._intervention_service = intervention_service or InterventionService()
         self._active_pause_token: PauseToken | None = None
         self._pause_request_id: str | None = None
         self.controller = TuiSessionController(
@@ -290,20 +293,65 @@ class HanCodeTuiApp(App[None]):
 
     def _handle_plain_text(self, text: str) -> None:
         state = self.controller.state
+        run_control_active = (
+            state.busy
+            and state.active_task_id == state.running_task_id
+            and self._active_pause_token is not None
+            and self._pause_request_id == state.current_request_id
+        )
         intent = classify_plain_text(
             text,
             has_active_task=state.active_task_id is not None,
             waiting_input=bool(state.pending_interaction_id),
             waiting_approval=bool(state.pending_approval_id),
+            busy=run_control_active,
         )
         if intent is PlainTextIntent.CREATE_TASK:
             self._create_and_run(text)
         elif intent is PlainTextIntent.ANSWER:
             self.submit_answer(text)
+        elif intent is PlainTextIntent.STEER:
+            self.submit_steering(text)
         elif intent is PlainTextIntent.APPROVAL_REQUIRES_COMMAND:
             self._notify("该操作正在等待你的批准。请输入 /approve 批准，或 /reject <理由> 拒绝。")
         else:
             self._notify("当前 Task 不在等待输入状态。使用 /task <goal> 或 /run、/resume。")
+
+    def submit_steering(self, text: str) -> None:
+        """Submit Runtime Steering to the running task without a second worker.
+
+        The steering is persisted to the intervention store; the running Agent
+        worker picks it up on its next turn via the shared, path-locked log.
+        """
+        state = self.controller.state
+        waiting_approval = state.pending_approval_id is not None and not state.busy
+        if not (
+            state.busy
+            and state.active_task_id == state.running_task_id
+            and self._active_pause_token is not None
+            and self._pause_request_id == state.current_request_id
+        ) and not waiting_approval:
+            self._notify("当前没有正在运行的任务。")
+            return
+        task_id = state.running_task_id
+        if waiting_approval:
+            task_id = state.active_task_id
+            if task_id is None or not self.controller.can_mutate():
+                self._notify("任务正在运行，请稍后。")
+                return
+        assert task_id is not None
+        try:
+            result = self._intervention_service.submit(
+                self._project_root, task_id, text
+            )
+        except HanCodeError as exc:
+            self._notify(exc.structured_error.message)
+            return
+        self._notify(
+            f"已接收新要求（#{result.sequence}），将在下一个安全点生效。"
+        )
+        if waiting_approval:
+            self.start_run(resume=True)
 
     def _sync_value(self, intent: TuiIntent) -> TuiOperationValue:
         """Adapt Controller sync errors into a user-facing TUI notice."""

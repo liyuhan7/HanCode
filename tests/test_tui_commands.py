@@ -109,6 +109,41 @@ def test_plain_text_is_rejected_during_normal_idle() -> None:
     assert intent is PlainTextIntent.REJECT
 
 
+def test_plain_text_steers_when_run_busy() -> None:
+    # While a run is in progress, plain text becomes Runtime Steering.
+    intent = classify_plain_text(
+        "Only touch API validation.",
+        has_active_task=True,
+        waiting_input=False,
+        busy=True,
+    )
+
+    assert intent is PlainTextIntent.STEER
+
+
+def test_waiting_input_takes_precedence_over_busy_steer() -> None:
+    intent = classify_plain_text(
+        "Use FastAPI.",
+        has_active_task=True,
+        waiting_input=True,
+        busy=True,
+    )
+
+    assert intent is PlainTextIntent.ANSWER
+
+
+def test_waiting_approval_takes_precedence_over_busy_steer() -> None:
+    intent = classify_plain_text(
+        "yes",
+        has_active_task=True,
+        waiting_input=False,
+        waiting_approval=True,
+        busy=True,
+    )
+
+    assert intent is PlainTextIntent.STEER
+
+
 def test_parse_approve_command() -> None:
     result = parse_command("/approve")
 
@@ -134,7 +169,7 @@ def test_parse_reject_command_without_reason() -> None:
 
 
 def test_plain_text_while_waiting_approval_requires_command() -> None:
-    # A pending approval must never be decided by stray plain text.
+    # A pending approval accepts plain text as Steering, never as a decision.
     intent = classify_plain_text(
         "yes go ahead",
         has_active_task=True,
@@ -142,7 +177,7 @@ def test_plain_text_while_waiting_approval_requires_command() -> None:
         waiting_approval=True,
     )
 
-    assert intent is PlainTextIntent.APPROVAL_REQUIRES_COMMAND
+    assert intent is PlainTextIntent.STEER
 
 
 def test_waiting_approval_takes_precedence_over_waiting_input() -> None:
@@ -153,7 +188,7 @@ def test_waiting_approval_takes_precedence_over_waiting_input() -> None:
         waiting_approval=True,
     )
 
-    assert intent is PlainTextIntent.APPROVAL_REQUIRES_COMMAND
+    assert intent is PlainTextIntent.STEER
 
 
 def test_parse_inspection_commands_and_diff_arguments() -> None:

@@ -29,7 +29,9 @@ from hancode.runtime.feedback import FeedbackBuilder
 from hancode.runtime.recovery import RecoveryCoordinator
 from hancode.runtime.observation import ObservedTraceAppender, TraceObserver
 from hancode.runtime.pause import PauseToken
+from hancode.runtime.agent_loop import InterventionStorePort
 from hancode.storage.approvals import ApprovalStore
+from hancode.storage.interventions import InterventionStore
 from hancode.storage.workspace import load_project_metadata
 from hancode.tooling.factory import build_default_tool_registry
 
@@ -67,6 +69,7 @@ def create_agent_loop(
     mutation_guard: MutationGuard | None = None,
     max_steps: int | None = None,
     pause_token: PauseToken | None = None,
+    intervention_store: InterventionStorePort | None = None,
 ) -> AgentLoop:
     """Build the standard filesystem-backed AgentLoop with injectable seams."""
     config = load_config(project_root, task_id)
@@ -140,6 +143,11 @@ def create_agent_loop(
         build_required=config.build_command is not None,
         recovery_coordinator=RecoveryCoordinator(feedback_builder=feedback_builder),
         pause_token=pause_token,
+        intervention_store=(
+            intervention_store
+            if intervention_store is not None
+            else cast(InterventionStorePort, InterventionStore(project_root))
+        ),
     )
 
 
@@ -151,6 +159,7 @@ def run_task(
     provider: LLMClient | None = None,
     trace_observer: TraceObserver | None = None,
     pause_token: PauseToken | None = None,
+    intervention_store: InterventionStorePort | None = None,
 ) -> AgentRunResult:
     """Create and execute the standard AgentLoop for one task."""
     loop = create_agent_loop(
@@ -159,5 +168,6 @@ def run_task(
         provider=provider,
         trace_observer=trace_observer,
         pause_token=pause_token,
+        intervention_store=intervention_store,
     )
     return loop.run(task_id, resume=resume)

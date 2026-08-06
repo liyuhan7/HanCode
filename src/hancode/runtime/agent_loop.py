@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 from typing import Callable, Iterator, Mapping, Protocol
+from uuid import uuid4
 
 import hashlib
 from hancode.core.actions import Action, ActionType, ParseError, parse_action
@@ -34,6 +35,12 @@ from hancode.providers.errors import ProviderError
 from hancode.providers.mock import MockLLMExhausted
 from hancode.runtime.pause import PauseToken
 from hancode.core.interactions import InteractionRecord, InteractionStatus
+from hancode.core.interventions import (
+    ActionCommitStatus,
+    DeliveryStatus,
+    InterventionRecord,
+    SteeringSnapshot,
+)
 from hancode.core.memory import MemoryRecord
 from hancode.core.models import OperationStatus, Phase, Risk, TaskStatus
 from hancode.policy.path_policy import PathZone, normalize_project_relative_path
@@ -115,8 +122,47 @@ class RollbackManager(Protocol):
 
 class ContextBuilder(Protocol):
     def build(
-        self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None
+        self,
+        *,
+        task_id: str,
+        phase: Phase,
+        state: TaskState,
+        observation: object | None = None,
+        user_interventions: tuple[InterventionRecord, ...] = ...,
+        intervention_revision: int = ...,
     ) -> dict[str, object]: ...
+
+
+class InterventionStorePort(Protocol):
+    def prepare_context(self, task_id: str, run_id: str) -> SteeringSnapshot: ...
+
+    def mark_delivered(
+        self,
+        task_id: str,
+        run_id: str,
+        expected_revision: int,
+        sequences: tuple[int, ...],
+    ) -> object: ...
+
+    def current_revision(self, task_id: str) -> int: ...
+
+    def mark_consumed(
+        self,
+        task_id: str,
+        run_id: str,
+        sequences: tuple[int, ...],
+    ) -> object: ...
+
+    def commit_action(
+        self,
+        task_id: str,
+        run_id: str,
+        expected_revision: int,
+        delivery_sequences: tuple[int, ...],
+        action_digest: str,
+        commit_key: str,
+        acknowledge: bool,
+    ) -> object: ...
 
 
 class PolicyDecisionLike(Protocol):
@@ -200,7 +246,7 @@ class ApprovalStore(Protocol):
         task_id: str,
         approval_id: str,
         *,
-        expected_checkpoint_id: str,
+        expected_checkpoint_id: str | None,
     ) -> object: ...
 
     def mark_consumed(
@@ -226,6 +272,8 @@ class ApprovalRequestBuilderPort(Protocol):
         action: Action,
         requirement: object,
         project_root: Path,
+        run_id: str | None = None,
+        steering_revision_at_request: int | None = None,
     ) -> ApprovalRecord: ...
 
 
@@ -453,6 +501,7 @@ class AgentLoop:
         build_required: bool = False,
         recovery_coordinator: RecoveryCoordinator | None = None,
         pause_token: PauseToken | None = None,
+        intervention_store: InterventionStorePort | None = None,
     ) -> None:
         if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps <= 0:
             raise ValueError("max_steps must be positive")
@@ -486,6 +535,7 @@ class AgentLoop:
         self._build_required = build_required
         self._recovery_coordinator = recovery_coordinator or RecoveryCoordinator()
         self._pause_token = pause_token
+        self._intervention_store = intervention_store
 
     def run(self, task_id: str, *, resume: bool = False) -> AgentRunResult:
         if not isinstance(resume, bool):
@@ -626,10 +676,126 @@ class AgentLoop:
             final_state,
         )
 
+    def _prepare_steering_snapshot(
+        self, task_id: str, state: TaskState
+    ) -> SteeringSnapshot | None:
+        """Snapshot the current run's steering before building context.
+
+        Returns None when no store is configured or the task has no active run
+        identity, preserving the pre-S17 behaviour for existing callers.
+        """
+        if self._intervention_store is None:
+            return None
+        run_id = state.active_run_id
+        if not run_id:
+            return None
+        return self._intervention_store.prepare_context(task_id, run_id)
+
+    def _mark_steering_delivered(
+        self, task_id: str, snapshot: SteeringSnapshot | None
+    ) -> bool:
+        """Mark steering delivered; return True if the snapshot is now stale.
+
+        A stale snapshot means new steering arrived after the snapshot was
+        taken, so the loop must discard the about-to-be-built provider call and
+        re-prepare context instead of acting on outdated steering.
+        """
+        if self._intervention_store is None or snapshot is None:
+            return False
+        if not snapshot.delivery_sequences:
+            return False
+        result = self._intervention_store.mark_delivered(
+            task_id,
+            snapshot.run_id,
+            snapshot.revision,
+            snapshot.delivery_sequences,
+        )
+        status = getattr(result, "status", None)
+        return status is DeliveryStatus.STALE
+
+    def _steering_revision_changed(
+        self, task_id: str, snapshot: SteeringSnapshot | None
+    ) -> bool:
+        """True if steering revision advanced since the snapshot was taken."""
+        if self._intervention_store is None or snapshot is None:
+            return False
+        return self._intervention_store.current_revision(task_id) != snapshot.revision
+
+    def _commit_steering_action(
+        self,
+        task_id: str,
+        snapshot: SteeringSnapshot | None,
+        *,
+        action_digest: str,
+        commit_key: str,
+        acknowledge: bool,
+    ) -> bool:
+        """Commit an action against steering; return True to REPLAN.
+
+        Returns False (proceed) when no store/snapshot is configured, so
+        pre-S17 callers are unaffected.
+        """
+        if self._intervention_store is None or snapshot is None:
+            return False
+        result = self._intervention_store.commit_action(
+            task_id,
+            snapshot.run_id,
+            snapshot.revision,
+            snapshot.delivery_sequences,
+            action_digest,
+            commit_key,
+            acknowledge,
+        )
+        return getattr(result, "status", None) is ActionCommitStatus.REPLAN
+
+    def _acknowledge_steering(
+        self,
+        task_id: str,
+        snapshot: SteeringSnapshot | None,
+        trace_events: list[TraceEvent],
+        phase: Phase,
+    ) -> None:
+        """Mark the steering this action handled as CONSUMED after a real apply.
+
+        Only called at confirmed success choke points (tool dispatched, phase
+        finished). Policy denials, recovery rejections, parse failures and
+        REPLAN never reach here, so they never acknowledge steering. The
+        snapshot's ``delivery_sequences`` are exactly the records this action
+        observed; newer steering that arrived after the snapshot is not in the
+        list and stays effective for the next turn.
+        """
+        if self._intervention_store is None or snapshot is None:
+            return
+        if not snapshot.delivery_sequences:
+            return
+        mark_consumed = getattr(self._intervention_store, "mark_consumed", None)
+        if not callable(mark_consumed):
+            return
+        try:
+            mark_consumed(task_id, snapshot.run_id, snapshot.delivery_sequences)
+        except HanCodeError:
+            # Acknowledgement is best-effort audit metadata; a failure here must
+            # not corrupt an already-applied action. Steering stays effective.
+            return
+        self._append_trace(
+            task_id,
+            trace_events,
+            event_type="intervention_consumed",
+            phase=phase,
+            status="succeeded",
+            observation={
+                "revision": snapshot.revision,
+                "sequences": list(snapshot.delivery_sequences),
+            },
+        )
+
     def _run_unlocked(self, task_id: str, *, resume: bool = False) -> AgentRunResult:
         state = self._state_store.load(task_id)
         if not _is_valid_task_state(state, task_id):
             raise HanCodeError(_state_adapter_error(Phase.SPEC))
+        if state.active_run_id is None and self._approval_store is not None:
+            state = replace(state, active_run_id=f"run-{uuid4().hex}")
+            self._state_store.save(task_id, state)
         observation: object | None = None
         tool_calls: list[str] = []
         last_recoverable_error: StructuredError | None = None
@@ -1188,15 +1354,28 @@ class AgentLoop:
                 if trace_error is not None:
                     pending_risks.append(_trace_failure_risk(trace_error))
                 traced_phase = routing.phase
+            steering_snapshot = self._prepare_steering_snapshot(task_id, state)
             try:
-                context = dict(
-                    self._context_builder.build(
-                        task_id=task_id,
-                        phase=routing.phase,
-                        state=state,
-                        observation=observation,
+                if steering_snapshot is not None:
+                    context = dict(
+                        self._context_builder.build(
+                            task_id=task_id,
+                            phase=routing.phase,
+                            state=state,
+                            observation=observation,
+                            user_interventions=steering_snapshot.effective_records,
+                            intervention_revision=steering_snapshot.revision,
+                        )
                     )
-                )
+                else:
+                    context = dict(
+                        self._context_builder.build(
+                            task_id=task_id,
+                            phase=routing.phase,
+                            state=state,
+                            observation=observation,
+                        )
+                    )
             except HanCodeError as exc:
                 state = self._block(task_id, state)
                 return _result(
@@ -1221,6 +1400,18 @@ class AgentLoop:
                     state_error,
                     state,
                 )
+            if self._mark_steering_delivered(task_id, steering_snapshot):
+                # New steering arrived before the provider call. Do not call the
+                # provider; re-plan the next turn with the fresh snapshot.
+                self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="stale_context_discarded",
+                    phase=routing.phase,
+                    status="succeeded",
+                    observation={"boundary": "before_provider"},
+                )
+                continue
             paused_result = _pause_if_requested(step - 1)
             if paused_result is not None:
                 return paused_result
@@ -1296,6 +1487,21 @@ class AgentLoop:
             # must not consume the provider protocol retry budget.
             consecutive_provider_failures = 0
             last_recoverable_error = None
+
+            # Steering that arrived while the provider was thinking makes this
+            # raw output stale. Discard it before parsing so no parse failure,
+            # recovery budget, or side effect is charged to the old decision.
+            if self._steering_revision_changed(task_id, steering_snapshot):
+                self._append_trace(
+                    task_id,
+                    trace_events,
+                    event_type="stale_context_discarded",
+                    phase=routing.phase,
+                    status="succeeded",
+                    observation={"boundary": "after_provider"},
+                )
+                continue
+
             action = parse_action(raw_action, routing.phase)
             if isinstance(action, ParseError):
                 parse_error = _structured_parse_error(action)
@@ -1386,6 +1592,36 @@ class AgentLoop:
             # retryable provider or parse error masquerade as the later terminal
             # error when this run eventually reaches its step limit.
             last_recoverable_error = None
+
+            # Commit gate: linearize this action against steering before any
+            # side effect (recovery bookkeeping, checkpoint, dispatch). If
+            # steering advanced the revision, REPLAN with the fresh snapshot.
+            # Acknowledgement (marking steering CONSUMED) is deferred to the
+            # R3 Prepare-Commit-Apply refactor; steering stays effective here.
+            if steering_snapshot is not None:
+                action_digest = compute_action_digest(
+                    action_type=action.type,
+                    phase=action.phase,
+                    tool_name=action.tool_name or "",
+                    args=action.args,
+                    reason=action.reason or "",
+                )
+                if self._commit_steering_action(
+                    task_id,
+                    steering_snapshot,
+                    action_digest=action_digest,
+                    commit_key=f"{steering_snapshot.run_id}:step-{step}:{action_digest}",
+                    acknowledge=False,
+                ):
+                    self._append_trace(
+                        task_id,
+                        trace_events,
+                        event_type="stale_action_discarded",
+                        phase=routing.phase,
+                        status="succeeded",
+                        observation={"boundary": "commit_gate"},
+                    )
+                    continue
 
             recovery_guard = self._recovery_coordinator.guard_action(
                 state=state, action=action
@@ -3397,6 +3633,9 @@ class AgentLoop:
                             state,
                             risks=(_checkpoint_failure_risk(),),
                         )
+                self._acknowledge_steering(
+                    task_id, steering_snapshot, trace_events, routing.phase
+                )
                 continue
 
             if action.type is ActionType.FINISH_PHASE:
@@ -3483,6 +3722,9 @@ class AgentLoop:
                 )
                 if trace_error is not None:
                     pending_risks.append(_trace_failure_risk(trace_error))
+                self._acknowledge_steering(
+                    task_id, steering_snapshot, trace_events, routing.phase
+                )
                 continue
 
             if action.type is ActionType.FINAL:
@@ -4420,6 +4662,12 @@ class AgentLoop:
             action=action,
             requirement=requirement,
             project_root=self._resolve_project_root(task_id),
+            run_id=state.active_run_id,
+            steering_revision_at_request=(
+                self._intervention_store.current_revision(task_id)
+                if state.active_run_id is not None and self._intervention_store is not None
+                else (0 if state.active_run_id is not None else None)
+            ),
         )
 
         updated_state, persisted_record = store.create(task_id, state, record)
@@ -4480,6 +4728,26 @@ class AgentLoop:
             )
 
         status = record.status
+
+        binding_issue = self._approval_binding_issue(task_id, state, record)
+        if binding_issue is not None:
+            if status in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED):
+                return self._expire_approval(
+                    task_id,
+                    state,
+                    approval_id,
+                    "approval_binding_stale",
+                    "The approval binding no longer matches the active run or steering revision.",
+                    binding_issue,
+                    trace_events,
+                )
+            if status in (ApprovalStatus.EXECUTING, ApprovalStatus.CONSUMED):
+                return self._fail_closed_approval_binding(
+                    task_id, state, record, binding_issue, trace_events
+                )
+
+        if status == ApprovalStatus.EXPIRED:
+            return self._recover_expired_approval(task_id, state, approval_id, trace_events)
 
         if status == ApprovalStatus.PENDING:
             # Still waiting
@@ -4570,6 +4838,7 @@ class AgentLoop:
                     "approval_digest_mismatch",
                     "The approved action manifest failed its integrity check.",
                     "approval_digest_must_match",
+                    trace_events,
                 )
             # Fail closed if the workspace changed under the approved action.
             if not self._validate_approval_preconditions(state, record):
@@ -4578,7 +4847,24 @@ class AgentLoop:
                     "approval_stale",
                     "The approved action no longer matches the current workspace.",
                     "approval_preconditions_must_match",
+                    trace_events,
                 )
+
+            approval_gate = self._approval_commit_gate(
+                task_id, state, record, trace_events
+            )
+            if approval_gate is False:
+                return self._expire_approval(
+                    task_id,
+                    state,
+                    approval_id,
+                    "approval_steering_changed",
+                    "Steering changed before the approved action commit gate.",
+                    "approval_commit_replan",
+                    trace_events,
+                )
+            if approval_gate is not True:
+                return approval_gate
 
             # Reconstruct the exact approved action. State stays WAITING_APPROVAL
             # so that a crash before execution re-enters this handler cleanly;
@@ -4617,34 +4903,150 @@ class AgentLoop:
         error_code: str,
         message: str,
         denied_rule: str,
-    ) -> AgentRunResult:
-        """Mark an approval EXPIRED, clear the pending pointer, and block."""
-        if self._approval_store is not None:
-            try:
-                self._approval_store.mark_expired(task_id, approval_id)
-            except Exception:
-                pass
-        expired_state = replace(
-            state, status=TaskStatus.BLOCKED, pending_approval_id=None
-        )
+        trace_events: list[TraceEvent],
+    ) -> AgentRunResult | None:
+        """Expire a stale approval, then let the same run re-plan."""
+        if self._approval_store is None:
+            return self._fail_closed_approval_binding(
+                task_id, state, None, "approval_store_missing", trace_events
+            )
+        try:
+            self._approval_store.mark_expired(task_id, approval_id)
+        except HanCodeError as exc:
+            return self._fail_closed_approval_transition(task_id, state, exc.structured_error)
+        except Exception:
+            return self._fail_closed_approval_transition(
+                task_id,
+                state,
+                StructuredError(
+                    error_code="approval_expiration_failed",
+                    message="The stale approval could not be expired safely.",
+                    phase=state.current_phase.value,
+                    denied_rule="approval_expiration_required",
+                    suggested_fix="Reconcile the approval manifest before resuming.",
+                ),
+            )
+        expired_state = replace(state, status=TaskStatus.RUNNING, pending_approval_id=None)
         try:
             self._state_store.save(task_id, expired_state)
         except Exception:
+            return self._fail_closed_approval_transition(
+                task_id,
+                state,
+                StructuredError(
+                    error_code="approval_state_sync_failed",
+                    message="The expired approval state could not be persisted safely.",
+                    phase=state.current_phase.value,
+                    denied_rule="approval_state_sync_required",
+                    suggested_fix="Reconcile state.json and the approval manifest before resuming.",
+                ),
+            )
+        trace_error = self._append_trace(
+            task_id,
+            trace_events,
+            event_type="approval_expired_by_intervention",
+            phase=state.current_phase,
+            status="succeeded",
+            observation={"approval_id": approval_id, "reason": denied_rule},
+        )
+        if trace_error is not None:
+            return self._fail_closed_approval_transition(task_id, expired_state, trace_error)
+        return None
+
+    def _approval_binding_issue(
+        self, task_id: str, state: TaskState, record: ApprovalRecord
+    ) -> str | None:
+        if record.run_id is None or record.steering_revision_at_request is None:
+            return "approval_binding_missing"
+        if record.run_id != state.active_run_id:
+            return "approval_run_id_mismatch"
+        if self._intervention_store is None:
+            return "approval_steering_store_missing"
+        try:
+            current_revision = self._intervention_store.current_revision(task_id)
+        except Exception:
+            return "approval_steering_revision_unavailable"
+        if current_revision != record.steering_revision_at_request:
+            return "approval_steering_revision_mismatch"
+        return None
+
+    def _fail_closed_approval_binding(
+        self,
+        task_id: str,
+        state: TaskState,
+        record: ApprovalRecord | None,
+        reason: str,
+        trace_events: list[TraceEvent],
+    ) -> AgentRunResult:
+        approval_id = record.approval_id if record is not None else "unknown"
+        error = StructuredError(
+            error_code="approval_binding_invalid",
+            message="Approval binding cannot be verified; execution is blocked.",
+            phase=state.current_phase.value,
+            denied_rule=reason,
+            suggested_fix="Reconcile the approval manifest and active run before resuming.",
+        )
+        inconsistent = _inconsistent(state)
+        try:
+            self._state_store.save(task_id, inconsistent)
+        except Exception:
             pass
         return _make_result(
-            TaskStatus.BLOCKED,
+            TaskStatus.INCONSISTENT,
             0,
             (),
-            None,
-            StructuredError(
-                error_code=error_code,
-                message=message,
-                phase=state.current_phase.value,
-                denied_rule=denied_rule,
-                suggested_fix="Run the task again and review a newly generated approval request.",
-            ),
-            expired_state,
+            {"approval_id": approval_id},
+            error,
+            inconsistent,
+            trace_events=tuple(trace_events),
         )
+
+    def _fail_closed_approval_transition(
+        self, task_id: str, state: TaskState, error: StructuredError
+    ) -> AgentRunResult:
+        inconsistent = _inconsistent(state)
+        try:
+            self._state_store.save(task_id, inconsistent)
+        except Exception:
+            pass
+        return _make_result(
+            TaskStatus.INCONSISTENT, 0, (), None, error, inconsistent
+        )
+
+    def _recover_expired_approval(
+        self,
+        task_id: str,
+        state: TaskState,
+        approval_id: str,
+        trace_events: list[TraceEvent],
+    ) -> AgentRunResult | None:
+        """Finish cleanup when EXPIRED was persisted before state cleanup."""
+        cleared = replace(state, status=TaskStatus.RUNNING, pending_approval_id=None)
+        try:
+            self._state_store.save(task_id, cleared)
+        except Exception:
+            return self._fail_closed_approval_transition(
+                task_id,
+                state,
+                StructuredError(
+                    error_code="approval_state_sync_failed",
+                    message="The expired approval pointer could not be cleared safely.",
+                    phase=state.current_phase.value,
+                    denied_rule="approval_state_sync_required",
+                    suggested_fix="Reconcile state.json and the approval manifest before resuming.",
+                ),
+            )
+        trace_error = self._append_trace(
+            task_id,
+            trace_events,
+            event_type="approval_expired_recovered",
+            phase=state.current_phase,
+            status="succeeded",
+            observation={"approval_id": approval_id},
+        )
+        if trace_error is not None:
+            return self._fail_closed_approval_transition(task_id, cleared, trace_error)
+        return None
 
     def _validate_approval_preconditions(
         self, state: TaskState, record: ApprovalRecord
@@ -4670,6 +5072,66 @@ class AgentLoop:
             if current_hash != target.before_sha256:
                 return False
         return True
+
+    def _approval_commit_gate(
+        self,
+        task_id: str,
+        state: TaskState,
+        record: ApprovalRecord,
+        trace_events: list[TraceEvent],
+    ) -> bool | AgentRunResult:
+        """Revalidate steering immediately before an approved action executes."""
+        if self._intervention_store is None or record.run_id is None:
+            return self._fail_closed_approval_binding(
+                task_id, state, record, "approval_commit_binding_missing", trace_events
+            )
+        revision = record.steering_revision_at_request
+        if revision is None:
+            return self._fail_closed_approval_binding(
+                task_id, state, record, "approval_commit_revision_missing", trace_events
+            )
+        try:
+            result = self._intervention_store.commit_action(
+                task_id,
+                record.run_id,
+                revision,
+                (),
+                record.action.sha256,
+                f"approval:{record.approval_id}:{record.action.sha256}",
+                False,
+            )
+        except HanCodeError as exc:
+            return self._fail_closed_approval_transition(
+                task_id, state, exc.structured_error
+            )
+        except Exception:
+            return self._fail_closed_approval_transition(
+                task_id,
+                state,
+                StructuredError(
+                    error_code="approval_commit_gate_failed",
+                    message="The approval commit gate could not be evaluated safely.",
+                    phase=state.current_phase.value,
+                    denied_rule="approval_commit_gate_required",
+                    suggested_fix="Reconcile steering state before resuming.",
+                ),
+            )
+        status = getattr(result, "status", None)
+        if status is ActionCommitStatus.REPLAN:
+            return False
+        if status is ActionCommitStatus.COMMITTED:
+            return True
+        return self._fail_closed_approval_transition(
+            task_id,
+            state,
+            StructuredError(
+                error_code="approval_commit_gate_invalid",
+                message="The approval commit gate returned an invalid result.",
+                phase=state.current_phase.value,
+                denied_rule="approval_commit_result_required",
+                suggested_fix="Repair the intervention store before resuming.",
+            ),
+        )
 
     def _digest_intact(self, record: ApprovalRecord) -> bool:
         """Recompute the action digest and compare to the persisted one (§10).
@@ -5109,26 +5571,36 @@ class AgentLoop:
                     TaskStatus.INCONSISTENT, 0, tuple(tool_calls), None,
                     state_error, state, risks=(_checkpoint_failure_risk(),),
                 )
-            # Reload state (checkpoint create advances the pointer) and mark
-            # the manifest EXECUTING so a crash here is detectable (§12).
+            # Reload state because checkpoint creation advances the pointer.
             state = self._state_store.load(task_id)
             _sync_trace_events_from_storage(
                 task_path(self._project_root, task_id), trace_events
             )
-            if approval_id is not None and self._approval_store is not None:
-                try:
-                    self._approval_store.mark_executing(
-                        task_id, approval_id,
-                        expected_checkpoint_id=checkpoint.checkpoint_id,
-                    )
-                except Exception as exc:
-                    state, state_error = self._mark_inconsistent(
-                        task_id, state, _agent_loop_error(phase, exc)
-                    )
-                    return _make_result(
-                        TaskStatus.INCONSISTENT, 0, tuple(tool_calls), None,
-                        state_error, state, risks=(_checkpoint_failure_risk(),),
-                    )
+
+        # Mark every approved action EXECUTING before dispatch, including
+        # actions that do not require a checkpoint.
+        if approval_id is not None and self._approval_store is not None:
+            try:
+                self._approval_store.mark_executing(
+                    task_id,
+                    approval_id,
+                    expected_checkpoint_id=(
+                        checkpoint.checkpoint_id if checkpoint is not None else None
+                    ),
+                )
+            except Exception as exc:
+                state, state_error = self._mark_inconsistent(
+                    task_id, state, _agent_loop_error(phase, exc)
+                )
+                return _make_result(
+                    TaskStatus.INCONSISTENT,
+                    0,
+                    tuple(tool_calls),
+                    None,
+                    state_error,
+                    state,
+                    risks=(_checkpoint_failure_risk(),) if requires_checkpoint else (),
+                )
 
         # Dispatch the approved tool (no Provider call).
         try:

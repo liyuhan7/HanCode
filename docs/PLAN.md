@@ -8072,3 +8072,290 @@ Textual `Input` 的 `Ctrl+V` 只读取 Textual 自己维护的内部 clipboard�
 - 全量 pytest：`1709 passed, 17 skipped`。
 - 全仓 Ruff：通过；全仓 MyPy：`Success: no issues found in 145 source files`。
 - 本任务改动范围的 `git diff --check` 通过；全局检查仅命中并行修改的 `README.md` 文件末尾空行，未修改该非本任务文件。
+
+---
+
+## S17：Runtime Steering（运行中对话调整）
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] R1-R4/TUI 子卡已实现；完整 Prepare—Commit—Apply 仍为后续任务 |
+| 分支 | `main`（遵循本卡 §恢复包策略，不建分支、不 commit） |
+| 依赖 | S5 TUI 契约、S12-R1 协作式暂停、S9 Approval、S11 恢复 |
+| 开发方式 | 纵向 TDD（RED → GREEN → REFACTOR），逐子卡独立交付 |
+| 安全边界 | Steering 不得绕过系统规则、ToolPolicy、Approval、Checkpoint、Phase Gate；正文经 `redact_text` 脱敏，纯敏感内容拒绝；单进程 writer |
+
+### 问题与成功标准
+
+主流 Agent 允许用户在模型运行过程中提交新要求并让 Agent 重新规划。HanCode 需要一个 deterministic、可测试、可审计的 Runtime Steering 机制：用户在 Agent 运行中提交的新要求作为高优先级运行时约束，持续进入后续每轮 Context，且不破坏原子操作边界与安全机制。
+
+S17 拆分为多张子卡逐步交付。本阶段已交付 **S17-R1/R2/R3/R4 与 S17-TUI**；完整 Prepare—Commit—Apply 副作用边界搬迁仍留给后续独立任务。
+
+### 冻结边界（S17 整体非目标，后续单独立卡）
+
+- `CANCEL`、`NOTE`、`SUPERSEDED`、`/steer`、`/stop`。
+- Provider 请求硬取消、Shell 进程组终止、Worker 强制终止、已开始操作自动回滚。
+- 跨进程文件锁、多 HanCode 进程同时写同一任务、WebSocket/远程控制。
+
+### 并发模型限制
+
+MVP 支持单进程、TUI 线程与 Agent Worker 线程并发、同进程内多 Store 实例访问同一日志；**不支持**两个独立 HanCode 进程同时操作同一 task workspace。
+
+---
+
+### S17-R1：InterventionStore、Snapshot 与 Context 注入（基础切片）
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；全量质量门与构建通过（2026-08-06） |
+| 依赖 | S5、S9、S11 |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+范围：落地 Runtime Steering 的持久化事实来源与 Context 注入基础，使当前 run 的 Steering 能够持续进入后续每轮 Context。
+
+允许修改：
+
+- `src/hancode/core/interventions.py`（新增）
+- `src/hancode/core/state.py`（新增 `active_run_id` 可选字段）
+- `src/hancode/storage/interventions.py`（新增）
+- `src/hancode/runtime/context.py`（`build` 增参并注入 Steering）
+- `src/hancode/runtime/agent_loop.py`（生成 Snapshot、注入 Context、Provider 前 `mark_delivered`）
+- `src/hancode/runtime/engine.py`、`src/hancode/app/task_service.py`（透传 `intervention_store` 与 run identity）
+- 对应新增/扩充测试；`docs/SPEC.md`、`docs/系统架构.md`、`docs/PLAN.md`、`docs/AGENT_LOG.md`。
+
+禁止修改 `.hancode/tasks/task-001/**`。
+
+核心语义：
+
+- Steering 是持续运行约束：当前 `run_id` 下 `PENDING`/`DELIVERED`/`CONSUMED` 全部持续注入后续每轮 Context。
+- `SteeringSnapshot` 由 `AgentLoop` 生成并显式传入 `ContextBuilder`；ContextBuilder 不直接读取 Store。
+- 优先级：系统规则 > ToolPolicy/Approval/Checkpoint/Phase Gate > 当前 run 最新 Steering > 任务原始目标 > 旧计划与 observation。较大 sequence 冲突时覆盖较小 sequence，但不绕过安全机制。
+
+明确非目标（S17-R1 内不做，留给 R2+）：
+
+- revision 并发线性化 `commit_action` 与 `REPLAN`（R2）。
+- Prepare—Commit—Apply 副作用边界重构（R3）。
+- Approval `run_id` 与 `steering_revision_at_request` 绑定与失效（R4）。
+- orphan RUNNING 恢复与完整 run 生命周期表、`WAITING_APPROVAL` 提交 Steering、TUI 接入（后续子卡）。
+
+Red 测试至少覆盖：
+
+- Store：两条 Steering task-global sequence 严格递增；新 Store 实例可重放；均为 PENDING；多 Store 实例共享同一路径锁；secret redaction；纯敏感输入拒绝；日志损坏 fail-closed；`mark_delivered` 幂等；CONSUMED 重放。
+- Snapshot/Context：PENDING/DELIVERED/CONSUMED 均进 `effective`；`awaiting_acknowledgement` 只含未确认；sequence 升序稳定；旧 `run_id` 不进入新 run Context；ContextBuilder 不直接读 Store；Steering 不被预算静默删除；预算不足返回 `intervention_context_budget_exceeded`。
+- run identity：`/run` 创建并持久化 `active_run_id`；`/resume` 复用；`COMPLETED/FAILED/INCONSISTENT` 清除；`active_run_id` 已存在时 `/run` 拒绝。
+- 回归：`InterventionStore` 为 `None` 时 `AgentLoop` 行为不变。
+
+### 实际实现与验证（2026-08-06）
+
+- `core/interventions.py`（新增）：`InterventionKind/Status/EventType`、`DeliveryStatus`、`InterventionEvent`（frozen+slots，`ive-XXXXXX` 事件 ID）、`InterventionRecord`（`iv-XXXXXX`）、`SteeringSnapshot`、`DeliveryResult`，`content` 仅 SUBMITTED 携带。
+- `storage/interventions.py`（新增）：append-only `interventions.jsonl` + `os.fsync`；模块级路径锁按 `os.path.normcase(resolve())` 索引；`submit/prepare_context/mark_delivered/mark_consumed/current_revision`；重放严格校验（schema/task_id/run_id/事件 ID 连续/SUBMITTED sequence 连续递增/生命周期转换/跨 run 拒绝/content 位置），损坏 fail-closed；`redact_text` 脱敏与纯敏感拒绝；`mark_delivered` 与 CONSUMED 幂等。
+- `core/state.py`：新增可选 `active_run_id`，按既有 5 处 additive 模式（字段集、可选集、dataclass、`__post_init__`、`load_state`、`save_state`）落地，旧 `state.json` 仍可加载。
+- `runtime/context.py`：`ContextBuilder.build` 与 `build_context` 增加 `user_interventions`/`intervention_revision`；输出 `user_interventions.{revision, effective, awaiting_acknowledgement}`（sequence 升序，正文经 `redact_text`）；预算不足且存在 Steering 时返回 `intervention_context_budget_exceeded`，不静默删除。
+- `runtime/agent_loop.py`：新增 `InterventionStorePort` 与可选 `intervention_store`；每轮 `_prepare_steering_snapshot`（无 store 或无 `active_run_id` 返回 None，保持旧行为）→ 注入 Context → Provider 前 `_mark_steering_delivered`。
+- `runtime/engine.py`、`app/task_service.py`：透传 `intervention_store`（引擎默认注入 `InterventionStore`）；`TaskService.run/resume` 落地最小 run 生命周期（`/run` 创建并持久化 `active_run_id`；已存在时拒绝 `task_run_already_active`；`/resume` 复用；`COMPLETED/FAILED/INCONSISTENT` 清除）。
+- 专项：`test_interventions_store.py`(10)、`test_interventions_context.py`(5)、`test_interventions_runtime.py`(7)；相关回归 `test_context_builder/test_state/test_agent_loop/test_task_service` 通过。
+- 全量 pytest：`1730 passed, 17 skipped`。
+- Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
+- `uv build` 生成 sdist 与 wheel 成功（`--offline` 仅因 setuptools 未进缓存而失败，非代码问题）。
+- `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
+
+### 恢复包策略
+
+直接在 `main` 修改，不创建分支/worktree、不 stage、不 commit、不 push。每个纵向切片全绿后在仓库外会话 artifacts 目录用 `git diff --binary` 保存 `slice-N.patch`，untracked 文件复制到 `slice-N/untracked/`；不污染 Git 状态；临时测试缓存需清理。
+
+### 验证
+
+每切片跑聚焦 pytest（`tests/test_interventions_store.py`、`tests/test_interventions_context.py`、`tests/test_context_builder.py`、`tests/test_agent_loop.py`、`tests/test_state.py`）；全部完成后跑全量 `pytest`、`ruff`、`mypy`、离线 `uv build`、`git diff --check`。Windows 使用隔离 `basetemp` 与 `UV_CACHE_DIR`。验证结果回写本卡与 `docs/AGENT_LOG.md`。
+
+---
+
+### S17-R2：revision 并发线性化（commit_action + 陈旧输出丢弃）
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；全量质量门与构建通过（2026-08-06） |
+| 依赖 | S17-R1 |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+范围：为每个 Provider Action 提供针对 Steering 的确定性线性化，使运行中到达的新 Steering 能让越过 snapshot 的旧决策失效并重新规划，且不产生半副作用。
+
+允许修改：
+
+- `src/hancode/core/interventions.py`（`ActionCommitStatus`/`ActionCommitResult`）
+- `src/hancode/storage/interventions.py`（`commit_action` + 幂等 ledger `action_commits.jsonl`）
+- `src/hancode/runtime/agent_loop.py`（mark_delivered STALE 丢弃、Provider 返回后 revision 检查、commit 门 REPLAN）
+- 对应新增/扩充测试；`docs/PLAN.md`、`docs/SPEC.md`、`docs/系统架构.md`、`docs/AGENT_LOG.md`。
+
+核心语义：
+
+- 每个 Action 绑定生成它时的 `SteeringSnapshot.revision`；执行前调用 `commit_action()`。
+- Steering `submit` 与 `commit_action` 争用同一路径锁：Steering 先取锁则 revision 增大、旧 Action 返回 `REPLAN` 且不产生副作用；Action 先取锁则 `COMMITTED`，后到 Steering 在下一轮生效。
+- 幂等 ledger 按 `commit_key` 记录首次结果，crash-retry 返回同一结果。
+- AgentLoop 在三处丢弃陈旧输出：Provider 前 `mark_delivered` 返回 STALE、Provider 返回后 `current_revision` 变化、commit 门返回 REPLAN；三者都不消耗 recovery budget、不写旧 parse failure、不派发工具。
+
+明确非目标（留给 R3/R4）：
+
+- Prepare—Commit—Apply 副作用边界重构与 `acknowledge`（CONSUMED）标记：本轮 commit 门 `acknowledge=False`，Steering 保持 effective，CONSUMED 标记延后至 R3。
+- Approval `run_id`/`steering_revision_at_request` 绑定与失效（R4）。
+- TUI 接入。
+
+Red 测试至少覆盖：
+
+- Store：revision 未变 `COMMITTED`；Steering 先到 `REPLAN` 且不 acknowledge；`commit_key` 幂等（仅一条 ledger）；跨 Store 实例共享 ledger；ledger 损坏 fail-closed；空 `commit_key` 拒绝。
+- AgentLoop：`mark_delivered` STALE→replan 信号；DELIVERED 非 stale；Provider 窗口 revision 变化检测；commit 门 REPLAN；无 store 时不阻断。
+
+### 实际实现与验证（2026-08-06）
+
+- `core/interventions.py`：新增 `ActionCommitStatus`(COMMITTED/REPLAN) 与 `ActionCommitResult`。
+- `storage/interventions.py`：新增 `commit_action`（共享路径锁下线性化、幂等 ledger `action_commits.jsonl` + `os.fsync`、REPLAN 不 acknowledge、损坏 fail-closed）与 `_CommitLedgerEntry`。
+- `runtime/agent_loop.py`：`InterventionStorePort` 增 `current_revision`/`commit_action`；`_mark_steering_delivered` 返回 STALE 信号并在 Provider 前丢弃（`stale_context_discarded`）；Provider 返回后 `_steering_revision_changed` 丢弃（`stale_context_discarded`）；有效 Action 前 commit 门 `_commit_steering_action` 返回 REPLAN 时丢弃（`stale_action_discarded`）；均不消耗 recovery budget。
+- 专项：`test_interventions_commit.py`(7)、`test_interventions_runtime.py` 新增 5、`test_interventions_store.py` 回归。
+- 全量 pytest：`1742 passed, 17 skipped`。
+- Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
+- `uv build`：sdist + wheel 成功。
+- `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
+
+---
+
+### S17-TUI：运行中普通文本 Steering 接入
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；全量质量门与构建通过（2026-08-06） |
+| 依赖 | S17-R1、S17-R2、S5 TUI Operation Worker |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+范围：让用户在 Agent Worker 运行期间直接输入普通文本，文本作为当前 run 的 Steering 持久化；不启动第二个 mutation Worker。`WAITING_INPUT` 仍回答问题，`WAITING_APPROVAL` 的普通文本由 R4 接入 Steering 并自动 resume，显式 `/approve` 或 `/reject` 保持不变，`PAUSED` 仍要求显式 `/resume`。
+
+允许修改：
+
+- `src/hancode/app/intervention_service.py`（新增）
+- `src/hancode/interfaces/tui/commands.py`（`STEER` plain-text intent 与 busy 路由）
+- `src/hancode/interfaces/tui/app.py`（Steering service 注入、提交与确认提示）
+- 对应 TUI/service 测试；`docs/PLAN.md`、`docs/SPEC.md`、`docs/系统架构.md`、`docs/AGENT_LOG.md`。
+
+核心语义：
+
+- TUI UI 线程同步调用 `InterventionService.submit` 写入 Store；不通过 `TuiOperation`，不调用 `run_worker`，不创建第二个 mutation Worker。
+- Service 从 `TaskState.active_run_id` 校验当前运行身份，并复用 Store 的长度、脱敏和纯敏感拒绝边界。
+- AgentLoop 已通过 `InterventionStore` 每轮读取当前 run Snapshot；TUI 写入与 Worker 读取由同一路径模块锁串行化，下一轮 Context 可见。
+- 普通文本优先级保持：`WAITING_APPROVAL -> STEER`（不隐式决定 Approval）、`WAITING_INPUT -> ANSWER`、busy -> `STEER`、无活动任务 -> `CREATE_TASK`、其余 -> `REJECT`。
+
+Red 测试至少覆盖：
+
+- busy RUNNING 普通文本分类为 `STEER`。
+- `WAITING_INPUT` 继续回答；`WAITING_APPROVAL` 普通文本转 Steering，不隐式 approve/reject。
+- `submit_steering` 调用注入的 InterventionService、显示 sequence/安全点提示、不启动第二个 Worker。
+- Service 校验 active run、空内容、缺任务、长度、脱敏和纯敏感拒绝。
+
+### 实际实现与验证（2026-08-06）
+
+- `app/intervention_service.py` 新增 `InterventionService`/`SteeringSubmission`；读取 `active_run_id` 后提交 Store，不回显正文，不启动 Worker。
+- `interfaces/tui/commands.py` 新增 `PlainTextIntent.STEER` 与 `busy` 参数；`interfaces/tui/app.py` 新增 `submit_steering`，普通文本在 busy 状态写 Store 并提示“将在下一个安全点生效”。
+- 新增 `tests/test_intervention_service.py` 5 项、`tests/test_tui_steering.py` 2 项；`test_tui_commands.py` 新增 busy/优先级 3 项。
+- TUI 专项回归：`32 passed`（service/steering/commands）；app/controller/e2e/worker/hitl 回归：`63 passed`；边界修正后组合专项 `48 passed`。
+- 全量 pytest：`1755 passed, 17 skipped`；首次全量运行有 1 个既有 WAITING_INPUT placeholder 时序失败，单测复跑与第二次全量均通过。
+- Ruff：`All checks passed!`；MyPy：`Success: no issues found in 148 source files`。
+- `uv build`：sdist + wheel 成功；`git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
+
+---
+
+### S17-R4：Approval 绑定、失效与二次提交门
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；全量质量门通过（2026-08-06） |
+| 依赖 | S17-R1、S17-R2、S17-R3、S17-TUI |
+| 开发方式 | RED → GREEN → REFACTOR |
+| 并发边界 | 单 HanCode 进程；TUI 与 Agent Worker 共享 InterventionStore 路径锁 |
+
+范围：将 Approval 绑定到创建它的 `run_id` 与 Steering revision；当 Steering 改变审批前提时，使 PENDING/APPROVED Approval 失效，并在批准 Action 执行前再次通过独立 Approval commit gate。WAITING_APPROVAL 下普通文本作为 Steering 提交，不隐式批准或拒绝。
+
+允许修改：
+
+- `src/hancode/core/approvals.py`
+- `src/hancode/runtime/approval_request.py`
+- `src/hancode/storage/approvals.py`
+- `src/hancode/runtime/agent_loop.py`
+- `src/hancode/interfaces/tui/commands.py`
+- `src/hancode/interfaces/tui/app.py`
+- 对应 Approval、AgentLoop、TUI 测试；`docs/PLAN.md`、`docs/SPEC.md`、`docs/系统架构.md`、`docs/AGENT_LOG.md`。
+
+核心语义：
+
+- 新 Approval manifest 保存 `run_id` 与 `steering_revision_at_request`；新创建记录必须有真实绑定。
+- 缺少新字段的旧 manifest 不静默补造绑定：PENDING/APPROVED 在恢复时显式过期，EXECUTING/CONSUMED fail-closed。
+- 只有 PENDING/APPROVED 可以过期；EXECUTING/CONSUMED 禁止过期。
+- 过期双写顺序固定为 manifest EXPIRED、清理 pending pointer、恢复 RUNNING、写 `approval_expired_by_intervention` Trace、重新规划。
+- `/approve` 后的 Action 在 EXECUTING、Checkpoint、Tool dispatch 之前，使用独立 Approval commit key 再次调用 `commit_action()`；REPLAN 时不得执行旧 Action。
+- Steering 正文不进入 Approval manifest 的 Trace 或普通日志。
+
+非目标：CANCEL/STOP、跨进程文件锁、完整 Prepare—Commit—Apply 副作用搬迁。后者仍需独立任务继续完成。
+
+Red 测试至少覆盖：
+
+- Approval 新字段 round-trip、旧 manifest 缺字段显式失效。
+- PENDING/APPROVED revision 或 run_id 不匹配过期且零 dispatch。
+- EXPIRED/REJECTED + WAITING_APPROVAL 半完成恢复。
+- EXECUTING/CONSUMED 禁止过期。
+- Approval 二次 commit gate 的 COMMITTED/REPLAN、独立 commit key 与幂等。
+- 非 checkpoint Approval 在 dispatch 前进入 EXECUTING。
+- 批准 Action 成功后 Steering acknowledge。
+- WAITING_APPROVAL 普通文本成为 Steering 并自动 resume；`/approve`/`/reject` 不回归。
+
+### S17-R4 实际实现与验证（2026-08-06）
+
+- `core/approvals.py`、`runtime/approval_request.py`：Approval manifest 新增并校验 `run_id` 与 `steering_revision_at_request`；新创建记录必须绑定真实 run，旧 manifest 保持显式 unbound。
+- `storage/approvals.py`：增加 project/task/approval identity 校验；收紧 `PENDING → APPROVED/REJECTED`、`APPROVED → EXECUTING`、`EXECUTING → CONSUMED`；仅 PENDING/APPROVED 可过期，EXPIRED/REJECTED 清理幂等。
+- `runtime/agent_loop.py`：恢复时校验 run/revision；PENDING/APPROVED 漂移按 manifest EXPIRED、清理 pointer、RUNNING、写 `approval_expired_by_intervention` Trace 后重新规划；旧 EXECUTING/CONSUMED 绑定异常 fail-closed；批准 Action 使用独立 Approval commit key，在 checkpoint/dispatch 前二次调用 `commit_action()`；非 checkpoint Action 也先进入 EXECUTING。
+- `interfaces/tui/commands.py`、`interfaces/tui/app.py`：WAITING_APPROVAL 普通文本只作为 Steering，不隐式 approve/reject，提交后自动 resume；显式 `/approve`/`/reject` 保持原流程。
+- 测试：新增 `test_approval_r4_binding.py`，补充 ApprovalStore、AgentLoop、TUI 回归；全量 pytest：`1774 passed, 15 skipped`。
+- Ruff：`All checks passed!`；MyPy：改动 6 个源文件 `Success: no issues found`；未修改 `.hancode/tasks/task-001/**`。
+- 提交：未提交；继续保留 `main` 工作区改动。
+
+剩余边界：完整 Prepare—Commit—Apply 副作用搬迁、CANCEL/STOP、跨进程文件锁仍未实现。
+
+---
+
+### S17-R3：Steering 确认（acknowledge / CONSUMED）
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；全量质量门与构建通过（2026-08-06） |
+| 依赖 | S17-R2 |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+范围：把 R2 里 `acknowledge=False` 留下的缺口补上——只有当 Action 真正通过 policy 并成功进入 apply（工具派发成功、FINISH_PHASE 成功）时，才把它实际处理过的 Steering（`snapshot.delivery_sequences`）标为 CONSUMED；策略拒绝、recovery 拒绝、parse 失败、REPLAN、ASK_USER 等待一律不标记。
+
+允许修改：
+
+- `src/hancode/runtime/agent_loop.py`（`_acknowledge_steering` helper + 成功 choke point 接入 + `InterventionStorePort.mark_consumed`）
+- 对应扩充测试；`docs/PLAN.md`、`docs/SPEC.md`、`docs/系统架构.md`、`docs/AGENT_LOG.md`。
+
+核心语义：
+
+- 确认只发生在确认成功 apply 的 choke point，复用 R1 已测的 `mark_consumed`，不重复写 commit ledger。
+- 确认标记 `snapshot.delivery_sequences`——即该 Action 实际观察到的记录；快照之后到达的新 Steering 不在其中，保持 effective，下一轮继续注入。
+- 确认为 best-effort 审计元数据：`mark_consumed` 失败不破坏已 apply 的 Action，Steering 保持 effective。
+- CONSUMED 记录仍持续注入 Context 的 `effective`（符合规范"CONSUMED 不代表失效"），仅从 `awaiting_acknowledgement` 移除。
+
+明确非目标（留给后续）：
+
+- 全量 Prepare—Commit—Apply 副作用边界搬迁（把所有旧决策副作用移到统一提交门之后）体量大、风险集中，本轮不做；R3 只在既有成功点补确认。
+- Approval `run_id`/`steering_revision_at_request` 绑定与失效（R4）。
+- TUI 接入。
+
+Red 测试至少覆盖：
+
+- 工具派发成功后 Steering 被 acknowledge（`mark_consumed` 收到 `delivery_sequences`）。
+- policy 拒绝时不 acknowledge。
+
+### 实际实现与验证（2026-08-06）
+
+- `runtime/agent_loop.py`：新增 `_acknowledge_steering`（无 store/无 snapshot/无 delivery 时短路；`mark_consumed` 失败吞掉不破坏已 apply 状态；成功写 `intervention_consumed` trace）；在 TOOL_CALL 成功 `continue` 前与 FINISH_PHASE 成功 `continue` 前调用；`InterventionStorePort` 增 `mark_consumed`。
+- 测试：`test_agent_loop.py` 新增 `test_steering_acknowledged_after_successful_tool_dispatch`、`test_steering_not_acknowledged_on_policy_denial`；`_build_loop`/`SpyContextBuilder` 支持可选 `intervention_store` 与 steering kwargs。
+- 专项：`test_agent_loop.py` 64 passed；interventions + task_service 回归 55 passed。
+- 全量 pytest：`1744 passed, 17 skipped`。
+- Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
+- `uv build`：sdist + wheel 成功。
+- `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。

@@ -7,6 +7,7 @@ machinery of a full engine run.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -31,7 +32,9 @@ def _prepare(tmp_path: Path):
     pf.write_text(json.dumps(project), encoding="utf-8")
     config = load_config(tmp_path, "task-001")
     loop = create_agent_loop(tmp_path, "task-001")
-    state = load_state(task_path(tmp_path, "task-001"))
+    state = replace(
+        load_state(task_path(tmp_path, "task-001")), active_run_id="run-test"
+    )
     builder = ApprovalRequestBuilder(config)
     return loop, state, builder
 

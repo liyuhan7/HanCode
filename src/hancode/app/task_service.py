@@ -10,7 +10,10 @@ from hancode.app.credentials import CredentialProvider, CredentialSource
 from hancode.app.task_models import TaskSummary
 from hancode.core.config import HanCodeConfig, load_config
 from hancode.core.errors import HanCodeError, StructuredError
-from hancode.core.state import load_state, reconcile_state
+from hancode.core.models import TaskStatus
+from hancode.core.state import load_state, reconcile_state, save_state
+from dataclasses import replace as _state_replace
+from uuid import uuid4
 from hancode.providers.base import LLMClient
 from hancode.providers.factory import create_provider_adapter
 from hancode.runtime.agent_loop import AgentRunResult
@@ -24,6 +27,9 @@ from hancode.storage.workspace import (
 )
 
 _TASK_ID_PATTERN = re.compile(r"^task-(\d+)$")
+_TERMINAL_RUN_STATUSES = frozenset(
+    {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.INCONSISTENT}
+)
 
 
 class TaskService:
@@ -110,7 +116,8 @@ class TaskService:
             selected_provider = self._provider_factory(
                 config, credential=credential
             )
-        return run_task(
+        self._assign_run_identity(project_root, task_id, resume=resume)
+        result = run_task(
             project_root,
             task_id,
             resume=resume,
@@ -118,6 +125,51 @@ class TaskService:
             trace_observer=trace_observer,
             pause_token=pause_token,
         )
+        self._clear_run_identity_if_terminal(project_root, task_id, result)
+        return result
+
+    def _assign_run_identity(
+        self, project_root: Path, task_id: str, *, resume: bool
+    ) -> None:
+        """Create, reuse, or reject the task's active run identity.
+
+        ``/run`` on a task that already has an active run is rejected (the user
+        must ``/resume``). ``/resume`` reuses the existing run identity, or
+        creates one for a legacy task that lacks it.
+        """
+        root = task_path(project_root, task_id)
+        if not root.is_dir():
+            return
+        state = load_state(root)
+        if state.active_run_id and not resume:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="task_run_already_active",
+                    message="The task already has an active run identity.",
+                    phase=state.current_phase.value,
+                    denied_rule="single_active_run_required",
+                    suggested_fix="Resume the existing run instead of starting a new one.",
+                )
+            )
+        if state.active_run_id:
+            return
+        save_state(
+            root,
+            _state_replace(state, active_run_id=f"run-{uuid4().hex}"),
+        )
+
+    def _clear_run_identity_if_terminal(
+        self, project_root: Path, task_id: str, result: AgentRunResult
+    ) -> None:
+        if getattr(result, "status", None) not in _TERMINAL_RUN_STATUSES:
+            return
+        root = task_path(project_root, task_id)
+        if not root.is_dir():
+            return
+        state = load_state(root)
+        if state.active_run_id is None:
+            return
+        save_state(root, _state_replace(state, active_run_id=None))
 
     def resume(
         self,

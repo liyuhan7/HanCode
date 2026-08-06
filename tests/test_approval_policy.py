@@ -141,6 +141,7 @@ def _valid_state(**overrides: object) -> TaskState:
             "KNOWLEDGE.md": False,
             "DELIVERABLES.md": False,
         },
+        "active_run_id": "run-test",
     }
     kwargs.update(overrides)
     return TaskState(**kwargs)

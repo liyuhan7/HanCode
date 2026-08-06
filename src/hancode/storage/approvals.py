@@ -149,6 +149,17 @@ class ApprovalStore:
         2. Update and save TaskState (WAITING_APPROVAL)
         On failure: try to clean up the manifest.
         """
+        if record.project_id != self._project_id or record.task_id != task_id:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="approval_identity_mismatch",
+                    message="Approval manifest identity does not match the requested task.",
+                    phase=record.phase.value,
+                    denied_rule="approval_identity_match",
+                    suggested_fix="Create the approval for the current project and task.",
+                )
+            )
+
         if record.status is not ApprovalStatus.PENDING:
             raise HanCodeError(
                 StructuredError(
@@ -233,7 +244,7 @@ class ApprovalStore:
                     suggested_fix="Use a valid apr-XXXXXX format.",
                 )
             )
-        return load_approval_manifest(self._project_root, task_id, approval_id)
+        return self._load(task_id, approval_id)
 
     def decide(
         self,
@@ -248,7 +259,7 @@ class ApprovalStore:
         Returns the updated record. The task state is NOT modified here;
         the AgentLoop will consume the decision on resume.
         """
-        record = load_approval_manifest(self._project_root, task_id, approval_id)
+        record = self._load(task_id, approval_id)
 
         if record.status is not ApprovalStatus.PENDING:
             raise HanCodeError(
@@ -278,10 +289,10 @@ class ApprovalStore:
         task_id: str,
         approval_id: str,
         *,
-        expected_checkpoint_id: str,
+        expected_checkpoint_id: str | None,
     ) -> ApprovalRecord:
         """Mark an approved record as executing."""
-        record = load_approval_manifest(self._project_root, task_id, approval_id)
+        record = self._load(task_id, approval_id)
 
         if record.status is not ApprovalStatus.APPROVED:
             raise HanCodeError(
@@ -308,8 +319,21 @@ class ApprovalStore:
         *,
         execution_checkpoint_id: str | None = None,
     ) -> ApprovalRecord:
-        """Mark an executing/approved record as consumed."""
-        record = load_approval_manifest(self._project_root, task_id, approval_id)
+        """Mark an executing record as consumed."""
+        record = self._load(task_id, approval_id)
+        if record.status is not ApprovalStatus.EXECUTING:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="approval_not_executing",
+                    message=(
+                        f"Approval {approval_id} is {record.status.value}; "
+                        "only executing approvals can be consumed."
+                    ),
+                    phase=record.phase.value,
+                    denied_rule="approval_must_be_executing",
+                    suggested_fix="Mark the approved action executing before consuming it.",
+                )
+            )
         updated = record.with_consumed(
             execution_checkpoint_id=execution_checkpoint_id
         )
@@ -320,7 +344,43 @@ class ApprovalStore:
         self, task_id: str, approval_id: str
     ) -> ApprovalRecord:
         """Mark an approval as expired (stale)."""
-        record = load_approval_manifest(self._project_root, task_id, approval_id)
+        record = self._load(task_id, approval_id)
+        if record.status in (ApprovalStatus.EXPIRED, ApprovalStatus.REJECTED):
+            return record
+        if record.status not in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED):
+            raise HanCodeError(
+                StructuredError(
+                    error_code="approval_not_expirable",
+                    message=(
+                        f"Approval {approval_id} is {record.status.value}; "
+                        "executing or consumed approvals cannot expire."
+                    ),
+                    phase=record.phase.value,
+                    denied_rule="approval_expiration_lifecycle",
+                    suggested_fix="Reconcile the executing approval before cleanup.",
+                )
+            )
         updated = record.with_expired()
         save_approval_manifest(self._project_root, task_id, updated)
         return updated
+
+    def _load(self, task_id: str, approval_id: str) -> ApprovalRecord:
+        """Load a manifest and verify every persisted identity component."""
+        record = load_approval_manifest(self._project_root, task_id, approval_id)
+        if (
+            record.project_id != self._project_id
+            or record.task_id != task_id
+            or record.approval_id != approval_id
+        ):
+            raise HanCodeError(
+                StructuredError(
+                    error_code="approval_identity_mismatch",
+                    message=(
+                        f"Approval {approval_id} does not match project/task identity."
+                    ),
+                    phase=record.phase.value,
+                    denied_rule="approval_identity_match",
+                    suggested_fix="Load the approval using its original project and task.",
+                )
+            )
+        return record

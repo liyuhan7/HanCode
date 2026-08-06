@@ -372,7 +372,16 @@ class SpyContextBuilder:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Phase, TaskState]] = []
 
-    def build(self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None) -> dict[str, object]:
+    def build(
+        self,
+        *,
+        task_id: str,
+        phase: Phase,
+        state: TaskState,
+        observation: object | None = None,
+        user_interventions: tuple[object, ...] = (),
+        intervention_revision: int = 0,
+    ) -> dict[str, object]:
         self.calls.append((task_id, phase, state))
         context: dict[str, object] = {"task_id": task_id, "phase": phase.value}
         if observation is not None:
@@ -1851,6 +1860,7 @@ def _build_loop(
     pause_token: PauseToken | None = None,
     llm: MockLLM | None = None,
     memory_store: SpyMemoryStore | FailingMemoryStore | None = None,
+    intervention_store: object | None = None,
 ) -> tuple[
     AgentLoop,
     MockLLM,
@@ -1881,6 +1891,7 @@ def _build_loop(
         mutation_guard=InMemoryMutationGuard(),
         delivery_pipeline=delivery_pipeline,
         pause_token=pause_token,
+        intervention_store=intervention_store,  # type: ignore[arg-type]
     )
     return loop, llm, context_builder, policy, tools, feedback
 
@@ -1942,6 +1953,110 @@ def _policy_config(project_root: Path) -> HanCodeConfig:
         protected_patterns=("assignment.md",),
         writable_roots=(project_root / "src",),
     )
+
+
+class _AckRecordingStore:
+    """Records commit/consume calls for S17-R3 acknowledge tests."""
+
+    def __init__(self, *, revision: int = 1) -> None:
+        from hancode.core.interventions import (
+            ActionCommitResult,
+            ActionCommitStatus,
+            DeliveryResult,
+            DeliveryStatus,
+            InterventionKind,
+            InterventionRecord,
+            InterventionStatus,
+            SteeringSnapshot,
+        )
+
+        self._revision = revision
+        self._snapshot = SteeringSnapshot(
+            task_id="task-001",
+            run_id="run-x",
+            revision=revision,
+            effective_records=(
+                InterventionRecord(
+                    intervention_id="iv-000001",
+                    task_id="task-001",
+                    run_id="run-x",
+                    sequence=1,
+                    kind=InterventionKind.STEER,
+                    status=InterventionStatus.DELIVERED,
+                    content="only touch validation",
+                    submitted_at="t",
+                    delivered_at="t",
+                    consumed_at=None,
+                ),
+            ),
+            delivery_sequences=(1,),
+        )
+        self._delivered = DeliveryResult(
+            status=DeliveryStatus.DELIVERED, current_revision=revision
+        )
+        self._commit = ActionCommitResult(
+            status=ActionCommitStatus.COMMITTED, current_revision=revision
+        )
+        self.consumed: list[tuple[str, tuple[int, ...]]] = []
+
+    def prepare_context(self, task_id: str, run_id: str) -> object:
+        return self._snapshot
+
+    def mark_delivered(self, *a: object, **k: object) -> object:
+        return self._delivered
+
+    def current_revision(self, task_id: str) -> int:
+        return self._revision
+
+    def commit_action(self, *a: object, **k: object) -> object:
+        return self._commit
+
+    def mark_consumed(
+        self, task_id: str, run_id: str, sequences: tuple[int, ...]
+    ) -> object:
+        self.consumed.append((run_id, sequences))
+        return None
+
+
+def test_steering_acknowledged_after_successful_tool_dispatch() -> None:
+    from dataclasses import replace
+
+    store = _AckRecordingStore()
+    state = replace(_task_state(), active_run_id="run-x")
+    loop, _, _, _, _, _ = _build_loop(
+        [_read_file_action(), _finish_action()],
+        state=state,
+        intervention_store=store,
+    )
+
+    loop.run("task-001")
+
+    # The tool dispatched successfully, so the steering it saw is CONSUMED.
+    assert store.consumed
+    assert store.consumed[0] == ("run-x", (1,))
+
+
+def test_steering_not_acknowledged_on_policy_denial() -> None:
+    from dataclasses import replace
+
+    store = _AckRecordingStore()
+    state = replace(_task_state(), active_run_id="run-x")
+    loop, _, _, _, _, _ = _build_loop(
+        [_read_file_action(), _finish_action()],
+        state=state,
+        decision=StubPolicyDecision(
+            allowed=False,
+            reason="denied",
+            denied_rule="test_rule",
+            suggested_fix="fix it",
+        ),
+        intervention_store=store,
+    )
+
+    loop.run("task-001")
+
+    # Policy denied the action: steering must not be acknowledged.
+    assert store.consumed == []
 
 
 def _read_file_action(path: str = "src/example.py") -> dict[str, object]:

@@ -122,6 +122,8 @@ class ApprovalRequestBuilder:
         action: Action,
         requirement: ApprovalRequirement,
         project_root: Path,
+        run_id: str | None = None,
+        steering_revision_at_request: int | None = None,
     ) -> ApprovalRecord:
         """Build a complete ApprovalRecord from an action requiring approval.
 
@@ -140,6 +142,33 @@ class ApprovalRequestBuilder:
                     suggested_fix="Check the approval requirement before building the record.",
                 )
             )
+
+        effective_run_id = run_id if run_id is not None else state.active_run_id
+        if effective_run_id is None:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="approval_run_identity_required",
+                    message="A real active run identity is required for new approvals.",
+                    phase=state.current_phase.value,
+                    denied_rule="approval_run_binding_required",
+                    suggested_fix="Start the task through the run service before requesting approval.",
+                )
+            )
+        if run_id is not None and steering_revision_at_request is None:
+            raise HanCodeError(
+                StructuredError(
+                    error_code="approval_steering_revision_required",
+                    message="A steering revision is required for a bound approval.",
+                    phase=state.current_phase.value,
+                    denied_rule="approval_revision_binding_required",
+                    suggested_fix="Pass the current InterventionStore revision when building approval.",
+                )
+            )
+        effective_revision = (
+            steering_revision_at_request
+            if steering_revision_at_request is not None
+            else 0
+        )
 
         category = requirement.category
         tool_name = action.tool_name or "unknown"
@@ -229,6 +258,8 @@ class ApprovalRequestBuilder:
             executed_at=None,
             rejection_reason=None,
             execution_checkpoint_id=None,
+            run_id=effective_run_id,
+            steering_revision_at_request=effective_revision,
         )
 
     def _build_preview(

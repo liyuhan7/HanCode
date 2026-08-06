@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 
 from hancode.app.task_models import TaskSummary
+from hancode.app.intervention_service import SteeringSubmission
 from hancode.core.errors import HanCodeError, StructuredError
 from hancode.core.models import Phase, TaskStatus
 from hancode.interfaces.tui.app import HanCodeTuiApp
@@ -102,6 +103,21 @@ class _FakeTaskService:
         return object()
 
 
+class _FakeInterventionService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, str, str]] = []
+
+    def submit(
+        self, project_root: Path, task_id: str, content: str
+    ) -> SteeringSubmission:
+        self.calls.append((project_root, task_id, content))
+        return SteeringSubmission(
+            intervention_id="iv-000001",
+            sequence=1,
+            revision=1,
+        )
+
+
 def _error(code: str) -> HanCodeError:
     return HanCodeError(
         StructuredError(
@@ -118,11 +134,13 @@ def _app_with_pending(
     tmp_path: Path,
     approval: _FakeApprovalService,
     task_service: _FakeTaskService | None = None,
+    intervention_service: _FakeInterventionService | None = None,
 ) -> HanCodeTuiApp:
     app = HanCodeTuiApp(
         project_root=tmp_path,
         task_service=task_service,  # type: ignore[arg-type]
         approval_service=approval,  # type: ignore[arg-type]
+        intervention_service=intervention_service,  # type: ignore[arg-type]
     )
     app.controller.set_active_summary(_waiting_approval_summary())
     return app
@@ -214,26 +232,27 @@ def test_approve_without_pending_is_noop(tmp_path: Path) -> None:
     assert task_service.run_calls == []
 
 
-def test_plain_text_during_approval_does_not_decide(tmp_path: Path) -> None:
+def test_plain_text_during_approval_steers_and_resumes(tmp_path: Path) -> None:
     _project(tmp_path)
     approval = _FakeApprovalService()
     task_service = _FakeTaskService()
-    notices: list[str] = []
+    intervention = _FakeInterventionService()
 
     async def _run() -> None:
-        app = _app_with_pending(tmp_path, approval, task_service)
-        app._notify = notices.append  # type: ignore[method-assign]
+        app = _app_with_pending(
+            tmp_path, approval, task_service, intervention_service=intervention
+        )
         async with app.run_test():
             app.submit_input("yes do it")
             await app.workers.wait_for_complete()
 
     asyncio.run(_run())
 
-    # Plain text must not approve, reject, or resume.
+    # Plain text must not approve or reject; it becomes Steering and resumes.
     assert approval.approve_calls == []
     assert approval.reject_calls == []
-    assert task_service.run_calls == []
-    assert any("/approve" in n or "批准" in n for n in notices)
+    assert intervention.calls == [(tmp_path, "task-001", "yes do it")]
+    assert task_service.run_calls == [("task-001", True)]
 
 
 def test_end_to_end_approve_resume_writes_spec(tmp_path: Path) -> None:

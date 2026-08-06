@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
+from dataclasses import replace
 
 from hancode.core.actions import Action, ActionType
 from hancode.core.config import load_config
@@ -34,7 +35,9 @@ def _prepare(tmp_path: Path):
     project["approval_mode"] = "all_source_writes"
     pf.write_text(json.dumps(project), encoding="utf-8")
     config = load_config(tmp_path, "task-001")
-    state = load_state(task_path(tmp_path, "task-001"))
+    state = replace(
+        load_state(task_path(tmp_path, "task-001")), active_run_id="run-test"
+    )
     return config, state, ApprovalRequestBuilder(config)
 
 

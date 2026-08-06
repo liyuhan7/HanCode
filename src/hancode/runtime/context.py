@@ -12,6 +12,7 @@ from typing import Mapping
 
 from hancode.core.config import HanCodeConfig
 from hancode.core.interactions import InteractionStatus
+from hancode.core.interventions import InterventionRecord, InterventionStatus as _IvStatus
 from hancode.storage.checkpoints import _load_manifest, _validate_manifest_identity
 from hancode.storage.delivery_evidence import DeliveryEvidenceStore
 from hancode.storage.test_strategies import TestStrategyStore
@@ -83,11 +84,20 @@ class ContextBuilder:
     memory_packer: MemoryContextPacker | None = None
 
     def build(
-        self, *, task_id: str, phase: Phase, state: TaskState, observation: object | None = None
+        self,
+        *,
+        task_id: str,
+        phase: Phase,
+        state: TaskState,
+        observation: object | None = None,
+        user_interventions: tuple[InterventionRecord, ...] = (),
+        intervention_revision: int = 0,
     ) -> dict[str, object]:
         return build_context(
             self.project_root, task_id, phase, self.config, state=state,
             observation=observation, memory_packer=self.memory_packer,
+            user_interventions=user_interventions,
+            intervention_revision=intervention_revision,
         )
 
 
@@ -100,6 +110,8 @@ def build_context(
     state: TaskState | None = None,
     observation: object | None = None,
     memory_packer: MemoryContextPacker | None = None,
+    user_interventions: tuple[InterventionRecord, ...] = (),
+    intervention_revision: int = 0,
 ) -> dict[str, object]:
     """Build the minimum deterministic context for one task phase."""
     resolved_project_root = project_root.resolve()
@@ -318,6 +330,7 @@ def build_context(
             "truncated_sections": [],
         },
     }
+    _add_user_interventions(context, user_interventions, intervention_revision)
     normalized_observation = _normalize_observation(observation, phase)
     if normalized_observation is not None:
         context["observation"] = normalized_observation
@@ -358,7 +371,21 @@ def build_context(
             if isinstance(key, str) and isinstance(value, str)
         },
     ).to_dict()
-    return _apply_context_budget(context, phase, config.max_context_chars)
+    try:
+        return _apply_context_budget(context, phase, config.max_context_chars)
+    except HanCodeError as exc:
+        if (
+            exc.structured_error.error_code == "context_budget_too_small"
+            and "user_interventions" in context
+        ):
+            raise _context_error(
+                "intervention_context_budget_exceeded",
+                "The context budget cannot contain the required steering skeleton.",
+                phase,
+                "intervention_context_budget_sufficient",
+                "Increase max_context_chars so steering can be delivered.",
+            ) from exc
+        raise
 
 
 def _apply_context_budget(
@@ -819,6 +846,44 @@ def _append_risk(
 
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _add_user_interventions(
+    context: dict[str, object],
+    records: tuple[InterventionRecord, ...],
+    revision: int,
+) -> None:
+    """Inject the current run's steering as a persistent, high-priority block.
+
+    Every PENDING/DELIVERED/CONSUMED record for the active run stays in
+    ``effective`` until the run ends. ``awaiting_acknowledgement`` lists the
+    records not yet consumed by a committed action. The AgentLoop owns the
+    snapshot; the ContextBuilder never reads the store directly.
+    """
+    if not records and revision == 0:
+        return
+    ordered = sorted(records, key=lambda record: record.sequence)
+    effective = [
+        {
+            "intervention_id": record.intervention_id,
+            "sequence": record.sequence,
+            "content": redact_text(record.content),
+        }
+        for record in ordered
+    ]
+    awaiting = [
+        {
+            "intervention_id": record.intervention_id,
+            "sequence": record.sequence,
+        }
+        for record in ordered
+        if record.status is not _IvStatus.CONSUMED
+    ]
+    context["user_interventions"] = {
+        "revision": revision,
+        "effective": effective,
+        "awaiting_acknowledgement": awaiting,
+    }
 
 
 def _normalize_observation(observation: object | None, phase: Phase) -> object | None:

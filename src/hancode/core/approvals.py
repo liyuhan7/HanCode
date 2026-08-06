@@ -173,6 +173,11 @@ class ApprovalRecord:
     rejection_reason: str | None
     execution_checkpoint_id: str | None
 
+    # S17-R4 binding. Legacy manifests may omit both fields and are handled as
+    # explicitly unbound during resume; newly created records provide both.
+    run_id: str | None = None
+    steering_revision_at_request: int | None = None
+
     def __post_init__(self) -> None:
         if self.schema_version != 1:
             raise ValueError("approval schema_version must be 1")
@@ -202,6 +207,18 @@ class ApprovalRecord:
             not isinstance(self.rejection_reason, str) or not self.rejection_reason.strip()
         ):
             raise ValueError("rejection_reason must be non-empty if provided")
+        if (self.run_id is None) != (self.steering_revision_at_request is None):
+            raise ValueError("approval run_id and steering revision must be provided together")
+        if self.run_id is not None and (
+            not isinstance(self.run_id, str) or not self.run_id.strip()
+        ):
+            raise ValueError("approval run_id must be non-empty when bound")
+        if self.steering_revision_at_request is not None and (
+            not isinstance(self.steering_revision_at_request, int)
+            or isinstance(self.steering_revision_at_request, bool)
+            or self.steering_revision_at_request < 0
+        ):
+            raise ValueError("approval steering revision must be non-negative when bound")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -223,6 +240,8 @@ class ApprovalRecord:
             "executed_at": self.executed_at,
             "rejection_reason": self.rejection_reason,
             "execution_checkpoint_id": self.execution_checkpoint_id,
+            "run_id": self.run_id,
+            "steering_revision_at_request": self.steering_revision_at_request,
         }
 
     @classmethod
@@ -289,6 +308,12 @@ class ApprovalRecord:
             execution_checkpoint_id=str(data["execution_checkpoint_id"])
             if data.get("execution_checkpoint_id") is not None
             else None,
+            run_id=str(data["run_id"]) if data.get("run_id") is not None else None,
+            steering_revision_at_request=(
+                int(str(data["steering_revision_at_request"]))
+                if data.get("steering_revision_at_request") is not None
+                else None
+            ),
         )
 
     def with_status(
@@ -307,7 +332,7 @@ class ApprovalRecord:
         )
 
     def with_executing(
-        self, *, expected_checkpoint_id: str, executed_at: str
+        self, *, expected_checkpoint_id: str | None, executed_at: str
     ) -> ApprovalRecord:
         """Transition to EXECUTING with expected checkpoint."""
         return replace(

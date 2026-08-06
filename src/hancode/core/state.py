@@ -52,6 +52,7 @@ _STATE_FIELDS = frozenset(
         "test_strategy_digest",
         "active_failure",
         "learning_contract_version",
+        "active_run_id",
     }
 )
 _OPTIONAL_STATE_FIELDS = frozenset(
@@ -71,6 +72,7 @@ _OPTIONAL_STATE_FIELDS = frozenset(
         "remediation_applied",
         "active_failure",
         "learning_contract_version",
+        "active_run_id",
     }
 )
 _PHASE_NAMES = frozenset(phase.value for phase in Phase)
@@ -136,6 +138,7 @@ class TaskState:
     remediation_applied: bool = False
     active_failure: FailureRecord | None = None
     learning_contract_version: int | None = None
+    active_run_id: str | None = None
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.schema_version) or self.schema_version != 1:
@@ -186,6 +189,10 @@ class TaskState:
             or self.learning_contract_version < 1
         ):
             raise _invalid_state_field("learning_contract_version")
+        if self.active_run_id is not None and (
+            not isinstance(self.active_run_id, str) or not self.active_run_id
+        ):
+            raise _invalid_state_field("active_run_id")
         if self.delivery_coverage_digest is not None and (
             not isinstance(self.delivery_coverage_digest, str)
             or len(self.delivery_coverage_digest) != 64
@@ -428,6 +435,11 @@ def load_state(task_root: Path) -> TaskState:
                 if data.get("learning_contract_version") is None
                 else _required_int(data, "learning_contract_version")
             ),
+            active_run_id=(
+                None
+                if "active_run_id" not in data
+                else _optional_str(data, "active_run_id")
+            ),
         )
     except (OSError, UnicodeError, ValueError):
         raise _state_parse_error() from None
@@ -487,6 +499,7 @@ def save_state(task_root: Path, state: TaskState) -> None:
         "phase_completed": dict(state.phase_completed),
         "artifacts": {name: state.artifacts[name] for name in _ARTIFACT_ORDER},
         "learning_contract_version": state.learning_contract_version,
+        "active_run_id": state.active_run_id,
         "delivery_coverage_digest": state.delivery_coverage_digest,
         "pending_checkpoint_recovery_id": state.pending_checkpoint_recovery_id,
         "interaction_seq": state.interaction_seq,

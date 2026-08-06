@@ -74,9 +74,12 @@ class PlainTextIntent(Enum):
     CREATE_TASK = "create_task"
     ANSWER = "answer"
     REJECT = "reject"
-    # When a task is paused for approval, plain text is intentionally inert:
-    # approve/reject are irreversible outward decisions and must be explicit
-    # (/approve, /reject <reason>), never inferred from stray keystrokes.
+    # While a run is busy, plain text is a Runtime Steering instruction: it is
+    # persisted as a high-priority constraint the running loop picks up on its
+    # next turn, without starting a second worker.
+    STEER = "steer"
+    # Kept for adapters that want to distinguish an explicit approval prompt;
+    # classify_plain_text never infers this intent from ordinary text.
     APPROVAL_REQUIRES_COMMAND = "approval_requires_command"
 
 
@@ -198,14 +201,18 @@ def classify_plain_text(
     has_active_task: bool,
     waiting_input: bool,
     waiting_approval: bool = False,
+    busy: bool = False,
 ) -> PlainTextIntent:
     """Decide what plain (non-command) composer text means for the current state."""
     if waiting_approval:
-        # A pending approval takes precedence: never let plain text implicitly
-        # decide it. The user must type /approve or /reject <reason>.
-        return PlainTextIntent.APPROVAL_REQUIRES_COMMAND
+        # A pending approval accepts plain text as steering, never as a
+        # decision. The user must still type /approve or /reject explicitly.
+        return PlainTextIntent.STEER
     if waiting_input:
         return PlainTextIntent.ANSWER
+    if busy:
+        # A run is in progress: plain text steers it rather than being dropped.
+        return PlainTextIntent.STEER
     if not has_active_task:
         return PlainTextIntent.CREATE_TASK
     return PlainTextIntent.REJECT
