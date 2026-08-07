@@ -995,21 +995,31 @@ def test_code_exploration_stall_requests_user_input_when_enabled() -> None:
     assert len(tools.actions) == 1
 
 
-def test_code_exploration_guard_is_disabled_after_source_edit() -> None:
+def test_code_repeated_read_is_guarded_even_after_source_edit() -> None:
+    # Writing a source file once must not disable the repeated-read guard for
+    # the rest of the phase. A file whose evidence is still valid (unchanged
+    # since it was read) must not be read again on a loop; otherwise the agent
+    # spins re-reading content it already holds in context. A genuine
+    # read-modify-read cycle is still allowed because a successful write
+    # invalidates the prior read evidence for that path.
     trace = SpyTraceAppender()
     loop, _, _, _, tools, _ = _build_loop(
-        [_read_file_action()] * 2,
-        max_steps=2,
+        [_read_file_action()] * 3,
+        max_steps=3,
         state=replace(_task_state(), source_edits_this_phase=1),
         trace_appender=trace,
     )
 
-    loop.run("task-001")
+    result = loop.run("task-001")
 
-    assert [action.tool_name for action in tools.actions] == ["read_file", "read_file"]
-    assert not any(
-        event.event_type.startswith("code_exploration_") for event in trace.events
-    )
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "code_progress_stalled"
+    assert [action.tool_name for action in tools.actions] == ["read_file"]
+    assert [event.event_type for event in trace.events][-2:] == [
+        "code_exploration_repeated",
+        "code_exploration_stalled",
+    ]
 
 
 def test_spec_repeated_exploration_warns_then_blocks_without_redispatch() -> None:

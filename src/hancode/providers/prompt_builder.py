@@ -12,6 +12,7 @@ from hancode.providers.action_schema import build_action_schema
 from hancode.providers.base import ToolDescriptor
 from hancode.providers.prompt_contract import (
     ACTION_REUSE_CONTRACT,
+    ARTIFACT_LANGUAGE_CONTRACT,
     BASE_SYSTEM_CONTRACT,
     INTERACTION_CONTRACT,
     PHASE_CONTRACTS,
@@ -112,6 +113,7 @@ def _build_system_message(
             "Do not output an Action JSON object, Markdown, or prose. Never select final.",
             RUNTIME_STEERING_CONTRACT,
             ACTION_REUSE_CONTRACT,
+            ARTIFACT_LANGUAGE_CONTRACT,
         ]
         if interaction_enabled:
             parts.append(INTERACTION_CONTRACT)

@@ -1976,7 +1976,7 @@ TraceLogger、FeedbackBuilder、ResultBuilder、ContextBuilder 和错误处理�
 
 #### 10.21.4 Markdown 产物最低结构
 
-Markdown 产物验收检查结构、证据引用和学生区域保护，不判断文风。所有可重渲染文档使用以下分区：
+Markdown 产物验收检查结构、证据引用和学生区域保护，不判断文风；撰写语言由 Provider Prompt 契约约束为简体中文，技术标识（文件名、命令、测试名、证据 ID、代码标识符）保留原文。所有可重渲染文档使用以下分区：
 
 ```markdown
 <!-- hancode:generated:start -->

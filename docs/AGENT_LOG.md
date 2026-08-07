@@ -4,6 +4,19 @@
 
 ---
 
+### 2026-08-07 — Prompt 产物语言契约（md 产物简体中文撰写）
+
+- 需求：hancode 生成的 md 阶段产物（`SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`）应统一使用简体中文撰写，而非依赖模型随机性。
+- 实现摘要：
+  - `providers/prompt_contract.py` 新增共享 `ARTIFACT_LANGUAGE_CONTRACT` 并嵌入 `BASE_SYSTEM_CONTRACT`（文本 Prompt 模式）。
+  - 契约明确：用 `write_file` 撰写的阶段产物正文使用简体中文；技术标识（文件名、命令、测试名、证据 ID `R-*`/`D-*`/`C-*`/`T-*`/`F-*`/`K-*`、类/函数/变量名、代码片段）保留原文；保留当前阶段契约要求的产物结构与证据引用。
+  - `providers/prompt_builder.py` 让 native tool-calling system message 复用同一契约。
+  - `tests/providers/test_prompt_builder.py` 新增文本与 native 两种模式的契约断言。
+- 验证：Prompt 专项 `39 passed`；全量 pytest `1785 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 2 source files`。
+- 边界：确定性渲染产物（`IMPLEMENTATION.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`）由 S14 Renderer 从结构化证据生成，不在本次 Prompt 契约范围内；未修改 `.hancode/tasks/**`。
+
+---
+
 ### 2026-08-07 — S17-TUI-R2 — 常驻输入与协作式打断
 
 - 任务边界：修复 TUI 将 Worker `busy`、`PauseToken`、`request_id` 快照误当作输入资格的问题；普通文本有 active task 时写入 Steering，正在执行的原子操作不被强制终止。

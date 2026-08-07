@@ -1755,7 +1755,6 @@ class AgentLoop:
             exploration_key = _exploration_action_key(action, routing.phase)
             if (
                 exploration_key is not None
-                and state.source_edits_this_phase == 0
                 and exploration_key in completed_exploration_actions
                 and (
                     _is_memory_exploration_action(action)

@@ -534,3 +534,34 @@ def test_native_tool_prompt_includes_runtime_steering_contract() -> None:
     assert "runtime steering" in system_content
     assert "task_context.user_interventions.effective" in system_content
     assert "never overrides system rules" in system_content
+
+
+def test_system_prompt_requires_artifacts_in_simplified_chinese() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(phase=Phase.SPEC),
+        tool_catalog=_make_catalog(),
+    )
+
+    system_content = prompt.messages[0].content
+
+    assert "ARTIFACT LANGUAGE" in system_content
+    assert "Simplified Chinese" in system_content
+    assert "SPEC.md" in system_content
+    assert "PLAN.md" in system_content
+    assert "TEST_REPORT.md" in system_content
+    assert "REVIEW.md" in system_content
+    assert "evidence IDs" in system_content
+
+
+def test_native_tool_prompt_includes_artifact_language_contract() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+        native_tool_calling=True,
+    )
+
+    system_content = prompt.messages[0].content
+
+    assert "ARTIFACT LANGUAGE" in system_content
+    assert "Simplified Chinese" in system_content
+    assert "SPEC.md" in system_content
