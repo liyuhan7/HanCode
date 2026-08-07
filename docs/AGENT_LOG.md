@@ -2,370 +2,6 @@
 
 本文件记录所有重要的智能体辅助开发活动。
 
----
-
-### 2026-08-07 — Prompt 产物语言契约（md 产物简体中文撰写）
-
-- 需求：hancode 生成的 md 阶段产物（`SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`）应统一使用简体中文撰写，而非依赖模型随机性。
-- 实现摘要：
-  - `providers/prompt_contract.py` 新增共享 `ARTIFACT_LANGUAGE_CONTRACT` 并嵌入 `BASE_SYSTEM_CONTRACT`（文本 Prompt 模式）。
-  - 契约明确：用 `write_file` 撰写的阶段产物正文使用简体中文；技术标识（文件名、命令、测试名、证据 ID `R-*`/`D-*`/`C-*`/`T-*`/`F-*`/`K-*`、类/函数/变量名、代码片段）保留原文；保留当前阶段契约要求的产物结构与证据引用。
-  - `providers/prompt_builder.py` 让 native tool-calling system message 复用同一契约。
-  - `tests/providers/test_prompt_builder.py` 新增文本与 native 两种模式的契约断言。
-- 验证：Prompt 专项 `39 passed`；全量 pytest `1785 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 2 source files`。
-- 边界：确定性渲染产物（`IMPLEMENTATION.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`）由 S14 Renderer 从结构化证据生成，不在本次 Prompt 契约范围内；未修改 `.hancode/tasks/**`。
-
----
-
-### 2026-08-07 — S17-TUI-R2 — 常驻输入与协作式打断
-
-- 任务边界：修复 TUI 将 Worker `busy`、`PauseToken`、`request_id` 快照误当作输入资格的问题；普通文本有 active task 时写入 Steering，正在执行的原子操作不被强制终止。
-- 实现摘要：
-  - `interfaces/tui/commands.py`：active task 普通文本统一路由为 `STEER`；`WAITING_INPUT` 仍路由为回答；无 active task 仍创建任务。
-  - `interfaces/tui/app.py`：以 active task 路由 Steering，保留不同 running task 的串线保护；真实 `active_run_id` 由 `InterventionService` 校验；已有 Worker 不重复启动，Worker 已结束且任务仍可运行时自动 resume，PAUSED 不隐式恢复。
-  - 更新 `docs/PLAN.md`、`docs/SPEC.md`、`docs/系统架构.md`。
-- 验证：TUI commands/steering/approval 专项 `36 passed`；全量 pytest `1776 passed, 15 skipped`；Ruff、MyPy 148 源文件、`uv build`、`git diff --check` 通过。
-- 未修改 `.hancode/tasks/task-001/**`；未提交 commit。
-- 剩余边界：当前仍是协作式打断，不强杀 Provider 请求、工具进程或已开始的 checkpoint/原子操作。
-
----
-
-### 2026-08-06 — S17-P0 — Provider Prompt 明确 Steering 权威契约
-
-- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用 RED → GREEN → REFACTOR。
-- 根因：Context 已注入 `user_interventions.effective`，但 Provider-facing system contract 未说明 Steering 覆盖任务目标、旧计划和 observation，也未说明 sequence 覆盖及当前 run 持续有效。
-- 实现摘要：
-  - `providers/prompt_contract.py` 新增共享 `RUNTIME_STEERING_CONTRACT`，嵌入 `BASE_SYSTEM_CONTRACT`，并在 authority 顺序中置于任务目标与 workspace evidence 之前。
-  - `providers/prompt_builder.py` 让 native tool-calling system message 复用同一契约，不改变既有 Function Tool 输出格式。
-  - 契约明确 `task_context.user_interventions.effective`、当前 run 全程有效、较大 sequence 覆盖较小 sequence，以及不得覆盖 system rules、phase gates、ToolPolicy、Approval、Checkpoint。
-  - `tests/providers/test_prompt_builder.py` 新增文本 Prompt 与 native Prompt 的契约测试；`docs/PLAN.md` 新增并完成 S17-P0 任务卡，SPEC/架构同步更新。
-- 验证：
-  - Prompt/Provider 专项：`90 passed`。
-  - 全量 pytest：`1776 passed, 15 skipped`。
-  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 148 source files`。
-  - `uv build`：sdist + wheel 成功；`git diff --check` 通过。
-- 备注：首次专项命令误包含不存在的 `tests/providers/test_prompt_contract.py`，已改用实际存在的 Prompt 测试文件重新验证通过。未修改 `.hancode/tasks/task-001/**`。
-- 剩余风险：Prompt 只负责引导模型；最终 Steering 优先级仍由已有 deterministic Context、Policy、Approval、Checkpoint 和 commit gate 机制强制执行。完整 Prepare—Commit—Apply、CANCEL/STOP、跨进程文件锁仍未实现。
-
----
-
-### 2026-08-06 — S17-R4 — Approval 绑定、失效、二次提交门与 WAITING_APPROVAL Steering
-
-- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用 RED → GREEN → REFACTOR；未修改 `.hancode/tasks/task-001/**`。
-- 任务边界：只实现 `docs/PLAN.md` S17-R4 任务卡；CANCEL/STOP、跨进程锁、完整 Prepare—Commit—Apply 副作用搬迁不在范围。
-- 实现摘要：
-  - `core/approvals.py`、`runtime/approval_request.py`：Approval manifest 绑定 `run_id`/`steering_revision_at_request`；新记录要求真实 run，旧 manifest 保持显式 unbound。
-  - `storage/approvals.py`：校验 project/task/approval identity；收紧生命周期迁移；仅 PENDING/APPROVED 可过期，EXPIRED/REJECTED 清理幂等；EXECUTING/CONSUMED 禁止过期。
-  - `runtime/agent_loop.py`：绑定漂移与旧 unbound 恢复失效；按固定双写顺序过期并重新规划；EXECUTING/CONSUMED 绑定异常 fail-closed；批准 Action 使用独立 Approval commit key 二次调用 `commit_action()`；非 checkpoint Action 在 dispatch 前进入 EXECUTING；低层 AgentLoop 无 TaskService run identity 时生成真实 active run。
-  - `interfaces/tui/commands.py`、`interfaces/tui/app.py`：WAITING_APPROVAL 普通文本写 Steering，不隐式 approve/reject，成功后自动 resume；显式 `/approve`/`/reject` 不回归。
-- TDD 证据：R4 binding/lifecycle/AgentLoop 测试先出现失败，再经最小实现变绿；新增 `tests/test_approval_r4_binding.py`。
-- 验证：
-  - Approval/AgentLoop/TUI 专项：通过；其中最终组合回归 `110 passed`，TUI Steering/commands `28 passed`。
-  - 全量 pytest：`1774 passed, 15 skipped`。
-  - Ruff：`All checks passed!`；MyPy：改动 6 个源文件 `Success: no issues found`。
-  - 旧 `test_tui_approval.py` 语义测试已同步为 Steering + auto-resume，并通过 `7 passed`。
-- 提交：未提交；按规范保留 `main` 工作区改动。
-- 剩余风险：完整 Prepare—Commit—Apply 副作用边界、CANCEL/STOP、跨进程文件锁仍未实现。
-
----
-
-### 2026-08-06 — S17-TUI — 运行中普通文本 Steering 接入
-
-- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用纵向 TDD。
-- 任务边界：只接入运行中普通文本 Steering；不启动第二个 mutation Worker。`WAITING_INPUT` 继续回答问题，`WAITING_APPROVAL` 的普通文本接入留给 R4，`PAUSED` 继续要求显式 `/resume`。
-- 实现摘要：
-  - `app/intervention_service.py`：新增 `InterventionService`/`SteeringSubmission`，校验 task、`active_run_id`、空内容和长度，委托 InterventionStore 脱敏与纯敏感拒绝。
-  - `interfaces/tui/commands.py`：新增 `PlainTextIntent.STEER` 与 `busy` 路由；保持 `WAITING_APPROVAL`/`WAITING_INPUT` 优先级。
-  - `interfaces/tui/app.py`：注入 InterventionService；busy 普通文本调用 `submit_steering`，UI 线程同步写 Store，显示 sequence 与下一安全点提示，不调用 `run_worker`。
-- 验证：
-  - `test_tui_commands.py`：`24 passed`。
-  - Steering/service/commands 专项：`32 passed`；加入 RunControl/task identity 边界回归后组合专项：`48 passed`。
-  - TUI app/controller/e2e/worker/hitl 回归：`63 passed`。
-  - 全量 pytest：最终 `1755 passed, 17 skipped`（约 204s，使用隔离 basetemp）；首次全量运行有 1 个既有 WAITING_INPUT placeholder 时序失败，单测复跑与第二次全量均通过。
-  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 148 source files`。
-  - `uv build`：sdist + wheel 成功；`git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
-- 提交：未提交；按规范 §17 保留 `main` 工作区改动，恢复包待全量质量门后保存。
-- 剩余风险：跨进程 writer 与完整 Prepare—Commit—Apply 仍是后续范围；WAITING_APPROVAL Steering 已在 S17-R4 完成。
-
----
-
-### 2026-08-06 — S17-R3 — Runtime Steering 确认（acknowledge / CONSUMED）
-
-- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用纵向 TDD。
-- 任务边界：只补 R2 里 `acknowledge=False` 的缺口——成功 apply 后把该 Action 实际处理的 Steering 标 CONSUMED；全量 Prepare—Commit—Apply 副作用搬迁本轮不做，Approval 绑定留给 R4，TUI 接入留待后续。
-- 实现摘要：
-  - `runtime/agent_loop.py`：新增 `_acknowledge_steering`（无 store/无 snapshot/无 delivery 短路；复用 `mark_consumed`；失败吞掉不破坏已 apply 状态；成功写 `intervention_consumed` trace）；在 TOOL_CALL 成功与 FINISH_PHASE 成功两个 choke point 调用；`InterventionStorePort` 增 `mark_consumed`。
-  - CONSUMED 记录仍持续进入 Context 的 `effective`，仅从 `awaiting_acknowledgement` 移除——符合规范"CONSUMED 不代表失效"。
-- 验证：
-  - 专项 pytest：`test_agent_loop.py` 64（新增 acknowledge/denial 两例）；interventions + task_service 回归 55。
-  - 全量 pytest：`1744 passed, 17 skipped`。
-  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
-  - `uv build`：sdist + wheel 成功。
-  - `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
-- 提交：未提交；按规范 §17 保留 `main` 工作区改动，恢复包存于仓库外 artifacts 目录。
-- 剩余风险：全量 Prepare—Commit—Apply 副作用搬迁未做——旧决策的部分副作用（recovery state、checkpoint 等）仍在提交门之前发生，严格的"未越过提交门零副作用"需后续重构；已开始的原子操作不被打断，符合规范；TUI 尚未接入。
-
----
-
-### 2026-08-06 — S17-R2 — Runtime Steering 并发 revision 线性化
-
-- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用纵向 TDD。
-- 任务边界：仅实现 revision 并发线性化（`commit_action` + 幂等 ledger + AgentLoop 陈旧输出丢弃）；`acknowledge`/CONSUMED 标记与 Prepare—Commit—Apply 大重构留给 S17-R3，Approval 绑定留给 S17-R4，TUI 接入留待后续。
-- 实现摘要：
-  - `core/interventions.py`：新增 `ActionCommitStatus`(COMMITTED/REPLAN) 与 `ActionCommitResult`。
-  - `storage/interventions.py`：新增 `commit_action`（共享路径锁下与 `submit` 线性化；幂等 ledger `action_commits.jsonl` + `os.fsync`；REPLAN 不 acknowledge；ledger 损坏 fail-closed）与 `_CommitLedgerEntry`。
-  - `runtime/agent_loop.py`：`InterventionStorePort` 增 `current_revision`/`commit_action`；Provider 前 `mark_delivered` 返回 STALE 时丢弃并 `stale_context_discarded`；Provider 返回后 `current_revision` 变化时丢弃；有效 Action 前 commit 门返回 REPLAN 时丢弃并 `stale_action_discarded`；三者均不消耗 recovery budget、不派发工具。
-- 验证：
-  - 专项 pytest：`test_interventions_commit.py` 7、`test_interventions_runtime.py` 新增 5、`test_interventions_store.py` 回归；`test_agent_loop.py` 回归。
-  - 全量 pytest：`1742 passed, 17 skipped`。
-  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
-  - `uv build`：sdist + wheel 成功。
-  - `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
-- 提交：未提交；按规范 §17 保留 `main` 工作区改动，恢复包存于仓库外 artifacts 目录。
-- 剩余风险：commit 门当前 `acknowledge=False`，Steering 处理后不立即标记 CONSUMED（依赖 R3 Prepare—Commit—Apply 精确判定可安全 apply 后再 acknowledge）；已开始的原子操作（checkpoint/dispatch）不被打断，符合规范原子边界；TUI 尚未接入，运行中提交仅经 Store API。
-
----
-
-### 2026-08-06 — S17-R1 — Runtime Steering 基础切片（Store + Snapshot + Context 注入）
-
-- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用纵向 TDD。
-- 任务边界：仅实现 S17-R1 基础切片（阶段 0-2）；并发线性化 `commit_action`、Prepare—Commit—Apply、Approval revision 绑定、orphan 恢复与完整 run 生命周期表、TUI 接入均明确延后至 S17-R2+。
-- 实现摘要：
-  - `core/interventions.py`（新增）：Steering 领域模型（事件、记录投影、Snapshot、DeliveryResult），`content` 仅 SUBMITTED 事件携带。
-  - `storage/interventions.py`（新增）：append-only `interventions.jsonl` + `os.fsync`；模块级路径锁；`submit/prepare_context/mark_delivered/mark_consumed/current_revision`；严格重放校验、损坏 fail-closed、`redact_text` 脱敏与纯敏感拒绝、幂等。
-  - `core/state.py`：新增可选 `active_run_id`（5 处 additive，向后兼容旧 `state.json`）。
-  - `runtime/context.py`：`build` 增 `user_interventions`/`intervention_revision`，注入持续有效的 Steering 块，预算不足返回 `intervention_context_budget_exceeded`，Steering 不被静默裁剪；正文脱敏。
-  - `runtime/agent_loop.py`：`InterventionStorePort` + 可选 `intervention_store`；每轮生成 Snapshot、注入 Context、Provider 前 `mark_delivered`；无 store 或无 `active_run_id` 时行为不变。
-  - `runtime/engine.py`、`app/task_service.py`：透传 store（引擎默认注入）；最小 run 生命周期（创建/复用/拒绝/清除）。
-- 验证：
-  - 专项 pytest：`test_interventions_store.py` 10、`test_interventions_context.py` 5、`test_interventions_runtime.py` 7；相关回归 `test_context_builder/test_state/test_agent_loop/test_task_service` 通过。
-  - 全量 pytest：`1730 passed, 17 skipped`（约 169s，需超时 >120s 复跑）。
-  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
-  - `uv build`：sdist + wheel 成功（`--offline` 仅因 setuptools 未进缓存失败，非代码问题）。
-  - `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
-- 提交：未提交；按规范 §17 保留 `main` 工作区改动，恢复包存于仓库外 artifacts 目录（`slice-all.patch` + `untracked/`）。
-- 剩余风险：并发 revision 线性化未做，Provider 调用期间到达的 Steering 在本切片仅通过「持续注入下一轮」生效，不保证旧 Action 失效（留待 S17-R2 `commit_action`）；TUI 尚未接入，运行中提交仅经 Store API 可用。
-
----
-
-### 2026-08-06 — S16 — TUI 凭据输入支持系统剪贴板
-
-- 使用的技能：未使用；沿用用户要求的 `main` 分支快速修复，不采用 TDD。
-- 根因：Textual 8.2.8 的 `Input.action_paste()` 只读取 Textual 内部 clipboard，不读取操作系统剪贴板；Windows Terminal 常用的 `Ctrl+Shift+V` 也未绑定到凭据输入控件。
-- 实现摘要：
-  - `interfaces/tui/config_dialogs.py` 新增 `CredentialInput`，覆盖 `Ctrl+V`、`Ctrl+Shift+V`、`Shift+Insert`，优先读取系统剪贴板，失败时回退 Textual 内部 clipboard。
-  - Windows 使用固定 PowerShell `Get-Clipboard -Raw` 命令，macOS 使用 `pbpaste`，Linux 依次使用 `wl-paste`/`xclip`/`xsel`；所有调用 `shell=False`、1 秒超时，不记录剪贴板内容。
-  - 保留原有密码掩码、Keyring 写入和 `project.json` 不落 secret 的行为；bracketed paste 仍由 Textual 原生 Input 处理。
-  - `test_config_tui_s8.py` 参数化覆盖三种快捷键，并继续验证 Keyring 存储和脱敏展示。
-- 验证：
-  - TUI 配置专项：`12 passed`。
-  - 相关配置/凭据回归：`130 passed, 1 skipped`。
-  - 全量 pytest：`1709 passed, 17 skipped`。
-  - Ruff：通过。
-  - MyPy：`config_dialogs.py` 无错误；全仓 `src` 145 个源文件无错误。
-  - 全局 `git diff --check` 仅命中并行修改的 `README.md` 文件末尾空行；本任务改动文件检查通过，未修改该文件。
-- 剩余风险：系统剪贴板读取依赖终端所在系统提供对应命令；若命令不可用，用户仍可逐字输入或使用终端 bracketed paste，不会抛出未处理异常。
-
----
-
-### 2026-08-06 — S15 — CODE 可写目标发现、遍历去噪与无进展保护
-
-- 使用的技能：未使用；按用户要求直接在 `main` 分支快速修改，未采用 TDD。
-- 任务边界：不修改 `.hancode/project.json`、`.hancode/tasks/task-001/**` 或 `core/config.py`；配置由用户后续调整。
-- 实现摘要：
-  - `runtime/context.py` 在 CODE context 中对不存在的 `writable_roots` 注入 `writable_roots_warning`，明确首次合法 `write_file` 会创建父目录。
-  - `providers/prompt_contract.py` 明确以 `sections.writable_roots` 为权威目标，禁止因目录尚不存在而重复 `list_files` 或修改配置。
-  - `tooling/file_tools.py` 将 `rglob` 替换为 top-down 安全遍历，在下降前剪枝 `.git`、虚拟环境、依赖与缓存目录，并保留敏感路径、凭据别名、符号链接和项目根约束。
-  - `runtime/agent_loop.py` 新增 CODE 只读探索 action key；无 source write 时重复探索先反馈，继续重复按交互配置进入 `WAITING_INPUT` 或 `BLOCKED/code_progress_stalled`，不重复调用工具。
-  - 对应补充文件工具、上下文、提示词和 AgentLoop 回归测试；更新 `docs/PLAN.md` 的 S15 任务卡。
-- 验证：
-  - 专项及相关回归：`462 passed, 4 skipped`。
-  - 全量 pytest：`1707 passed, 17 skipped`。
-  - 全仓 Ruff：`All checks passed!`。
-  - 全仓 MyPy：`Success: no issues found in 145 source files`。
-  - `git diff --check` 通过。
-- 工作区备注：`README.md` 与 `src/hancode/README.md` 存在本任务未修改的并行工作区变化，已保留且未纳入本次修复。
-- 剩余风险：CODE 探索重复集合按单次 AgentLoop run 维护，跨进程 resume 不重建历史集合；后续若需跨 resume 检测，应单独设计持久化契约。
-
----
-
-### 2026-08-06 — S14-R2~R7 — 学习证据链、五步交付、发布 Profile 与反思服务
-
-- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：按 `docs/deliver计划.md` 逐 R 推进，重心放在编码，专项测试为主，1-7 完成后统一全量。旁路新建学习证据链，不侵入既有 AgentLoop 主循环以避免大范围回归。
-- 实现摘要：
-  - R2：`delivery_support/renderer.py`（generated/student 分区，仅重写 generated 区、标记歧义 fail-closed、secret 扫描、幂等）；`app/learning_service.py` 的 `record_requirements`/`record_plan`/`record_change` 三闭环（事件→快照→稳定 ID→引用校验→渲染 SPEC/PLAN/IMPLEMENTATION）。
-  - R3：`LearningService` 扩展 `record_test_attempt`（`T-*`）/`record_failure`（`F-*`）/`record_recovery`（`REC-*`）与 TEST_REPORT.md 渲染，历史失败不被后续通过覆盖。
-  - R4：`runtime/traceability_builder.py`（8 种关系链 + 严格 covered 判定）；`record_review`（REVIEW.md）/`record_knowledge`（KnowledgeCard→KNOWLEDGE.md，evidence_refs 与 transfer_example 硬约束）。
-  - R5：`delivery_support/collector.py` + `validator.py`（Collect→Validate，S14.6 硬门禁/warning）；`DeliveryResult` 增 `submission_eligible`/`learning_contract_status`/`learning_warnings`（默认值向后兼容）；`DeliveryService.evaluate_learning`（旧任务标 `legacy_unverified`，不改历史状态）。
-  - R6：`storage/export.py` 的 `ExportProfile` + `export_task_profile`（submission/learning/audit，显式 allow-list、staging 原子发布、防覆盖、自描述 manifest，排除 state/trace/memory/凭据/原始 checkpoint）；`DeliveryService.export_profile` facade。
-  - R7：`app/reflection_service.py`（`learning/reflections.json` 权威 + revision 乐观锁 + secret 拒绝 + 投影学生区）；`app/learning_inspection_service.py`（只读 overview）。
-  - 后续接线项（未做，避免侵入主循环大范围回归）：`DeliveryPipeline` 完全 cutover、AgentLoop 成功修改后自动 `record_change`、SPEC/PLAN phase 拒绝 `write_file`、CLI/TUI `--profile` 与 Textual 学习/反思组件。
-- 验证：
-  - S14 专项 pytest：12 个 `tests/test_s14_*.py` 共 80 passed。
-  - 全量 pytest：`1699 passed, 17 skipped, 1 failed`；唯一失败 `test_course_project_scaffold.py::test_code_change_requires_test_or_risk_note` 经 `git stash` 确认为基线既有失败（断言 SPEC.md 文本，与 S14 代码无关）。
-  - 全仓 Ruff：`All checks passed!`；MyPy：`src/hancode` 145 源文件无错误。
-  - 修复：`load_state` 对显式为 null 的 `learning_contract_version` 兼容（save_state 总是写出该键），修复由此引发的 `test_cli_tasks` 3 项回归。
-- 提交：未提交；保留 `main` 工作区改动。
-- 人工干预：用户要求重心在编码、逐任务推进、专项为主、最后全量。
-- 剩余风险：上列后续接线项未实施；`test_course_project_scaffold` 的既有失败需由 SPEC 文本维护单独处理（非本轮范围）；build/demo/三种 export E2E 未纳入本轮（可在接线任务一并补充）。
-
----
-
-### 2026-08-06 — S14-R1 — 学习证据模型、事件 Store 与状态/配置兼容
-
-- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：按 `docs/deliver计划.md` 的 S14 执行计划推进 R1，用户批准的三项决策——事件命名采用 SPEC 冻结的 9 种；RecoveryEvidence 使用独立 `REC-*` 前缀；digest 复用现有 `delivery_coverage_digest`（不新增 `delivery_evidence_digest`）。旁路新建学习证据链，不改 `DeliveryPipeline`。
-- 实现摘要：
-  - R1.1：`core/state.py` 增 `learning_contract_version` 与 `IMPLEMENTATION.md` artifact（load 兼容旧 6 键/新 7 键并归一化，旧 state 读取不自动升级）；`core/config.py`+`core/project_config.py` 增 `submission_paths`（仅项目内相对路径，`_validate_submission_path` 拒绝绝对/`..`/`.hancode` 内部/符号链接逃逸）；`storage/workspace.py` 初始化 `learning/` 目录与 7 键 artifacts、`learning_contract_version=1`。
-  - R1.2：`core/learning_evidence.py` 九个 frozen 证据模型 + `LearningSnapshot`、`TraceabilityLink`；`EvidenceKind` 与 ID 格式化/校验/解析函数集中管理前缀与位宽。
-  - R1.3：`storage/learning_store.py` append-only 哈希链事件日志（9 种 event_type）+ `evidence.json` 派生投影（可删可重建）；task identity/seq/previous_digest/schema 校验，尾部半行只取完整前缀，中间损坏/digest 断裂 fail-closed。
-- 验证：
-  - 专项 pytest：`tests/test_s14_learning_store.py tests/test_s14_learning_models.py tests/test_state.py tests/test_config.py tests/test_workspace.py tests/test_memory_store.py` 238 passed。
-  - 相关回归：`tests/test_phases.py tests/test_phase_gate.py tests/test_router.py tests/test_tool_policy.py tests/test_export.py tests/test_delivery.py tests/test_agent_loop.py` 205 passed。
-  - Ruff/MyPy：新增与改动文件通过。
-- 提交：未提交；保留 `main` 工作区改动。
-- 人工干预：用户批准 3 项契约决策并要求重心放在编码、逐任务推进、专项测试为主、全量留到 R1-R7 完成后。
-- 剩余风险：架构 §S14.2 的 ID 前缀表仍写 7 种，`REC-*` 需在后续 R3 契约变动时补记；`learning_store` 尚未接入 Recorder 与 Pipeline（R2 起接入）；全量 pytest/build/demo/export E2E 留待收尾统一执行。
-
----
-
-### 2026-08-05 — S13 追踪修复 — remediation 范围直达模型（消除 read_file 死循环）
-
-- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：分析 `.hancode/tasks/task-003` trace，发现模型 56 次 read_file 中 23 次读 index.html、8 次 edit_file 全被 remediation planned_paths policy 拒绝，陷入 read→edit→denied→memory_search 循环。根因：CODE 阶段看不到 remediation 决策，模型被迫去 memory 里猜。用户批准按 5 个修改点实施。
-- 实现摘要：
-  - 修改点 1（确定性兜底）：`context.py` 在 CODE 阶段有 failed 状态且 remediation 存在时注入 `sections.remediation_scope`（kind/planned_paths/digest），stale binding 抛结构化错误；`_TRUNCATION_ORDER[CODE]` 末位加入 `remediation_scope`（最后才被截断）。
-  - 修改点 2（确定性兜底）：`tool_policy.py` 的 `_evaluate_remediation_path` 拒绝 `remediation_planned_path_required` 时 suggested_fix 直接列出允许的 planned_paths。
-  - 修改点 3（提示词）：`prompt_contract.py` CODE 契约明确"读 sections.remediation_scope / test_remediation.json，不要用 memory_read 查 remediation"；REVIEW 契约声明 remediation 持久化到 test_remediation.json。
-  - 修改点 4（去误导）：`tool_specs.py` memory_search 描述声明内部决策不入 memory；`storage/memory.py` `_memory_content_unavailable` 的 suggested_fix 指引改读 `.hancode/tasks/<task>/test_remediation.json`。
-  - 修改点 5（纪律）：`BASE_SYSTEM_CONTRACT` 决策程序新增"读工具失败后切换不同读法，不重试同一 memory 工具"。
-- 验证：
-  - 全量 pytest：`1607 passed, 17 skipped`。
-  - Ruff：`All checks passed!`（5 源文件 + 5 测试文件）。
-  - MyPy：`Success: no issues found in 5 source files`。
-- 提交：未提交；保留 `main` 工作区改动。
-- 人工干预：用户确认执行全部 5 个修改点。
-- 剩余风险：remediation_scope 注入依赖 `latest_test_status == "failed"`；`modify_test` 类 remediation 的 planned_paths 仍可能不含目标源码路径，属决策正确性问题而非可见性问题，未在本轮改变。
-
----
-
-### 2026-08-04 — S13-R9 — 容量闭环（可审计历史 Blob 淘汰）
-
-- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：修复审核提出的达配额后永久阻塞、无 compaction/淘汰闭环；用户确认按保守方案（可审计历史 blob 淘汰 + 保留 record 元数据 + `memory_content_evicted`，不删事件、不重编号）实施。
-- 冻结契约：memory_id 永久稳定；只淘汰 blob 内容写独立 `evicted.json` manifest；`memory_read` 已淘汰返回 `memory_content_evicted`；quota 统计完整日志与存活 blob；淘汰资格限“全部引用已 stale 且非当前快照”；先写 manifest 再删文件。
-- 实现摘要：
-  - `_compact_evictable_blobs()` 在 append 配额压力时按字节从大到小淘汰合格历史 blob，先原子写 manifest 再删文件；`load()` 透传 evicted 集合，缺失且在 manifest 跳过、否则 `memory_corrupt`，产生 `memory_blob_evicted`。
-  - `read()` 已淘汰返回非阻塞 `memory_content_evicted`；`search()` 跳过已淘汰 blob 内容。
-- 验证：
-  - 专项 pytest：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 56 passed。
-  - Ruff：`storage/memory.py`、`tooling/memory_tools.py` 与测试通过。
-  - MyPy：两源文件无错误。
-  - `git diff --check`：无空白错误。
-- 提交：未提交；保留 `main` 工作区改动。
-- 人工干预：用户确认保守 compaction 方案、不采用 TDD、在 main 开发。
-- 剩余风险：采用反应式（append 触发）淘汰而非高低水位后台压缩；未做成配置化水位；事件日志本身不压缩，符合冻结契约。
-
----
-
-### 2026-08-04 — S13-R11 — Recent Events 分层
-
-- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：修复审核提出的 `MEMORY_ACCESS` 挤掉有价值 recent events；不越界改存储格式、公开输出协议或 Context 预算裁剪。
-- 实现摘要：`MemoryContextPacker` 的 `recent_events` 分层，substantive（TOOL_RESULT/INVALIDATION/ROLLBACK）取最近 `max_memory_recent_events`，`MEMORY_ACCESS` 单独最多 2 条排其后；access 仍完整留在持久化日志。
-- 验证：
-  - 专项 pytest：`tests/test_memory_context.py tests/test_context_builder.py` 24 passed。
-  - Ruff：`runtime/memory.py` 与 Context 测试通过。
-  - MyPy：`runtime/memory.py` 无错误。
-  - `git diff --check`：无空白错误。
-- 提交：未提交；保留 `main` 工作区改动。
-- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
-- 剩余风险：access 上限固定为 2（模块常量），未做成配置项；若后续需要可提为 `HanCodeConfig` 字段。
-
----
-
-### 2026-08-04 — S13-R10 — 超长单行的字节续传
-
-- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：修复审核提出的超长单行无法分页恢复——原实现返回同一 `next_start_line=1` 前缀，剩余部分永不可取；不越界改 compaction、recent 分层或 Context 预算。
-- 实现摘要：
-  - `MemorySlice` 增 `start_byte_offset`/`next_byte_offset`；`store.read()` 接受 `start_byte_offset` 只对起始行做 UTF-8 字节续传，越界或断字 fail-closed。
-  - `_fit_memory_slice` 单行超预算时返回 `[TRUNCATED]` 前缀并设 `next_byte_offset`，读完该行恢复行分页；ToolSpec `memory_read` schema 增 `start_byte_offset`，registry kwargs 透传。
-- 验证：
-  - 专项 pytest：`test_memory_models/store/tools/action_schema/action_parser/tool_factory/tool_registry` 135 passed。
-  - Ruff：四个源文件与工具测试通过。
-  - MyPy：四个源文件无错误。
-  - `git diff --check`：无空白错误。
-- 提交：未提交；保留 `main` 工作区改动。
-- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
-- 剩余风险：新增两个整型字段使 memory_read 最小元数据略增，已同步两个预算断言；未引入 continuation token 抽象，采用 line + byte offset 双游标，语义边界已限定为“仅对起始行有效”。
-
----
-
-### 2026-08-04 — S13-R8 — Event Tail 与 Orphan Blob 崩溃恢复
-
-- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：修复审核提出的进程硬崩溃恢复不完整——event 写到一半直接判损坏、blob 已提交而 event 未提交产生的 orphan blob 无清理；不越界改 compaction、长行续传、recent 分层或公开输出协议。
-- 实现摘要：
-  - `_recover_incomplete_event_tail()`：仅在结尾缺换行且可信 index 匹配完整前缀时原子截断不完整尾部，产生 `memory_event_tail_recovered`；index 缺失/不符/replay 失败 fail-closed。用 `_InMemoryEvents` 复用 `_read_records`。
-  - `_remove_orphan_blobs()`：replay 后按 referenced 集合清理严格内容寻址命名的未引用普通 blob，产生 `memory_orphan_blob_removed`；链接、临时/杂项文件、已引用 blob 不动。审计信号累加。
-- 验证：
-  - 专项 pytest：`tests/test_memory_store.py` 42 passed。
-  - Ruff：`storage/memory.py` 与测试文件通过。
-  - MyPy：`storage/memory.py` 无错误。
-  - `git diff --check`：无空白错误。
-- 提交：未提交；保留 `main` 工作区改动。
-- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
-- 剩余风险：完整前缀中间损坏仍 fail-closed（不跳过），符合审计要求；更强的 pending 事务标记或 SQLite WAL 属后续可选增强，未纳入本任务。
-
----
-
-### 2026-08-04 — S13-R7 — Verified Blob 单次读取与单次加载搜索
-
-- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：修复审核提出的 verified blob TOCTOU 与 `memory_search` 近 O(N²) 全量重放；不越界改崩溃恢复、compaction、长行续传、recent 分层或公开输出协议。
-- 实现摘要：
-  - 新增 `_read_verified_blob()`，单次读取后校验长度与摘要并返回该字节；`_validate_blob()` 改为其只校验包装；`read_blob_bytes()` 不再二次读取路径。
-  - `read()` 只 `load()` 一次并直接读取已验证 blob；`search()` 入口只 `load()` 一次，循环用请求内 `dict[blob_ref, bytes]` 缓存去重。
-  - 保持缺失、篡改、symlink、junction fail-closed。
-- 验证：
-  - 专项 pytest：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 49 passed。
-  - Ruff：`storage/memory.py` 与三个测试文件通过。
-  - MyPy：`storage/memory.py` 无错误。
-  - `git diff --check`：仅 LF/CRLF 提示。
-- 提交：未提交；保留 `main` 工作区改动。
-- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
-- 剩余风险：`load()` 本身仍在重放时逐 blob 校验（O(N) 哈希），属既定 fail-closed 完整性要求；跨请求缓存未引入以避免外部篡改后的一致性风险。
-
----
-
-### 2026-08-04 — S13-R6 — 文件快照正确性与热点连续性
-
-- 使用的技能：未使用 superpowers；按用户明确要求不采用 TDD，直接实现后补回归测试，只跑专项门禁。用户要求在 `main` 上开发，未执行 destructive git 命令。
-- 使用的智能体：OpenCode。
-- 关键提示词 / 上下文：修复审核提出的两个 P1 记忆正确性问题——同路径旧快照可能永不 stale、全局 generation 误伤未修改文件热点正文；不越界处理 blob 读取优化、崩溃恢复、compaction、长行续传或 recent 分层。
-- 实现摘要：
-  - `_validate_replay()` 从既有 append-only 事件派生 `superseded_by`：路径出现新成功 `read_file` 快照时把该路径上一份 current 快照标记 superseded，不增加 generation、不追加事件、不改持久化 schema。`MemorySnapshot` 增派生字段 `superseded_by`。
-  - `MemorySlice`、`MemorySearchHit` 增 `superseded_by`；`read()`/`search()` 把 invalidated 或 superseded 统一视为 stale，superseded 场景 reason 为 `superseded`、非权威；`memory_read`/`memory_search` 输出同步暴露该字段。默认搜索排除 superseded，`include_stale=True` 可恢复历史。
-  - `MemoryContextPacker` 热点资格与 `hot_eligible` 移除全局 generation 相等限制，只依赖 freshness 后的 `latest_by_path`、文本媒体类型与去重；无关路径 mutation 抬升 generation 后当前文件仍保留在 file index 和 hot contents。
-- 验证：
-  - 专项 pytest：`tests/test_memory_models.py tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 55 passed。
-  - Ruff：核心四模块与四个测试文件 `All checks passed!`。
-  - MyPy：`core/memory.py storage/memory.py runtime/memory.py tooling/memory_tools.py` 无错误。
-  - `git diff --check`：仅 LF/CRLF 提示，无空白错误。
-- 提交：未提交；按用户要求保留 `main` 工作区改动。
-- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。未使用真实 LLM、网络或凭据。
-- 剩余风险：新增字段使 memory_read 最小元数据略增，已同步调整一个预算断言；全量 pytest、全仓 Ruff/MyPy、build 按计划在所有小任务完成后统一执行。
-
 ## 日志格式
 
 每条记录应包含：
@@ -379,495 +15,551 @@
 - 提交哈希 / PR 链接
 - 人工干预
 - 经验教训
----
-
-### 2026-07-27 — T21-R1 Task 9 — Agent 自生成测试命令与审批后续闭环
-
-- 使用的技能：未使用 superpowers；使用 `brainstorming`、`writing-plans`、`test-driven-development`、`verification-before-completion` 和 `using-git-worktrees`。用户明确要求直接在 `main` 开发；worktree 创建因 `.git/refs` 权限被阻断后，未执行 destructive git 命令并按用户要求继续使用 `main`。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：以用户提供的真实 trace 与修改计划为准，基于当前 runtime、ToolSpec、Provider Schema、Router、state 和 AgentLoop 实际行为修复闭环；不重写 `tooling/test_tools.py`、`tooling/factory.py`、`policy/approval_policy.py`、`runtime/delivery_pipeline.py` 或 `core/router.py`。
-- TDD 证据：先添加 TEST 无配置命令、TEST 工具权限、Provider 显式命令、审批后续跑和 Provider 空响应重试测试；实现前聚焦回归为 8 个失败，分别复现原有阶段越界、配置前置条件、Schema 缺少 required、审批后不续跑和 Provider 一次失败即阻塞。
-- 实现摘要：
-  - `ContextBuilder` 将 `config.test_command` 降为可选候选；`run_tests` 限制为 TEST-only；TEST 开放 `list_files`、`read_file`、`search_text`，并为 `list_files.path` 补齐 Schema。
-  - Provider-facing `run_tests` Schema 在 TEST 强制 `args.command`；CODE/TEST/REVIEW Prompt 明确测试基础设施、项目探索、完整行为测试、单条命令和失败进入 REVIEW 的契约。
-  - AgentLoop 对批准的 `run_tests` 回灌完整 `FeedbackBuilder` observation，在同一次 `resume` 继续调用 Provider；通过与失败分别持久化测试结果并走 TEST 完成或 REVIEW 路由。保留非测试审批动作已有的单次执行契约。
-  - Provider `invalid/empty response` 增加连续两次有限重试；审批 manifest/state 同步异常改为结构化 `approval_state_sync_failed`，不再静默吞错。
-  - 新增/更新 context、tool policy、prompt schema、agent loop 和 provider failure 回归测试，覆盖 `TEST -> approval -> run_tests -> state/TEST_REPORT -> finish/REVIEW`。
-- 验证：
-  - 全量 pytest：`1336 passed, 17 skipped`。
-  - `uv run --no-sync ruff check src tests`：`All checks passed!`。
-  - `uv run --no-sync mypy src/hancode`：`Success: no issues found in 98 source files`。
-  - `uv build`：提升权限后成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`；首次沙箱运行仅因 Windows `WinError 5` 无法写入构建临时目录而失败。
-  - 当前变更未修改 Router、ApprovalPolicy、test_tools、factory 或 delivery pipeline。
-- 提交：未提交；按用户要求保留 `main` 工作区改动。
-- 人工干预：用户提供完整修改计划并明确“不使用 superpowers 技能”“在 main 分支上开发”；未使用真实 LLM、网络 API 或凭据。
-- 剩余风险：严格 mypy 扫描 `src/hancode tests` 仍报告仓库既有测试侧类型错误，本轮只确认生产包 `src/hancode` 98 个文件无错误；未扩大范围修复这些既有测试类型债务。构建/测试生成的临时目录已清理。
 
 ---
 
-### 2026-07-23 — T21-R1 Task 8 — 动态测试命令审批与执行安全化
+### 2026-07-07 __:__ — 任务 0 — SPEC 风险与未决问题补全
 
-- 使用的技能：按用户明确要求不使用 TDD；使用执行计划、代码审查、专项验证和完成前验证流程。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：保留 LLM 的可选 `run_tests.args.command` 能力；省略命令时使用配置 fallback；显式命令必须人工审批；仅允许单条 argv；保留当前无关 TUI 范围不变。
-- 实现摘要：
-  - `run_tests` dispatch 统一选择显式命令或 `config.test_command`，注入的 `RunTestsTool` 改为接收 `str | None`，并对注入结果复用命令/输出脱敏。
-  - `run_tests` 使用 `shlex.split`、固定 project root、`shell=False`、捕获输出和 `check=False`；拒绝 `&&`、`||`、管道、重定向、分号、命令替换、反引号和换行等 shell 控制语法。
-  - 显式命令复用 `ApprovalCategory.RUN_TESTS`，不受 `approval_mode=disabled` 绕过；审批端口默认装配，拒绝时不进入 ToolRegistry，批准恢复使用带完整 args digest 的原 Action。
-  - 审批预览、trace 的 `tool_called` / `tool_completed` / `test_completed` / `test_failed`、state 和 `TEST_REPORT.md` 的命令字段统一脱敏；敏感值不会进入持久化审批记录。
-  - 更新 ToolSpec、Demo/test stub、schema、工具/审批/AgentLoop 回归测试及 SPEC/PLAN 契约。
-- 验证：
-  - 动态命令专项 pytest：`92 passed`。
-  - 全量 pytest：`1297 passed, 17 skipped in 92.21s`。
-  - `uv run --no-sync ruff check src tests --no-cache`：`All checks passed!`。
-  - `uv run --no-sync mypy src`：`Success: no issues found in 97 source files`。
-  - `uv build`：成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`。
-  - `git diff --check`：通过。
-- 人工干预：用户明确要求本轮不使用 TDD；分支创建因 `.git/refs/heads` 锁文件权限被阻断，未执行 destructive git 命令，改在当前工作区实施。
-- 剩余风险：shell 控制字符拒绝采用保守策略，可能拒绝包含这些字符的合法测试参数；`docs/系统架构.md` 的历史性 run_tests 描述未在本卡允许文件范围内改动，规范以本轮 SPEC/PLAN 为准。
-
----
-
-### 2026-07-23 — S5-R2 — 通用异步 Operation 查询路由与过期结果防护
-
-- 使用的技能：按用户要求不使用 TDD；使用代码库探索、验证前置和最小范围实现流程。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：S5-R0/R1 已在当前未提交工作区完成；本轮只执行 `docs/PLAN.md` 的 S5-R2，不实现 R3 Inspection View 或新命令。
-- 实现摘要：
-  - `TuiOperationExecutor` 增加 Diff、Test Report、Checkpoint、Delivery evidence 和 Trace 只读路由，统一使用注入的 Application Service。
-  - Trace 通过 `InspectionService.read_trace()` 分页读取并保留有界 `TracePage`；Delivery 查询使用 `get_evidence()`，明确不调用会触发 finalize 的 `get_result()`。
-  - `/trace`、`/artifacts` 和 Artifact 预览均进入 `task-query` Worker；Controller 统一校验 request ID、operation task ID 和当前 active task，拒绝过期结果及错误。
-  - 同步既有源码契约测试以覆盖统一 `_run_operation_worker()`，补充查询路由和 active task 切换回归。
-- 验证：R2 聚焦测试 `20 passed`；TUI/TaskService 回归 `118 passed`；全量 Pytest `1266 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `96 source files` 无错误；`git diff --check` 通过。
-- 提交：未提交；工作区继续保留 S5-R0/R1 与 S5-R2 的合并改动，等待 R2-R6 完成后统一提交。
-- 人工干预：用户明确要求本轮直接开发，不采用 TDD。
-- 剩余风险：R3 尚未接入 Diff/Test/Checkpoint/Delivery/Artifact 的产品化 Detail View 和完整命令参数；本轮未运行 Build/Demo 质量门。
-
----
-
-### 2026-07-23 — S5-R3 — Inspection Views、命令契约与 Detail 路由
-
-- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：S5-R2 已完成；本轮只执行 `docs/PLAN.md` 的 S5-R3，不修改 S4 Inspection 算法，不进入 R4 HITL Modal。
-- 实现摘要：
-  - 扩展 `/diff`、`/test`、`/checkpoints`、`/delivery`、`/trace [event-id]` 等命令，并对 Diff scope 和 Artifact allow-list 做结构化参数校验。
-  - 增加 Diff、Test Report、Checkpoint、Delivery、Export 纯 ViewModel 和 Presenter；统一脱敏、截断、数量上限、绝对路径隐藏和 Plain Text 渲染。
-  - Controller 将 Inspection 结果路由到 `DetailKind`，Trace 支持按 event ID 查看安全事件摘要；Delivery evidence 缺失显示 blocked 只读状态。
-  - Detail Static 明确关闭 Rich markup，Inspection 查询继续通过既有 Application Service，不读取 Git、Manifest 或 Artifact Path。
-- 验证：R3 聚焦测试 `50 passed`；TUI/TaskService 回归 `124 passed`；全量 Pytest `1272 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `96 source files` 无错误。
-- 提交：未提交；工作区继续保留 S5-R0~R3 合并改动。
-- 人工干预：用户要求继续执行 R3-R6，并明确不使用 TDD；按依赖顺序先完成 R3 再进入 R4。
-- 剩余风险：R4 尚未实现 ASK_USER/Approval/Rollback Modal；R5 Export/恢复/响应式布局与 R6 E2E/Build/Demo 仍未完成。
-
----
-
-### 2026-07-23 — S5-R4 — Human-in-the-Loop Modal 与安全决策
-
-- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：S5-R3 已完成；本轮只执行 R4，不修改 Approval/Recovery 状态机和服务算法。
-- 实现摘要：
-  - 新增 Textual `ApprovalDialog`、`RollbackDialog`，分别提供显式 Approve/Reject/Cancel 和 Confirm/Cancel；键盘快捷键只在 Modal 屏幕内生效。
-  - ASK_USER 使用 `InteractionView` 渲染有界安全文本；Approval Modal 校验 approval ID，过期请求不会调用 ApprovalService。
-  - 保留既有 `/approve`、`/reject`、`/rollback confirm` 命令，决策成功后自动 resume，取消和失败不产生写操作或 resume。
-  - 发现并最小修正工作区已有 `tooling/factory.py` 的 Path/dynamic kwargs 类型错误，使全仓 MyPy 恢复可验证；未改变其运行行为。
-- 验证：R4 Modal/HITL 专项 `18 passed`；TUI/TaskService 回归 `128 passed`；全量 Pytest `1277 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误。
-- 提交：未提交；工作区继续保留 S5-R0~R4 合并改动。
-- 人工干预：用户要求继续执行 R3-R6，并明确不使用 TDD；按依赖顺序进入 R5。
-- 剩余风险：R5 尚未实现 Export 命令、启动恢复和响应式布局；R6 E2E/Build/Demo 仍未完成。
-
----
-
-### 2026-07-23 — S5-R5 — Export、恢复与响应式布局
-
-- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：S5-R4 已完成；本轮只执行 R5，不引入 IDE/Shell/多项目工作区，也不修改 Delivery export 算法。
-- 实现摘要：
-  - 增加 `/export <directory>` 命令和 Export Mutation Worker 路由，结果通过 `ExportResultView` 显示；实际 artifact allow-list、目录覆盖和 workspace 边界仍由 DeliveryService 保证。
-  - 保留启动同步任务列表初始化以避免立即退出留下可取消 Worker；任务选择继续通过 Query Worker 恢复 Trace、Interaction 和 Approval 状态。
-  - `MainScreen` 根据终端宽度提供 wide/medium/narrow 三档布局，窄终端使用纵向布局，核心 Composer/Task/Activity/Detail 仍可访问。
-  - 最小修正工作区已有 `tooling/factory.py` 类型问题，恢复全仓静态质量门。
-- 验证：R5 相关回归与 TUI/TaskService 测试通过；全量 Pytest `1279 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误。
-- 提交：未提交；工作区继续保留 S5-R0~R5 合并改动。
-- 人工干预：首次异步启动 Query 导致立即 `/quit` 的 WorkerCancelled 回归，已恢复启动阶段同步刷新；运行中查询仍为后台 Worker。
-- 剩余风险：R6 尚未补齐完整产品路径 E2E、Build 命令/Demo 和最终 Build 质量门。
-
----
-
-### 2026-07-23 — S5-R6 — 完整 TUI E2E、Build、Demo 与最终质量门
-
-- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最终质量门流程。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：S5-R5 已完成；本轮完成 `docs/PLAN.md` 的 S5-R6，不使用真实网络、凭据或真实 LLM。
-- 实现摘要：
-  - 新增 `/build` 命令、BuildService 注入和 Mutation Worker 展示，配置 Build 结果只显示安全摘要并刷新 Task 状态。
-  - 新增基本任务和 Delivery Inspection/Export Textual `run_test` 路径；与既有 ASK_USER、Approval MockLLM E2E 共同覆盖 S5 产品闭环。
-  - 更新 README 与系统架构文档，记录完整 Inspection、HITL、Export、Build 命令和响应式布局能力。
-  - 修正 Windows 命令解析中 `/export` 路径反斜杠被 shlex 吞掉的问题；保留普通命令的既有解析行为。
-- 验证：全量 Pytest `1283 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误；`git diff --check` 通过；R6 Build/E2E 专项通过；`uv build --offline` 成功生成 sdist/wheel；`uv run hancode demo --provider mock` 返回 completed。
-- 提交：未提交；等待用户统一审阅 S5-R0~R6 后提交。
-- 人工干预：联网 `uv build` 因 TLS handshake eof 失败，改用同一环境缓存依赖的 `uv build --offline`，源码构建过程和 wheel/sdist 生成均成功。
-- 剩余风险：GitHub Actions 尚无本轮独立 run 证据；17 个既有平台相关 skip 保留；工作区仍包含用户在本轮之前的未提交改动。
-
----
-
-### 2026-07-23 — S5 review follow-up — 三个 P0 状态一致性修复
-
-- 使用的技能：`receiving-code-review`、`systematic-debugging`、`verification-before-completion`；按用户既有要求不使用 TDD。
-- 使用的智能体：OpenAI Codex。
-- 审查结论：确认 Approval 查询会被后续 `LIST_TASKS` 覆盖，Delivery Presenter 会错误推导 Ready，Rollback confirm 未绑定预览 checkpoint。
-- 实现摘要：
-  - 调整 `RUN_TASK`/`GET_STATUS` 的 UI 查询顺序，Task List 完成后才触发 WAITING_INPUT/WAITING_APPROVAL 反映，避免 `GET_APPROVAL` request 被覆盖。
-  - 新增只读 `DeliverySummary` 与 `DeliveryInspectionService.read_delivery_summary()`，复用 DeliveryPipeline 的真实 blocker/status 计算，查询不写 Artifact、不调用 finalize。
-  - `TuiOperation` 携带 `expected_checkpoint_id`；RecoveryService 在 Task Lock 内复核最新 checkpoint，stale 时结构化拒绝并不触碰回滚存储。
-  - 新增 Approval 查询顺序、缺失交付物 blocked、stale rollback 三类回归。
-- 验证：P0 专项 `19 passed`；修复后全量 Pytest `1300 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误；`git diff --check` 通过。
-- 提交：未提交；当前工作区仍包含用户此前的未提交改动。
-- 剩余风险：P1 的 Mutation Worker 全面化、Detail 滚动、Recent Trace 查询和 App 拆分尚未处理；远端 CI 仍无独立 run 证据。
-
----
-
-### 2026-07-22 — S4-R7 — 评审阻断修复与正式交付闭环
-
-- 使用的技能：未使用 `using-superpowers`；按 S4-R7 任务卡执行 TDD、回归验证和文档同步。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：该条目对应基线提交 `f0f8989`；不使用真实网络、凭据或第三方 Agent 框架。
-- TDD Red：新增正式 `get_diff` evidence 回归后先观察到 evidence 未持久化；移除 Demo 手工交付编排后先观察到 Demo 缺少 Diff gate 和 trace 事件；随后以最小实现接入正式 AgentLoop 路径。
-- 实现摘要：
-  - AgentLoop 对真实 `run_tests` 自动生成测试报告、写入 `test_completed` / `feedback_generated`；对真实 `get_diff` 持久化 Diff digest 并对 drift fail-closed；结构化 review/knowledge/finalize 写入交付 trace。
-  - Demo action 序列通过 MockLLM 驱动 `record_review`、`get_diff`、`record_knowledge` 和 `finish_phase`，移除 Runner 手工写证据、手工切换 Deliver phase 和手工 finalize。
-  - 补齐 BuildService 审计字段、DeliveryPipelinePort 协议、checkpoint snapshot 读取大小上限和 Diff drift 清除语义。
-  - 新增/扩展 `tests/test_s4_review_remediation.py`，并同步 Demo convergence 断言到正式 AgentLoop 装配路径。
-- 验证：专项 `tests/test_s4_delivery_e2e.py tests/test_mock_demo.py tests/test_s4_review_remediation.py` 为 `40 passed`；全量 pytest 为 `1231 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
-- 提交：`f0f8989`（基线实现提交）。
-- 人工干预：基线阶段将 S4 与 S4-R7 在 `docs/PLAN.md` 标记为已完成；后续评审发现审批恢复和 CLI Build 证据缺口，已在本条目后追加返工记录。
-- 经验教训：交付证据必须在 AgentLoop 的真实 ToolResult 分支中持久化；Demo 只能提供确定性 Provider action，不能绕过 Parser、Policy、Registry、Pipeline 或 Delivery gate。
-- 剩余风险：基线阶段仍有 17 个既有平台相关 skip；审批恢复、CLI Build 和 Evidence 安全边界由后续返工处理。
-
----
-
-### 2026-07-22 — S4-R7 follow-up — 审批恢复与证据安全收口
-
-- 背景：复核确认 `WAITING_APPROVAL -> approve -> resume` 的 Build/source write 路径绕过了状态与 Evidence 后处理，CLI Build 只更新 state；同时发现 Demo 仍使用旧 `ResultBuilder`、结构化 Evidence 缺少统一脱敏/上限、二进制 Diff 未计算 drift hash。
-- TDD Red：新增三条审批/CLI 回归均先失败；新增 Evidence 脱敏/数量限制和二进制 drift 回归先失败。
-- 实现摘要：新增 AgentLoop 审批执行后的统一 `_post_tool_execution`，同步 `_state_after_tool`、Build/Diff/Test Evidence；补充 `DeliveryService.record_build`；Demo 改用持久化 core `DeliveryResult`；Evidence 字段统一脱敏、截断、数量限制和 source_trace_id 校验；二进制文件保留 bounded bytes 计算 drift hash。
-- 额外修复：审批 checkpoint 由外部管理器写 trace 后，同步 AgentLoop 本地 trace 序列，避免合法审批源写入被误判为 trace gap。
-- 验证：S4/审批/Diff/Demo 专项基线记录为 `64 passed`；本轮收尾专项命令实际为 `56 passed`；全量 pytest `1236 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
-- 提交：未提交；改动基于 `f0f8989`，等待用户决定是否创建后续提交。
-- 剩余风险：GitHub Actions 尚未取得独立 run 证据；Windows 环境仍保留既有平台相关 skip。
-
----
-
-### 2026-07-22 — S4-R7 follow-up — Demo trace 序列回归收尾
-
-- 背景：统一普通工具后处理后，Demo 在跨 stage source write 时出现 `trace_event_invalid`，后续表现为 `phase_mismatch`。
-- 根因：checkpoint 管理器直接写入的 trace 事件被重复注入 AgentLoop 本地事件列表；Demo adapter 每个 stage 使用独立逻辑序号，导致事件 ID/序号语义冲突。
-- 修复：移除普通 source write 路径中不必要的 trace 重新同步，仅保留审批恢复所需的外部 trace 同步；不改变状态与交付 Evidence 后处理。
-- 验证：`tests/test_mock_demo.py` 为 `10 passed`；S4/E2E、Demo、审批修复和 Diff 专项为 `56 passed`；全量 pytest 为 `1236 passed, 17 skipped`；Ruff、MyPy 和 `uv build` 均通过。
-- 提交：未提交；改动基于 `f0f8989`，等待用户决定是否创建后续提交。
-- 剩余风险：GitHub Actions 尚未取得独立 run 证据；Windows 环境仍保留既有平台相关 skip。
-
----
-
-### 2026-07-22 — CI 修复 — 测试跨模块导入 `No module named 'tests'`
-
-- 背景：GitHub Actions CI 用 `uv run pytest` 运行 `tests/test_s4_tools.py` 时，`from tests.test_checkpoint_query import ...` 报 `ModuleNotFoundError: No module named 'tests'`，本地 `python -m pytest` 因 cwd 进 sys.path 而通过。
-- 根因：`tests/` 无 `__init__.py` 也无 `conftest.py`；`pytest` 直接调用时 cwd 不进 sys.path，`tests` 无法作为命名空间包导入。
-- 修复：将 `_write_minimal_manifest` 和 `_make_checkpoint_dir` 提取到 `tests/_checkpoint_helpers.py`（非 `test_` 前缀，pytest 不收集）；`test_checkpoint_query.py` 与 `test_s4_tools.py` 改用 `from _checkpoint_helpers import`，消除跨测试模块导入。
-- 验证：用 `pytest`（非 `python -m`）直接调用模拟 CI，`tests/test_s4_tools.py tests/test_checkpoint_query.py` 为 `18 passed, 2 skipped`；全量 `pytest` 为 `1236 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误。
-- 提交：未提交；改动基于 `e6fc673`，等待用户决定是否创建后续提交。
-- 剩余风险：GitHub Actions 尚需本次改动推送后复验独立 run 证据。
-
----
-
-### 2026-07-18 — T28 — P0 分层结构重组与装配层抽取
-
-- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：用户要求只做结构重组和装配层抽取；采用 `storage/`、`tooling/`、`providers/` 等实际包名避开既有平铺文件同名冲突；不重写 AgentLoop、ToolPolicy、Checkpoint、Trace、State 业务逻辑，不引入真实网络 Provider。
-- TDD Red：新增 `tests/test_structure_layers.py` 后专项为 6 failed，失败集中在新包缺失、engine 缺失和 Demo 没有 engine factory。
-- 实现摘要：
-  - 将 core、runtime、policy、storage、tooling 模块迁入分层包，内部 import 改为新路径。
-  - 旧平铺模块改为指向新实现的兼容别名；`test_tools.py` 保留普通 re-export，避免 pytest 将兼容源文件识别为导入路径不一致的测试模块。
-  - 将 `llm.py` 拆为 `providers/base.py`、`providers/mock.py`，新增 mock-only factory、确定性 prompt 序列化和 action schema 适配。
-  - 新增 `runtime/engine.py`，支持默认 filesystem 装配及 provider、registry、trace、max steps 等测试/demo 注入；Demo 改用 engine factory。
-  - 将 CLI 实现迁入 `interfaces/cli.py`，旧 `cli.py` 保留入口代理。
-- Green：结构专项 `6 passed`；全量 pytest `730 passed, 13 skipped`。
-- 验证：Ruff `All checks passed!`；MyPy `Success: no issues found in 61 source files`；compileall、`uv build` 和 `git diff --check` 均通过；`uv build` 日志确认七个新分层包进入 sdist / wheel；`hancode --help`、`hancode demo --provider mock`、`hancode auth status --provider mock` 和临时目录 `hancode init` 均返回成功。
-- 提交：未提交，用户未要求创建提交。
-- 人工干预：根据用户计划选择 `storage/`、`tooling/` 和保留平铺 delivery/demo 的 P0 范围；明确 P1/P2 延后。
-- 经验教训：同名旧模块与新包迁移时，单纯 `from ... import *` 无法保留旧模块级 monkeypatch；模块别名能保持实现身份，但 pytest 收集 `test_tools.py` 时必须使用普通 re-export 保留旧 `__file__`。
-- 剩余风险：P1 `app/`、P2 `demo_support/` / `delivery_support/` 尚未拆分；真实远程 Provider 仍未实现。
-
----
-
-### 2026-07-18 — T29 — P1 应用服务层拆分
-
-- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：只抽取应用编排，不改现有 workspace、engine、credential、export 和 CLI public behavior；保留 CLI 的 `credential_provider`、project service 和 delivery service 注入点。
-- TDD Red：新增 app 层契约测试后，收集阶段因 `hancode.app` 不存在得到预期 `ModuleNotFoundError`。
-- 实现摘要：新增 `ProjectService`、`TaskService`、`AuthService`、`DeliveryService`，分别封装 workspace 初始化、engine run、显式凭据 provider 和 artifact export；`interfaces/cli.py` 改用 Project/Auth/Delivery service。
-- 验证：`tests/test_app_layers.py tests/test_cli.py` 通过；后续全量 pytest `741 passed, 13 skipped`，Ruff、MyPy 和 CLI smoke 通过。
-- 提交：未提交，用户未要求创建提交。
-- 人工干预：未新增 CLI 命令，TaskService 保留为可注入应用 API，不把 task run 暴露为新的 CLI 行为。
-- 经验教训：AuthService 必须每次从当前模块级 `credential_provider` 建立门面，才能同时支持 CLI 旧 monkeypatch 和显式依赖注入。
-- 剩余风险：真实远程 Provider 仍未实现，属于既有 P0 非目标。
-
----
-
-### 2026-07-18 — T30 — P2 Demo 与 Delivery 支持包拆分
-
-- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
-- 使用的智能体：OpenAI Codex。
-- 关键提示词 / 上下文：只改变代码布局和 import；必须保持 Delivery Markdown、DeliveryResult、Demo action、fixture digest、trace/state/checkpoint、package data 和旧模块级 monkeypatch 行为。
-- TDD Red：新路径契约测试初次运行时，`delivery_support` / `demo_support` 导入均因包不存在而失败。
-- 实现摘要：
-  - 将 Delivery 核心实现迁入 `delivery_support/result.py`，在 `reports.py`、`review.py`、`knowledge.py`、`deliverables.py` 提供职责化入口；旧 `delivery.py` 别名到同一实现并保留 monkeypatch 语义。
-  - 将 Demo runner 迁入 `demo_support/runner.py`，action 序列迁入 `actions.py`，fixture 校验/复制/配置迁入 `fixture.py`；旧 `demo.py` 别名到 runner。
-  - 新增 `tests/test_app_layers.py` 覆盖 P1/P2 import、身份、服务注入和 action 确定性。
-- Green：P1/P2 专项与现有 CLI、Delivery、Demo 回归通过；全量 pytest `741 passed, 13 skipped`。
-- 验证：Ruff `All checks passed!`；MyPy `Success: no issues found in 76 source files`；compileall、`uv build`、`git diff --check` 通过；build 日志确认 `app`、`delivery_support`、`demo_support` 进入 sdist/wheel；`hancode --help`、`hancode demo --provider mock`、`hancode auth status --provider mock` 返回成功。
-- 提交：未提交，用户未要求创建提交。
-- 人工干预：保留旧 Delivery/Demo 文件为模块别名；没有删除旧入口或引入新的 CLI 命令。
-- 经验教训：对结构迁移而言，旧模块必须别名到实际实现模块；否则现有测试对 `save_state`、`_is_link`、registry 和 knowledge 的 monkeypatch 会失效。
-- 剩余风险：Delivery 专项中的 13 个平台相关 skip 仍需在具备 symlink 权限的 CI 环境复验；真实远程 Provider 不在本轮范围。
-
----
-
-### 2026-07-13 — M3 CI 回归 — search_text 凭据 symlink alias
-
-- 问题：Linux CI 的 symlink 场景中，`search_text` 同时报告真实 `.env` 和指向它的 alias；预期只报告 alias。
-- 根因：遍历 canonical 路径时，真实凭据文件和 alias 都进入 `skipped_files`，缺少按 canonical 目标去重。
-- 修复：在 `src/hancode/file_tools.py` 中记录凭据文件的 canonical 路径；存在非凭据 alias 时隐藏真实凭据路径，没有 alias 时保留原有凭据跳过记录。
-- 验证：FileTools 专项 `29 passed, 2 skipped`；Windows 本机因 symlink 权限跳过 alias 用例，需由 Linux CI 复验。
-
----
-
-## 记录条目
-
-### 2026-07-17 — T21-R1 Task 1 — 安全边界与资源上限
-
-- 使用的技能：test-driven-development。
-- 使用的智能体：OpenAI Codex。
-- 摘要：FileTools 统一拒绝凭据目录、`.env` 变体和常见密钥/证书文件；新任务读取项目 `retry_budget`；checkpoint 与 trace 达到配置上限时 fail-closed；普通 `write_file` 使用同目录临时文件原子替换；workspace 识别 Python 3.11 Windows reparse point。
-- 验证：专项 `tests/test_file_tools.py tests/test_workspace.py tests/test_checkpoints.py tests/test_trace.py` 为 `133 passed, 6 skipped`；Ruff 通过；5 个生产源文件 MyPy 通过。全量曾得 `542 passed, 9 skipped, 3 failed`，其中 2 项为既有 course-file protection trace stub 行为，已记录于任务报告。
-- 提交：`b91ed75`（实现提交；本报告/日志回填为后续文档提交）。
-
----
-
-### 2026-07-17 — T21-R1 Task 2 — 错误优先级与生命周期审计事件
-
-- 使用的技能：test-driven-development。
-- 使用的智能体：Claude Opus。
-- 背景：Task 1 全量测试遗留 `3 failed`，其中 2 项为 course-file protection trace stub 用例——它们断言"trace 后端完全不可用时，受保护写入仍必须以 `policy_denied` 为主错误被拒"，而 AgentLoop 旧实现让 `trace_write_failed` 覆盖了 `policy_denied`。
-- 修复（均 TDD：先失败测试后最小实现）：
-  - 错误优先级（对齐修复边界"policy denial 保留为主错误；trace 写失败作为审计风险"）：在**已有既存主错误**的两个平行分支——`policy_denied` 与 `action_parse_failed`——写 trace 失败时，保留业务主错误（policy 拒绝 / 解析错误），trace 失败降级为 `Risk(level="medium")` 附加到结果，仍 fail-closed 不派发工具。新增 `_trace_failure_risk()` 辅助函数与 `test_policy_denial_keeps_primary_error_when_trace_write_fails`、`test_parse_error_keeps_primary_error_when_trace_write_fails`。其余 trace 点（tool_called / source_write_authorized / checkpoint 等变更关卡，及 tool_failed / test_failed / retry_budget_consumed 等无既存业务主错误的点）维持原 fail-closed 语义未改。
-  - 生命周期审计事件：补 `phase_started`（阶段切换时，单阶段内不重复）、`phase_completed`（FINISH_PHASE 成功后）、`run_completed`（路由判定 completed 时，含循环内与循环末两条路径）。新增 `test_lifecycle_events_bracket_a_finished_phase`、`test_run_completed_event_is_emitted_on_router_completion`。
-  - 失败语义分层：纯审计标记点（phase_started/phase_completed/run_completed/policy_denied）trace 写失败降级为 risk 累加、不掩盖主错误/结果；变更与工具执行点（tool_called、source_write_authorized、checkpoint）保持 fail-closed BLOCK 不变，作为"无未审计变更"的安全底线。用运行内 `pending_risks` 累加器 + `_result` 闭包自动合并 risks。
-  - 回归测试同步：更新 `test_agent_loop_result_preserves_non_state_port_boundaries`、`GappedTraceAppender` 注入点、`test_failed_test_retries_through_review_then_decrements_once_on_retry_write` 的精确 trace 序列以反映新增生命周期事件。
-- 验证：全量 `uv run pytest -q -p no:cacheprovider` 为 `548 passed, 9 skipped`（较 Task 1 的 3 failed，2 项 course-file protection 转绿，无新增红）；`ruff check src tests --no-cache` 通过；`mypy src` 19 文件无错误；`git diff --check` 干净。
-- 同步文档：`PLAN.md` 收窄 T21-R1 非目标句（原"完整生命周期事件矩阵不在本卡内"改为记录已追加 phase/run 生命周期事件、仅 context/action 级矩阵仍不重构），标注组2工具待实现风险（接真实 registry 时 `edit_file` / `run_tests` 会命中 `tools.py:44` "Tool is not registered."）；`系统架构.md` §10A.2 将 reconcile 的 committed checkpoint 快照校验与 pending checkpoint 自动回滚标记 aborted 标注为"未实现 / post-MVP"，与 `reconcile_state()` 仅做 artifact 漂移检测的实现现状对齐。
-- 审计条目核对说明：
-  - 组3所列"test_trace.py:218 固化反向行为需改"经核实为**行号误标**——该用例测的是 `trace.py::append_trace()` 底层原语契约（写文件失败必须抛 `HanCodeError`），是 loop 层错误优先级决策与 fail-closed 关卡的前提，不能改。真正固化反向行为的是 `test_course_file_protection.py` 两个用例，本批 A 改动后已自动转绿。
-  - H① / H② 目标文本在当前仓库不存在：全仓无 `trace_limit_exceeded` 错误码（代码为 `trace_event_limit_exceeded`，PLAN 未写该码，无不一致）、所有 `.md` 无 `journal` 措辞。未做无依据的"修正"。
-- 剩余风险 / 非目标（本批未实现，留待后续任务）：
-  - 组2内置工具（`edit_file` 恰好一次匹配 + 原子写入、`run_tests` 仅执行配置命令且禁止 `shell=True`、默认工具装配工厂）仍未实现——`tools.py` 当前只提供 `ToolRegistry` dispatch 骨架；接真实 registry 前 `edit_file` / `run_tests` 会在 `tools.py:44` 返回 "Tool is not registered."，仅测试 stub 可用。
-  - PathClassifier / config 保护模式已覆盖 `*.key` / `*.pem`；证书类扩展（如 `*.crt` / `*.cer`）与无扩展名、`.pdf`、`requirements.txt` 的分类扩展未在本批处理。
-  - pending checkpoint 恢复的完整分支覆盖仍依赖 T21 既有 resume 通道；未新增跨会话 observation 重放。
-- 提交：待用户决定。
-
----
-
-### 2026-08-03 — 交付阶段状态一致性修复 — AgentLoop blocked 分支复写旧状态
-
-- 使用的技能：`test-driven-development`、`verification-before-completion`、`systematic-debugging`；不使用真实 LLM、网络 API 或凭据。
-- 使用的智能体：GitHub Copilot。
-- 背景：交付阶段任务（`.hancode/tasks/task-001`）在 blocked 后出现 `state_inconsistent`。诊断确认两层原因：直接阻塞是"存在 Checkpoint 但缺少最新 Diff 证据"（`delivery/evidence.json` 的 `latest_diff_sha256` 为 null，交付门禁返回 BLOCKED）；真正丢失状态的代码缺陷是 AgentLoop 的 DELIVER `FINISH_PHASE` blocked 分支用旧的 in-memory `state` 调用 `_block()`，把 `finalize()` 刚通过 `_write_artifact` 持久化的状态（`DELIVERABLES.md` 存在、`delivery_coverage_digest`、`status`）复写回旧值，造成磁盘文件与 `state.json` 漂移，最终被 `reconcile_state` 判为 `state_inconsistent`。
-- TDD Red：新增两个回归测试均先失败——
-  - `tests/test_agent_loop.py::test_deliver_finalize_blocked_preserves_persisted_delivery_state`（单元级，stub delivery pipeline 通过共享 state store 写入状态）失败于 `persisted.artifacts["DELIVERABLES.md"] is True`；
-  - `tests/test_agent_loop.py::test_deliver_finalize_blocked_no_diff_keeps_state_consistent`（集成级，真实 `DeliveryPipeline` + `create_agent_loop` + 真实已提交 checkpoint，复现"checkpoint 存在 + 无 diff"场景）失败于 `final_state.artifacts["DELIVERABLES.md"] is True`。
-- 实现摘要：
-  - `src/hancode/runtime/agent_loop.py` 的 DELIVER `FINISH_PHASE` 两个 blocked 分支（`HanCodeError` 异常分支与 `delivery_status is not COMPLETED` 分支）在 `_block()` 前先 `state = self._state_store.load(task_id)` 重新加载权威状态，与成功分支已有的 reload 行为对齐，确保 finalize() 持久化的交付状态不被旧快照覆盖。
-  - 测试侧：为 `_build_loop` 增加 `delivery_pipeline` 注入；新增 `StubDeliveryPipeline`（实现完整 `DeliveryPipelinePort` 协议）与 `StubDeliveryResult`；`_finish_deliver_action()` helper；集成测试通过 `create_checkpoint` + `commit_checkpoint` 构造真实 checkpoint。
-- Green：两个回归测试通过。
-- 验证：
-  - 相关套件 `tests/test_agent_loop.py tests/test_delivery.py tests/test_s4_delivery_e2e.py tests/test_checkpoints.py`：`141 passed, 5 skipped`。
-  - 全量 pytest：`1467 passed, 17 skipped`。
-  - `ruff check src tests scripts`：`All checks passed!`。
-  - `mypy src`：`Success: no issues found in 130 source files`。
-- 提交：未提交；等待用户审阅。
-- 剩余风险：直接阻塞原因（缺失 Diff 证据）属于业务门禁，需模型在交付前成功执行 `get_diff` 才会解除；本轮仅修复状态被复写的代码缺陷，未改变 `_delivery_blockers` 判定逻辑。测试文件存在仓库既有的 mypy 类型债（不在 `mypy src` 门禁范围内），本轮未扩大范围清理。
-
----
-
-### 2026-07-13 — T16 — TraceLogger
-
-- 使用的技能：karpathy-guidelines；test-driven-development；verification-before-completion。
-- 使用的智能体：OpenAI Codex。
+- 使用的技能：Superpowers brainstorming
+- 使用的智能体：OpenAI Codex
 - 关键提示词 / 上下文：
-  - 在 `feature/M4` worktree 实现 T16；用户确认函数式设计，TraceLogger 负责分配 `event_id` 和 `seq`。
-  - 仅新增 `trace.py` 与 `test_trace.py`，并回填 PLAN / AGENT_LOG；不改 AgentLoop、ToolPolicy、CheckpointManager 或 history summary。
+  - 用户要求补充“风险与未决问题”。
+  - 通用 SPEC 要求明确预见可能让智能体出问题的环节。
 - 摘要：
-  - 新增不可变 `TraceEvent` 与 `append_trace()`；事件追加到 task root 的 `trace.jsonl`，并以最后一条合法事件计算连续 `seq` 及 `evt-000001` 格式 ID。
-  - 对 action、observation、state transition 执行递归复制式脱敏；Authorization、api_key、token、secret、password、credential、private_key 等字段只记录 `[REDACTED]`，字符串超过 4096 字符截断为 `...[TRUNCATED]`。
-  - 损坏 trace 或无效既有编号返回 `trace_parse_error`；追加失败返回 `trace_write_error`，不回显底层异常内容。后续高风险调用链可将该错误作为阻断信号。
-- 逐项 TDD 证据：
-  - Red：先因 `hancode.trace` 不存在得到 `ModuleNotFoundError`；随后编号测试断言第二条仍为 `evt-000001`，安全测试发现假 secret 与完整 4097 字符内容出现在 JSONL，异常测试暴露原始 `JSONDecodeError` / `OSError`，编号完整性测试确认无效末条事件未被拒绝。
-  - Green：最小实现分别补齐追加、序号、脱敏截断、结构化错误与编号校验；最终专项为 `8 passed in 0.13s`。
-- 验证：
-  - `ruff check src/hancode/trace.py tests/test_trace.py --no-cache`：通过。
-  - `mypy src/hancode/trace.py`：`Success: no issues found in 1 source file`。
-  - 全量 pytest：`354 passed, 4 skipped in 5.14s`；全量 ruff：通过；全量 mypy：`Success: no issues found in 16 source files`。
-- 环境备注：受限 sandbox 无法创建 pytest 临时锁文件，且 `uv run --extra dev` 的 editable 构建临时目录被拒绝访问；使用 `$env:PYTHONPATH='src'` 加 `uv run --no-project --with ...` 并在本机环境运行同一测试命令取得验证证据。
-- 提交：本任务提交（见 `git log`）。
-- 剩余风险：MVP 已逐行验证 task 内历史后分配序号，但尚未实现并发 writer lock、`fsync` 或崩溃后半行恢复；这些与实际 AgentLoop / 高风险工具调用链集成均属于后续任务。
-
-#### 第一阶段评审修正
-
-- 新鲜独立评审发现：仅检查末行会允许中间损坏、重复 ID 或倒退序号的历史继续追加；字符串型凭据和 JSON 编码异常仍可能泄露原始异常；tool 事件字段与 task ID 未验证。
-- 修正：追加前逐行验证完整历史的连续 `seq` 与 `event_id`；将 JSON 序列化失败转为 `trace_write_error`；对全部字符串键值形式的敏感文本脱敏；要求 tool action 的名称、参数、原因和 policy decision，要求失败工具事件携带错误摘要，并绑定 task ID 与 task root。
-- 验证：新增 7 项回归后 `tests/test_trace.py` 为 `15 passed in 0.23s`；全量为 `361 passed, 4 skipped in 2.65s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
-
-#### 第二阶段安全/质量评审修正
-
-- 新鲜独立评审发现：cookie、AWS access key 和无键名 Bearer token 能绕过原始脱敏；历史 task ID、task-root 布局、tool policy decision/状态与非字符串运行时输入未被充分验证。
-- 修正：扩展字段和文本型凭据脱敏；逐行校验历史 task ID；限制 task root 为 `.hancode/tasks/<task_id>`；要求完整 policy decision 与受限工具状态；将非字符串 mapping key 规范化为字符串，并将非字符串 error summary 转为 `invalid_trace_payload`。
-- 范围判断：评审提出的并发 writer lock、`flush/fsync` 和进程崩溃半行恢复确有审计耐久性价值，但 `docs/PLAN.md` 将单 task 单活跃 runner 明确列为 post-MVP，且 T16 只承诺单进程函数式 JSONL MVP；本任务不提前实现并发/耐久化机制，保留为后续风险。
-- 验证：新增 7 项回归后 `tests/test_trace.py` 为 `22 passed in 0.32s`；最终全量为 `368 passed, 4 skipped in 2.54s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
-- Re-verdict 修正：第二阶段代理继续发现受保护短文本仍会原样进入 trace、伪造 `.hancode/tasks/` 布局可通过、非 Mapping payload 会抛原始异常，且 tool event status 与 event type 不一致仍可落盘。所有内容字段现只记录 `[CONTENT_OMITTED]` 与长度；task root 还必须存在有效 `project.json`；payload、policy 字段及工具状态均 fail-closed。
-- 最终 Re-verdict 修正：字段名别名（如 `file_content`、`tool_output`、`response_body`）由精确匹配改为规范化前缀/后缀匹配，嵌套内容同样摘要化。
-- 最终验证：新增 7 项回归后 `tests/test_trace.py` 为 `29 passed in 0.43s`；全量为 `375 passed, 4 skipped in 3.92s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
-- 第二阶段最终 re-verdict：无 Critical、Important 或 Minor；字段别名及嵌套内容摘要、项目 metadata、payload 与工具审计契约均已关闭。并发 writer lock、`fsync` 与崩溃半行恢复仍为已记录的 post-MVP 非目标。
-
-#### 文档收尾（2026-07-13）
-
-- 按 T16 收尾要求只修改文档，不运行测试、不修改 `src/hancode/`。
-- `docs/PLAN.md`：补齐完整函数式接口、29 项实际测试名称、最终验证记录、T16 实现边界、FR-8 `[x]` 状态和实现提交 `df39f8c`。
-- `docs/系统架构.md`：移除与当前实现不一致的 `schema_version` / `LAST_ERROR` / 旧事件示例，统一为 `seq`、`evt-{seq:06d}`、内容摘要、项目 metadata 校验和结构化错误契约。
-- 文档核验：检查 T16 引用、过时事件格式、占位接口和明显笔误；本轮按用户要求未运行测试。
-
-### 2026-07-13 — T17 — CheckpointManager
-
-- 使用的技能：karpathy-guidelines；test-driven-development；systematic-debugging；requesting-code-review；receiving-code-review；verification-before-completion。
-- 使用的智能体：OpenAI Codex；第一阶段新鲜契约审查子代理；第二阶段新鲜安全/持久化审查子代理。
-- 已实现：
-  - 新增函数式 `CheckpointFile` / `CheckpointManifest`、`create_checkpoint()` 与 `commit_checkpoint()`；通过 state 序列生成 `ckpt-NNN`，支持既有 SOURCE 文件与新建 SOURCE 目标的 before/after hash 生命周期。
-  - 创建使用临时 checkpoint 目录后 rename；state 或 trace 失败时恢复 state、删除 checkpoint，无法补偿时返回 `checkpoint_compensation_failed`。
-  - manifest、快照、checkpoint 根/临时目录均验证 task 边界；拒绝外链 symlink/junction、篡改 ID/project/schema、非法状态、快照缺失/逃逸/哈希不匹配、非法 after hash 和 PROTECTED 路径。
-  - manifest reason 与 trace reason 均脱敏敏感赋值和 Bearer token；创建/提交分别写 `checkpoint_created` / `checkpoint_committed`。
-- TDD 与审查：
-  - Red：最初因 `hancode.checkpoints` 不存在得到 `ModuleNotFoundError`；审查后新增 state/trace 补偿、manifest 篡改、before snapshot 完整性、symlink 边界和 reason 脱敏回归。
-  - 第一阶段审查曾发现失败补偿、初始原子发布、manifest 信任边界和 before snapshot 可恢复性缺口；逐项补测试与修复后通过。
-  - 第二阶段审查曾发现 `files/`、manifest 链接边界、reason secret 落盘和 after hash 格式缺口；逐项静态复审后无 Critical/Important，结论可合入。
-- 验证：
-  - 沙箱外专项 `tests/test_checkpoints.py` 为 `40 passed, 4 skipped in 1.93s`；4 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
-  - 沙箱外全量 pytest 为 `415 passed, 8 skipped in 5.10s`。
-  - Ruff 输出 `All checks passed!`；MyPy `src/hancode/checkpoints.py` 为 `Success: no issues found in 1 source file`；`git diff --check` 通过。
-  - 首次全量复验暴露 `tests/test_course_project_scaffold.py` 仍要求 PLAN 保留 `test_edit_file_creates_checkpoint`；已在 T17 测试清单中补回该兼容名称，修复后全量通过。
-- 提交：未提交；T17 已完成验证，是否提交由用户决定。
-- 剩余风险：T18 rollback、T21 自动调度、跨进程锁/TOCTOU、pending crash reconcile 与 pruning 均不在 T17 范围。
-
-### 2026-07-13 — T18 — RollbackManager
-
-- 使用的技能：karpathy-guidelines；test-driven-development；systematic-debugging；requesting-code-review；verification-before-completion。
-- 使用的智能体：OpenAI Codex；第一阶段新鲜契约审查子代理；第二阶段新鲜安全/持久化审查子代理。
-- 已实现：
-  - 在 `checkpoints.py` 新增冻结的 `RollbackResult` 与函数式 `rollback_last_checkpoint()`；仅允许在一致的 review state 中恢复最新、同 task / project、已提交且可回退的 code checkpoint。
-  - manifest 生命周期扩展为 `pending -> committed -> rolled_back`；成功回退后保留 checkpoint 序列和 retry budget，重置 review 后的测试/代码完成标记，并写入开始与结果 trace。
-  - 所有 identity、snapshot、PathClassifier、symlink/junction 与 after hash 校验均在写入前完成；冲突或读取错误返回 `blocked`，零业务文件写入。
-  - 多文件、manifest、state 与 trace 任一持久化失败均做反向补偿；补偿失败将 state 标记为 `inconsistent`。文件恢复使用同目录、独占创建的随机临时文件，避免预置路径或链接重定向。
-- TDD 与两阶段审查：
-  - Red：从缺少 rollback 导入开始，再逐项覆盖生命周期、状态复位、冲突、路径/链接边界和补偿。
-  - 阶段一发现 after-hash 预检读取错误被误报为 `failed`；已改为 `rollback_conflict` 的 `blocked` 结果并复核通过。
-  - 阶段二发现可预测临时路径的链接绕过、inconsistent state 仍可执行回退、以及补偿后结果仍虚报已恢复文件；均以最小代码和回归测试修复，复核后无 Critical/Important。
-- 验证：
-  - `tests/test_rollback.py tests/test_checkpoints.py` 为 `62 passed, 5 skipped`。
-  - 全量 pytest 为 `437 passed, 9 skipped in 8.33s`；9 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
-  - Ruff 输出 `All checks passed!`；MyPy 输出 `Success: no issues found in 17 source files`；`git diff --check` 通过。
-- 提交：未提交；T18 已完成验证，是否提交由用户决定。
-- 剩余风险：Windows 上链接分支仍需在可创建 symlink 的 CI/主机复验；跨进程锁、TOCTOU 完全消除、pending crash reconcile、pruning 与 T21 自动调度不在 T18 范围。
-
-### 2026-07-12 — T15 — 课程文件保护
-
-- 使用的技能：test-driven-development；systematic-debugging。
-- 使用的智能体：OpenAI Codex（T15 实现代理）；控制代理负责提交与最终验证。
-- 关键提示词 / 上下文：
-  - T15 只扩展默认保护模式与受保护写入的结构化反馈；PathClassifier 仍是唯一分类来源，ToolPolicy 仍是唯一写策略评估器。
-  - 不新增策略类、HITL 覆盖、删除工具、trace/checkpoint 机制或启发式文件名扫描；不变更 `PathClassifier.classify()` 与 `ToolPolicy.evaluate()` 的公开签名。
-- 摘要：
-  - `src/hancode/config.py` 为 assignment、requirements、rubric、course_constraints、教师测试、评分脚本、样例、`.env`、credentials 与 secrets 保留基线模式，并补充对应 `**/` 嵌套路径模式；未使用宽泛的 `requirements*`。
-  - `src/hancode/tool_policy.py` 保持 `denied_rule="protected_path"`，并将 protected write 的 message 与 suggested_fix 收敛为课程/凭据保护的固定反馈。
-  - 新增 `tests/test_course_file_protection.py`，以真实 ToolPolicy 加类型安全测试适配器验证各课程文档、嵌套路径、大小写/反斜杠、protected 优先于 writable root，以及空内容 `write_file` 与 `edit_file` 在 AgentLoop 中均不触发 registry dispatch。
-- 逐项 TDD 证据：
-  - Red：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_config.py tests/test_path_classifier.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py -v -p no:cacheprovider` 在沙箱外得到 `23 failed, 109 passed, 2 skipped in 5.76s`，失败原因是新默认保护模式和反馈尚未实现。
-  - Green：最小实现后同一命令得到 `132 passed, 2 skipped in 1.25s`。
-  - MyPy 修正：首次静态检查发现 frozen `PolicyDecision` 不满足 AgentLoop 需要可写字段的 `PolicyDecisionLike` Protocol；测试改用真实 ToolPolicy 的字段复制适配器，没有放宽生产类型。随后 `uv run --no-sync mypy src/hancode/config.py src/hancode/tool_policy.py tests/test_course_file_protection.py --cache-dir (Join-Path $env:TEMP 'hancode-mypy-cache-t15')` 输出 `Success: no issues found in 3 source files`。
-- 评审与范围：
-  - 自审确认仅修改默认模式、既有 protected-path 文案与对应测试；没有修改 PathClassifier、ToolPolicy 的公开签名或引入非目标机制。
-  - `uv run --no-sync ruff check src/hancode/config.py src/hancode/tool_policy.py tests/test_config.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py` 输出 `All checks passed!`，`git diff --check` 通过。
-  - 全量回归随后发现 `tests/test_course_project_scaffold.py` 仍断言已被 T14 计划替换的 `test_edit_file_requires_reason` 与 `test_disabled_tool_is_denied`。该后续修复仅将断言更新为当前计划中的 `test_defensively_denies_write_without_reason` 与 `test_denies_tool_not_allowed_in_phase`，并保留既有的 SPEC 语义检查；这不是全量回归通过的声明。
-  - 该回归修复验证：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_course_project_scaffold.py::test_edit_file_requires_reason tests/test_course_project_scaffold.py::test_tool_not_allowed_in_workspace_is_denied -p no:cacheprovider` 输出 `2 passed in 0.05s`；同环境下 `uv run --no-sync pytest tests/test_course_project_scaffold.py -p no:cacheprovider` 输出 `18 passed in 0.06s`。
-  - 第二阶段审查发现 assignment、requirements、rubric、course_constraints 的无扩展名或非 Markdown 变体在可写根下仍会归为 source。人工选择扩展保护范围后，规则改为精确基名、`基名.*` 与目录模式：`requirements.txt` 受保护，`requirements-lock.txt` 等前缀变体不因该规则受保护。
-  - 该范围扩展 TDD：先将无扩展名、`.pdf` 与 `requirements.txt` 加入真实 PathClassifier 测试，得到 `10 failed, 6 passed in 0.45s`；最小模式扩展后，`tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed in 1.39s`。
-  - 第二阶段复审确认扩展规则关闭绕过面；按其 Minor 建议补充 `requirements-lock.txt` 与嵌套同类路径的负向分类回归，专项为 `2 passed in 0.10s`，固化“精确基名而非前缀匹配”的边界。
-  - 最终验证：`uv run --no-sync pytest -p no:cacheprovider` 为 `346 passed, 4 skipped in 3.35s`；Ruff 全量输出 `All checks passed!`；MyPy 全量输出 `Success: no issues found in 15 source files`；`git diff --cached --check` 通过。4 个 skip 均为当前 Windows 环境不允许创建文件 symlink。
+  - SPEC 新增 `## 12. 风险与未决问题`。
+  - 覆盖 Agent 控制流、上下文与记忆、工具与文件安全、checkpoint / rollback、凭据泄露、测试验证和课程项目价值风险。
+  - 补充未决问题和 P0/P1/P2 风险优先级。
+- 人工干预：
+  - 用户确认 §12 草稿后要求写入。
 - 提交：
-  - `cfac049 feat: 完成 T15 课程文件保护`。
-- 剩余风险：
-  - 当前 Windows 环境的两个既有 symlink 场景仍跳过；T15 的嵌套保护已通过字符串路径确定性覆盖，仍建议在允许创建 symlink 的 CI/主机复验既有 canonical-path 分支。
-  - 已清理 `src`/`tests` 下的 `__pycache__`、`.pyc`/`.pyo`、根目录 `.pytest_cache` 与 `.superpowers`；保留 `.venv`。
+  - TODO
+- 经验教训：
+  - Harness 风险应围绕智能体失控、机制不可验证、状态不可恢复和凭据泄露展开，而不是停留在普通项目管理风险。
 
-### 2026-07-12 — T14 — ToolPolicy 基础规则
+### 2026-07-07 __:__ — 任务 0 — SPEC 领域与机制设计补全
 
-- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
-- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全独立复核。
+- 使用的技能：Superpowers brainstorming
+- 使用的智能体：OpenAI Codex
 - 关键提示词 / 上下文：
-  - T14 只实现 `ToolPolicy(config).evaluate()` 与 `PolicyDecision`；不执行工具、checkpoint、trace 或状态写入，也不修改 Action、AgentLoop、PathClassifier 的生产代码。
-  - T13 PathClassifier 是唯一写入路径分区来源；T14 对 protected/out-of-scope 写入 fail-closed，T15 继续负责课程保护规则扩展。
+  - 用户要求继续完成最终 SPEC，并先查看“领域与机制设计”。
+  - A 类 Coding Agent Harness 要求 SPEC 独立回答动作 / 工具、客观反馈信号、危险动作和记忆机制。
 - 摘要：
-  - 新增 `src/hancode/tool_policy.py`：以静态阶段工具矩阵、T5 artifact gate、T13 PathClassifier 和 TaskState 判定工具调用。
-  - source write 仅在一致的 code phase 且 SPEC/PLAN 完成时允许，并返回 `requires_checkpoint=True`；不在本任务创建 checkpoint。
-  - `finish_phase` 对六阶段使用 artifact、source edit、测试状态和 rollback 状态门禁；`ask_user`、`final` 不触发工具执行。
+  - SPEC 新增 `## 11. 领域与机制设计`。
+  - 明确 HanCode 主贡献为 `workspace-scoped course-project memory + reversible coding state`。
+  - 集中补充工具类别、反馈信号、危险动作、Project / Task Workspace 记忆机制、代码模块映射和 MockLLM 机制演示。
+- 人工干预：
+  - 用户确认该节草稿后要求写入。
+- 提交：
+  - TODO
+- 经验教训：
+  - A 类 Harness 的评分锚点应集中呈现，不能只分散在功能规约、架构和验收标准中。
+
+### 2026-07-07 __:__ — 任务 0 — SPEC 第 7/10 节评审修订
+
+- 使用的技能：Superpowers brainstorming / receiving-code-review 语境下的 SPEC 修订
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户对 §7 数据模型和 §10 验收标准给出逐项评审。
+  - 重点问题包括 TraceEvent 唯一 ID、`state_transition` 语义、Project 附属文档、`files_changed` 时机、WorkspaceRouter / FeedbackBuilder / ResultBuilder 验收标准、状态枚举和 Mock Mode 入口一致性。
+- 摘要：
+  - SPEC 第 7 节补充 `event_id`、`state_transition`、Project 附属文档和 `files_changed` 更新规则。
+  - SPEC 第 10 节新增 WorkspaceRouter、FeedbackBuilder、ResultBuilder 独立验收节，并补充 REPL/TUI slash command、CI unit-test 和风险状态判定。
+  - 系统架构文档 MVP 范围同步补充 Python package build 与 CI unit-test 验证要求。
+- 人工干预：
+  - 用户明确指出结构性问题、一致性问题和小问题，并要求修正后写入。
+- 提交：
+  - TODO
+- 经验教训：
+  - SPEC 中出现的每个核心架构模块都应有对应验收标准；状态枚举必须在功能规约、数据模型、结果输出和架构文档中保持一致。
+
+### 2026-07-07 __:__ — 任务 0 — 课程项目定位确认
+
+- 使用的技能：Superpowers brainstorming 语境下的规划确认
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - HanCode 面向学生课程项目，是轻量级 Coding Agent Harness。
+  - 核心机制包括 Workspace 分离、Phase Gate、Tool Policy、Trace Logging、Checkpoint Rollback、MockLLM Testing。
+  - `.hancode/`、Phase Mode、ContextBuilder、ToolPolicy、Demo 和测试叙事均服务课程项目流程。
+- 摘要：
+  - README、SPEC、PLAN 使用课程项目定位。
+  - `.hancode/` 模板采用 Project Workspace / Task Workspace / Knowledge Delivery 结构。
+  - Demo 使用学生成绩统计 CLI 课程项目。
+- 人工干预：
+  - 用户明确要求最小破坏式修改，不引入复杂 Web UI、数据库、MCP 工具市场或企业级权限系统。
+- 提交：
+  - TODO
+- 经验教训：
+  - 课程项目场景要求 Harness 不只控制代码修改，还要沉淀 TEST_REPORT、REVIEW、KNOWLEDGE 和 DELIVERABLES。
+
+### 2026-__-__ __:__ — 任务 0 — 仓库初始化
+
+- 使用的技能：手动初始化 / Superpowers 工作流准备
+- 使用的智能体：ChatGPT 指导
+- 关键提示词 / 上下文：
+  - HanCode 的初始仓库设置。
+  - 项目类型：AI4SE 期末项目 A · 编码智能体框架。
+- 摘要：
+  - 初始化了仓库结构。
+  - 添加了文档占位符。
+  - 添加了 `.gitignore` 和 `.env.example`。
+  - 添加了 Python 打包元数据。
+  - 添加了占位测试和 CI 工作流。
+- 人工干预：
+  - TODO
+- 提交：
+  - TODO
+- 经验教训：
+  - TODO
+
+### 2026-07-08 19:53 +08:00 — T1 — 共享模型与错误类型
+
+- 使用的技能：using-superpowers；using-git-worktrees；writing-plans；test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求“现在开始开发，完成 T1，先开辟一个 worktree”，随后修正任务为 T1。
+  - 用户要求后续提交信息中冒号后的信息采用中文。
+  - 已读取 `AGENTS.md`、`docs/PLAN.md` T1、`docs/SPEC.md`、`docs/agent-guides/workflow.md`、`docs/agent-guides/harness-boundary.md`、`docs/agent-guides/safety-and-verification.md`。
+- 摘要：
+  - 创建并使用 worktree `D:\agent-leanring\HanCode\.worktrees\t1`，分支为 `codex/t1`。
+  - 新增 `src/hancode/models.py`，提供 `Phase`、`TaskStatus`、`OperationStatus`、`Risk`、`OperationResult`。
+  - 新增 `src/hancode/errors.py`，提供 `StructuredError` 和 `HanCodeError`。
+  - 新增 `tests/test_models.py` 与 `tests/test_errors.py`，覆盖六阶段枚举、任务状态枚举、受限 operation status、结构化错误字段和 JSON 可序列化结果。
+  - 新增 `docs/superpowers/plans/2026-07-08-t1-shared-models-errors.md` 作为 T1 执行计划产物。
+- TDD 证据：
+  - Red：`$env:PYTHONPATH='src'; python -m pytest tests/test_models.py tests/test_errors.py -v` 失败，原因为 `ModuleNotFoundError: No module named 'hancode.errors'`。
+  - Green：同一命令通过，8 passed。
+- 验证：
+  - `$env:PYTHONPATH='src'; python -m pytest` 通过，27 passed；pytest cache 写入 warning 仍存在。
+  - `python -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py` 通过；ruff cache 写入 warning 仍存在。
+  - 标准 `python -m mypy src/hancode/models.py src/hancode/errors.py` 因 mypy 2.2.0 sqlite cache `disk I/O error` 失败。
+  - `$env:PYTHONPATH='src'; python -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-cache-t1 --show-traceback` 通过，no issues found in 2 source files。
+- 人工干预：
+  - 用户将任务从 T0 修正为 T1。
+  - 用户要求提交信息冒号后采用中文。
+  - 用户拒绝提交主 checkout 的 `.gitignore` worktree ignore 配置；该拒绝已遵守，T1 在新 worktree 中继续。
+- 工作流偏离：
+  - 未 dispatch 独立 subagent，也未使用 executing-plans；原因是用户明确要求当前会话直接开始 T1，并先开辟 worktree。已用本会话执行 `writing-plans` 和 TDD 流程，并保留计划产物。
+  - 未派发 code-review subagent；原因是当前多代理工具要求只有用户显式要求 subagent / delegation 时才允许 spawn。改为按 review gate 在本会话执行范围与质量自审。
+- 提交：
+  - `895065e` — `feat: 完成 T1 共享模型与结构化错误`
+- 经验教训：
+  - 在 `src/` layout 尚未 editable install 的环境中，T1 测试需要显式 `PYTHONPATH=src` 才能验证本地包。
+  - 当前默认 `python` 是 3.10.11，低于项目 3.11+ 目标；后续环境门禁或 CI 任务需要收敛解释器版本。
+  - Windows worktree 路径下 pytest / ruff / mypy cache 可能受本地权限或路径语义影响；验证时需要区分代码失败和 cache 写入失败。
+
+### 2026-07-08 17:21 +08:00 — T0 — 冷启动后阶段门收拢与正式开发入口确认
+
+- 使用的技能：using-superpowers；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户确认冷启动已经完成，并要求“把文档收拢一下，对于冷启动后开始的工作，做最后的文档完善，然后进入正式开发”。
+  - 当前阶段仍只做文档收拢，不修改 `src/hancode/`。
+  - 冷启动样本来自 OpenCode + GLM-5.2，对象为 `D:\agent-leanring\demo` 的 T1 / T2 实现。
+- 摘要：
+  - `AGENTS.md` 的阶段门改为：SPEC / PLAN / 冷启动验证已记录，正式实现可从 `docs/PLAN.md` T1 开始。
+  - `docs/agent-guides/workflow.md` 改为冷启动门已完成，并把冷启动发现作为正式实现约束。
+  - `README.md` 的项目阶段改为正式实现阶段，列明每个任务必须 TDD、验证、更新 PLAN / AGENT_LOG 并接受审查。
+  - `docs/PLAN.md` 的状态改为冷启动后实现准备完成；T1 增加 `OperationResult.status` 边界；T2 增加幂等初始化和 Project Workspace 前置约束；冷启动章节改为结果与正式开发入口。
+  - `docs/SPEC_PROCESS.md` 的冷启动结论收口为扩展上下文冷启动验证完成，阶段门不再阻塞实现。
+- 人工干预：
+  - 用户确认冷启动完成，并要求进入正式开发前做文档收拢。
+- 工作流偏离：
+  - 未使用 worktree、TDD、subagent 和 finishing-a-development-branch；原因是本轮仍是阶段门后的文档收拢，不是 harness kernel 实现任务。
+- 提交：
+  - 未提交
+- 验证：
+  - `Get-Content -Raw -Encoding UTF8` 读取 `AGENTS.md`、`README.md`、`docs/PLAN.md`、`docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`docs/agent-guides/workflow.md` 成功。
+  - `Select-String` 确认正式开发、T1、TDD、扩展上下文冷启动验证、回写约束等关键词已写入。
+  - `rg` 未发现 `仍未实际执行`、`正式冷启动验证仍需`、`不得开始完整实现`、`本仓库处于规范和规划阶段` 等旧阻塞表述。
+  - `Select-String` 确认 T1 / T2 / T26 的新增约束已写入 `docs/PLAN.md`。
+  - `git status --short` 已检查本轮文档修改范围。
+- 经验教训：
+  - 冷启动验证完成后，必须把发现回写到后续任务卡，否则正式开发会重复 demo 中暴露的设计缺口。
+
+### 2026-07-08 17:13 +08:00 — T0 — OpenCode / GLM-5.2 冷启动验证记录补全
+
+- 使用的技能：using-superpowers；verification-before-completion
+- 使用的智能体：
+  - 冷启动执行：OpenCode + GLM-5.2
+  - 复核与记录：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户说明已使用 OpenCode 搭载 GLM-5.2 进行冷启动验证。
+  - 用户说明提供给第二个 agent 的材料为 `系统架构.md`、`SPEC.md`、`PLAN.md`，未提供主开发对话历史或隐藏 memory。
+  - 复核对象为 `D:\agent-leanring\demo` 中的冷启动产物。
+- 摘要：
+  - 第二个 agent 尝试了 T1 共享模型与错误类型、T2 Workspace 初始化。
+  - 冷启动产物包含 `src/hancode/models.py`、`src/hancode/errors.py`、`src/hancode/workspace.py` 以及对应测试。
+  - 复核验证命令结果：`python -m pytest -p no:cacheprovider` 为 19 passed；`python -m ruff check src tests` 通过；`python -m mypy src` 通过；secret 模式扫描无命中。
+  - `docs/SPEC_PROCESS.md` 已补充冷启动记录，明确本次属于“扩展上下文冷启动验证”：额外提供了 `系统架构.md`，因此不能完全等同于课程要求的严格“仅 SPEC + PLAN”版本。
+  - 复核发现的主要代码质量问题：workspace 初始化会覆盖已有证据；task workspace 可绕过 project workspace 初始化；`OperationResult.status` 边界过宽；Python 版本目标与 PLAN 不一致。
+- 人工干预：
+  - 用户指定第二个 agent 与模型，并要求依据课程要求撰写冷启动相关记录说明。
+- 工作流偏离：
+  - 未创建分支或提交；本轮只补充过程文档。
+  - 未把冷启动产物合并到主仓；原因是该产物仍有代码质量问题，且冷启动过程证据不完整。
+- 提交：
+  - 未提交
+- 验证：
+  - 已读取 `docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`D:\agent-leanring\demo` 的源文件和测试文件。
+  - 已运行冷启动产物的 pytest、ruff、mypy 和 secret 模式扫描。
+- 经验教训：
+  - 冷启动验证不仅要看代码能否跑通，还要保存第二个 agent 的上下文、暂停点、误解、红阶段证据和后续修订点。
+  - 对 HanCode 这类可复盘 harness，workspace 初始化语义必须优先保护已有 trace、history、state 和学习产物。
+
+### 2026-07-08 16:40 +08:00 — T0 — 规划文档一致性与冷启动验证准备
+
+- 使用的技能：using-superpowers；executing-plans
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求“现在进行 PLAN.md 的 P0”；本轮按当前 `docs/PLAN.md` 的前置任务 `T0` 执行。
+  - 已读取 `docs/SPEC.md`、课程通用要求、A 类 Harness 要求、`docs/agent-guides/workflow.md` 和 `docs/agent-guides/safety-and-verification.md`。
+  - 当前阶段门仍未通过冷启动验证，因此只修订规划、过程和 README 文档，不修改 `src/hancode/`。
+- 摘要：
+  - `docs/PLAN.md` 统一仓库级文档路径为 `docs/SPEC.md`、`docs/PLAN.md`、`docs/SPEC_PROCESS.md` 和 `docs/AGENT_LOG.md`。
+  - `docs/PLAN.md` 的 T0 状态、验证命令和备注对齐“冷启动准备已完成，但正式冷启动仍未执行”的事实。
+  - `docs/SPEC_PROCESS.md` 修正冷启动候选任务编号，避免继续引用旧版 T1/T3/T5/T8 任务拆分。
+  - `README.md` 的项目阶段和分发说明对齐当前 SPEC：MVP 为 Python package，Docker 仅作可选 MockLLM demo 环境。
+- 人工干预：
+  - 用户直接要求执行 PLAN 前置任务；未要求创建分支、提交或启动第二个 agent。
+- 工作流偏离：
+  - 未使用 worktree、TDD、subagent 和 finishing-a-development-branch；原因是本轮是阶段门前的文档一致性修订，不是实现任务。
+- 提交：
+  - 未提交
+- 验证：
+  - `Get-Content -Raw -Encoding UTF8` 读取 `docs/PLAN.md`、`docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`README.md` 成功。
+  - `Select-String` 确认 `docs/PLAN.md` 包含 T1、T27、需求追溯、冷启动验证和 `docs/` 路径锚点。
+  - `Select-String` 确认 `docs/SPEC_PROCESS.md` 包含 T1/T2/T5/T13/T20 冷启动候选任务和关键迭代 12。
+  - `rg -F` 未发现旧任务编号组合、`分发格式为 Docker`、根目录 `SPEC_PROCESS.md` / `AGENT_LOG.md` 引用残留。
+  - `git status --short` 显示本轮相关文件已修改；工作区还存在本轮开始前已有的其他未提交修改。
+- 经验教训：
+  - 冷启动验证前，PLAN 的任务编号和文档路径必须比实现细节更先稳定，否则第二个 agent 会在错误入口受阻。
+
+### 2026-07-08 __:__ — 任务 0 — 架构一致性修订 v1.3
+
+- 使用的技能：Superpowers executing-plans
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求按《HanCode 架构一致性修订方案 v1.3》执行。
+  - 本轮只修改文档，不修改 `hancode/` 或 `src/hancode/` 实现代码。
+  - 已确认三项决策：写入边界由 `PathClassifier` 推导；state 对账不自动回写，进入 `inconsistent`；TraceEvent 事件名以 SPEC 为权威。
+- 摘要：
+  - SPEC 中移除显式 `target_kind=artifact|source` 强制要求，改为可写 Action 的目标路径由 `PathClassifier` 分类为 artifact / source / protected zone。
+  - SPEC TraceEvent 表补齐 `state_reconciled`、`state_inconsistent` 和架构文档使用的生命周期事件。
+  - 系统架构文档补齐 CredentialProvider、Config 字段、CLI exit code、`/auth` slash commands、`hancode export`、checkpoint pruning、rollback 副作用、结构化错误、ContextBuilder 限制和 REVIEW / KNOWLEDGE 结构。
+  - reconcile 语义改为只检查一致性；发现漂移时标记 `inconsistent`、写 trace、阻止高风险动作，不自动回写 `state.json`。
+- 人工干预：
+  - 用户提供完整 v1.3 修订方案并要求直接实现。
+- 提交：
+  - TODO
+- 经验教训：
+  - 可测试性约定不能引入与架构机制冲突的新字段；写入边界应由单一 `PathClassifier` 机制统一承载。
+
+### 2026-07-08 __:__ — 任务 0 — SPEC 可测试性契约补强
+
+- 使用的技能：Superpowers brainstorming
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求关注 SPEC 可测试性，并给出 P0/P1/P2 问题清单。
+  - 重点是让 Knowledge、Review、Context、脱敏、性能、CLI 行为具备客观 pass/fail 边界。
+- 摘要：
+  - 当时草稿中，FR-3 曾补充可写 Action 必须携带 `target_kind=artifact|source`；该方案已在后续 v1.3 修订中被 `PathClassifier` 路径推导替代。
+  - §5.1 补充小型项目规模、ContextBuilder、MockLLM demo 和 checkpoint 快照范围的可测阈值。
+  - §10 新增 `### 10.21 可测试性约定`。
+  - §10.21 集中定义 context include/exclude、secret fixture、Markdown 产物最低结构、REVIEW 覆盖表、结构化错误字段、CLI/TUI 命令矩阵、fake keyring、demo trace 和 Docker 可选测试边界。
+- 人工干预：
+  - 用户提供完整可测试性评估和建议修订方式。
+- 提交：
+  - TODO
+- 经验教训：
+  - Harness SPEC 的可测试性不只看机制能否触发，还要把产物质量、脱敏、错误、上下文和 CLI 行为转化为可断言结构。
+
+### 2026-07-08 __:__ — 任务 0 — SPEC 抽象性清理与架构迁移
+
+- 使用的技能：Superpowers brainstorming
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户指出一致性问题已解决，要求主要处理抽象性问题。
+  - 用户强调“开始修改，记住是做迁移而不是删减”。
+- 摘要：
+  - SPEC 中 `CredentialProvider` Python 接口签名改为能力契约表。
+  - SPEC 中具体测试函数名清单迁移到 `docs/系统架构.md` 的 MockLLM 测试架构章节。
+  - SPEC 中 `.gitignore` 模板、导出命令形态和 LLM 调用细节迁移到系统架构文档。
+  - SPEC 的组件图、实体图和机制模块表补充逻辑层级声明。
+- 人工干预：
+  - 用户要求迁移而非删减，并确认部分细节可沉淀到系统架构文档。
+- 提交：
+  - TODO
+- 经验教训：
+  - SPEC 应作为评分入口和需求契约；系统架构文档承接机制展开；PLAN 承接实现任务和测试函数清单。
+
+### 2026-07-09 22:30 +08:00 — T2 — Workspace 初始化缺口修复
+
+- 使用的技能：test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求评估 worktree 中的 workspace.py 代码，随后要求接续 T2 任务完成。
+  - 评审发现两个阻塞缺口：state.json 缺失 8 个字段（架构文档 §8.4）、init_task_workspace 不幂等。
+- 摘要：
+  - Red-1：写 `test_task_workspace_state_json_contains_all_required_fields`，验证 state.json 包含全部 18 个字段，失败原因正确（缺失 8 个字段）。
+  - Green-1：补齐 `goal`、`checkpoint_seq`、`tests_run`、`test_status_consumed`、`phase_completed`、`source_edits_this_phase`、`rollback_required`、`rollback_done`。
+  - Red-2：写 `test_task_workspace_init_preserves_existing_state_and_trace`，失败原因正确（`FileExistsError`）。
+  - Green-2：`init_task_workspace` 幂等化——`mkdir(exist_ok=True)` + state/trace/history 只在不存在时写入。
+  - 旧测试 `test_task_workspace_initializes_required_artifacts` 的精确等值断言同步更新为完整字段集。
+- 人工干预：
+  - 用户先要求评估代码，确认缺口后再要求修复。
+- 工作流偏离：
+  - 未使用 worktree（已在 `codex/workspace-init` worktree 中）；未使用 brainstorming（缺口明确，无需探索）。
+- 提交：
+  - 未提交
+- 验证：
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest -v -p no:cacheprovider` 通过，40 passed。
+  - `ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
+  - `mypy src/hancode/workspace.py` 通过，no issues found in 1 source file。
+- 经验教训：
+  - state.json 初始字段必须与架构文档 §8.4 完全对齐，否则 T4 StateStore、T6 WorkspaceRouter、T17 CheckpointManager 都要补字段，破坏幂等性。
+
+### 2026-07-09 21:15 +08:00 — T1 — 共享模型与错误类型返工
+
+- 使用的技能：using-superpowers；brainstorming；writing-plans；using-git-worktrees；test-driven-development；requesting-code-review；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求“直接按这版 PLAN 返工 T1 代码和测试”。
+  - 已先将 `docs/PLAN.md` 与 `docs/SPEC.md` 的错误契约对齐，T1 需改为 `error_code` / `message` / `phase` / `denied_rule` / `suggested_fix`。
+  - 本轮只允许返工 `src/hancode/errors.py`、`src/hancode/models.py`、`tests/test_errors.py`、`tests/test_models.py`，不扩到 T2 及后续模块。
+- 摘要：
+  - 将 `StructuredError` 从旧字段 `code` / `hint` / `details` 返工为 SPEC 顶层字段契约。
+  - 保持 `HanCodeError` 包装接口不变，但错误展示文案改为基于 `error_code`。
+  - 扩展 `OperationResult.to_dict()` 的递归序列化路径，使嵌套 `Risk`、枚举、tuple/list/mapping 在 `data` 中可稳定导出为 JSON。
+  - 重写 T1 测试，使其同时覆盖新错误字段和嵌套共享模型序列化。
+- TDD 证据：
+  - Red：`$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_errors.py tests/test_models.py -v -p no:cacheprovider` 失败，4 failed；失败原因为 `StructuredError.__init__()` 不接受 `error_code` 等新字段。
+  - Green：同一命令在返工后通过，8 passed。
+- 评审：
+  - Spec 合规检查：确认 `StructuredError` 顶层字段与 `docs/SPEC.md` §10.21.5 一致；解析失败、策略拒绝和工具失败后续可复用同一字段名。
+  - 代码质量检查：确认返工只影响 T1 共享模型和对应测试；通过递归 `to_dict()` 避免 `OperationResult.data` 残留不可 JSON 序列化的共享模型对象。
+- 工作流偏离：
+  - 未创建新 worktree；原因是用户要求在当前工作树直接返工，且目标实现文件在本轮开始时无未提交改动。按当前执行会话保持最小范围修改。
+  - 未派发 code-review subagent；原因是当前多代理约束要求只有用户显式要求 delegation 时才允许 spawn，故改为本会话内联两阶段复核。
+- 提交：
+  - 未提交
+- 验证：
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_errors.py tests/test_models.py -v -p no:cacheprovider` 通过，8 passed。
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-t1-review` 通过，no issues found in 2 source files。
+  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest -p no:cacheprovider` 通过，27 passed。
+- 经验教训：
+  - 共享错误模型一旦与上位 SPEC 失配，问题会沿 `ParseError`、`PolicyDecision`、`Feedback`、`ToolResult` 整条链路扩散；必须先收敛字段名，再推进后续任务。
+  - 共享结果模型的“可序列化”不能只看顶层字段；嵌套共享 dataclass 也必须在首个任务就被回归测试覆盖。
+
+### 2026-07-09 20:27 +08:00 — DOCS — Python 工具链统一为 uv
+
+- 使用的技能：using-superpowers
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求后续包管理统一使用 uv，并查找 Python 相关内容、更新相应文档。
+  - 本轮仅更新当前规范、开发指南和未执行任务卡，不修改实现代码、CI 或历史验证事实。
+- 摘要：
+  - `AGENTS.md`、`README.md` 和安全验证指南增加 uv 环境初始化与质量门禁命令。
+  - `docs/SPEC.md` 明确 uv 负责 Python 版本、虚拟环境、依赖、命令执行和包构建。
+  - `docs/PLAN.md` 从 T2 起统一使用 `uv run`，T26 增加 `uv.lock`、`uv sync`、`uv build` 和 uv CI 约束。
+  - `docs/系统架构.md` 将 Python 包管理器从 pip 收敛为 uv。
+  - T1、`docs/SPEC_PROCESS.md` 和既有日志中的旧命令作为真实历史证据保留。
+- 工作流偏离：
+  - 未使用 brainstorming、worktree、TDD、subagent、code review 和 branch finishing；原因是本轮属于小型文档与开发命令迁移，不修改运行行为。
+- 提交：
+  - 未提交
+- 验证：
+  - `uv --version` 返回 `uv 0.11.16`。
+  - `uv venv --help`、`uv sync --help`、`uv build --help`、`uv tool install --help` 均确认对应子命令可用。
+  - UTF-8 回读全部 6 个目标文档成功，且均包含 uv 约定。
+  - 检索确认 `docs/PLAN.md` T2 之后不存在 `python -m pytest/ruff/mypy/build` 或 pip 安装命令。
+  - `git diff --check` 通过；本轮未运行代码测试，因为没有修改实现或测试代码。
+- 经验教训：
+  - 工具链迁移应区分当前规范与历史证据；历史命令必须保留，避免把未实际执行的 uv 命令写成既有验证结果。
+
+### 2026-07-10 — T4 — StateStore
+
+- 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；verification-before-completion；Superpowers:subagent-driven-development；Superpowers:requesting-code-review
+- 使用的智能体：OpenAI Codex；T4 Spec Reviewer；T4 Quality Reviewer；T4 Fix Agent
+- 关键提示词 / 上下文：
+  - 用户要求完成 `docs/PLAN.md` 中的 T4 StateStore，并在 `feature/M1` 的 `.worktrees/M1` 中继续开发。
+  - T4 只实现 `state.json` 机器状态读写、一致性检查和结构化状态错误；不实现 router、trace、Markdown artifact 生成或 T5 以后机制。
+  - `docs/SPEC.md` 是高优先级契约：state.json 是唯一机器状态源，artifact drift 进入 inconsistent 且不得自动反向修复。
+- 摘要：
+  - 新增冻结、slots 化的 `TaskState` 与 `load_state()`、`save_state()`、`reconcile_state()`。
+  - 严格解析 schema v1 的 18 个字段、合法 phase/status/test status、固定 phase/artifact 键和非负计数；结构化错误不回显原始 JSON 内容。
+  - `save_state()` 使用临时文件 + 原子替换，写失败保留原文件；校验 task_id 隔离；仅允许合法 code→code/test 变更 `files_changed`。
+  - `reconcile_state()` 双向检测 artifact 漂移，返回 inconsistent，不回写 artifact 标志、不自动修复、不清除既有 inconsistent。
+  - 使用 `MappingProxyType` 防止 `phase_completed` 与 `artifacts` 被运行时 mutation 绕过校验。
 - 逐项 TDD 证据：
-  - Red：新增 `tests/test_tool_policy.py` 后，因 `hancode.tool_policy` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
-  - Green：最小实现后 ToolPolicy 专项 22 passed；补齐审查回归后 T14 + AgentLoop 专项 43 passed。
+  - Red/Green-1：`hancode.state` 不存在导致单一机器状态源测试收集失败；新增最小 loader 后 1 passed。
+  - Red/Green-2：损坏 JSON 首先暴露 `JSONDecodeError`；转换为结构化 `state_parse_error` 后专项 2 passed。
+  - Red/Green-3：reconcile 接口缺失导致导入失败；实现漂移检测后专项 3 passed。
+  - Red/Green-4：`save_state` 导入失败；加入枚举稳定序列化后专项 9 passed。
+  - Red/Green-5：非 code phase 修改 `files_changed` 未被拒绝；加入持久化 phase 权限检查后专项 10 passed。
+  - Red/Green-6：schema version、未知字段、非法 test status 和不完整映射未被拒绝；严格 schema 与 TaskState 自校验后专项 16 passed。
+  - Red/Green-7：原子替换失败未结构化处理；加入临时文件清理和 `state_write_error` 后专项 19 passed。
+  - 两阶段评审首次发现 3 个 Important：code→review/deliver 迟到写入、task_id 串写、冻结对象内部映射可变。修复代理补充回归测试并修复后，专项 23 passed。
 - 两阶段评审：
-  - 阶段一发现 3 项 Important：PLAN 仍为旧自由函数接口、拒绝序列化断言不完整、四个 finish gate 拒绝分支缺测；均已在 T14 范围内修复并复验。
-  - 阶段二复核 fail-closed 分区、phase/state 优先级、结构化错误、AgentLoop 无 dispatch 集成与范围控制；补充 state current phase 不一致回归后无剩余 Critical/Important。
+  - 第一阶段 Spec 合规初评：FAIL（3 个 Important）；修复后 `SPEC RE-VERDICT: PASS`，无 Critical/Important。
+  - 第二阶段代码质量初评：FAIL（同 3 个 Important）；修复后 `QUALITY RE-VERDICT: PASS`，无新的 Critical/Important/Minor。
 - 提交：
-  - `0c898e8` — `feat: 完成 T14 基础工具策略`：新增 ToolPolicy、结构化决策和完整 T14 测试。
+  - `84ba160` — `feat: 完成 T4 StateStore`
+  - 文档回写提交：本记录所在的文档提交。
 - 验证：
-  - T5+T10+T13+T14：82 passed、2 skipped；全量沙箱外：317 passed、4 skipped in 3.45s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 15 source files`；`git diff --check` 通过。
-- 剩余风险：
-  - 两个 T13 symlink 场景在当前 Windows 权限下跳过；T14 对 PathClassifier 的既有 fail-closed 返回值进行策略拒绝，仍应在可创建 symlink 的 CI/主机复验。
+  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_state.py -v -p no:cacheprovider`：23 passed。
+  - `uv run --no-sync ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed。
+  - `uv run --no-sync mypy src/hancode/state.py --no-incremental`：Success，无问题。
+  - 两阶段复评代理独立确认上述 3 项修复；全量 pytest 首次受 Windows 临时目录 ACL 影响，曾出现 27 passed、81 setup errors。
+  - 之后在 worktree 外重新执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest -p no:cacheprovider`：112 passed in 1.51s。
+  - 同步复核 `ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed；`mypy src/hancode/state.py`：Success；`git diff --check HEAD~2..HEAD`：通过。
+- 人工干预：
+  - 用户明确要求使用 Superpowers 子代理进行两阶段评审，并随后授权代码提交和文档回写。
+  - 评审结论中关于 code→review/deliver 的 target phase 语义按 SPEC 的“test/review 只能读取”收紧实现。
+- 经验教训：
+  - `frozen` dataclass 不会自动冻结内部 dict；机器状态映射必须在构造时深层转为不可变映射。
+  - StateStore 保存前必须同时校验持久化 task_id 和 phase 所有权，不能只依赖调用方传入对象。
+  - Windows pytest 临时目录 ACL 可能造成 setup 错误；应在批准的沙箱外重跑并区分环境失败和代码失败，最终以新鲜全量结果为准。
 
-### 2026-07-12 — T13 — PathClassifier
+### 2026-07-10 返工 — T3 — ConfigLoader 安全与契约加固
 
-- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review；verification-before-completion。
-- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全审查。
+- 使用的技能：receiving-code-review；executing-plans；test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
 - 关键提示词 / 上下文：
-  - T13 只实现四区 `PathClassifier(HanCodeConfig)`；不实现 ToolPolicy、phase、checkpoint、trace 或 FileTools 改造。
-  - 相对路径先 canonical resolve 并限制在 `allowed_workspace_root`；受保护模式对词法与 canonical 路径均匹配且优先。
+  - 两阶段评审判定 T3 初版不通过，要求修复默认保护可删除、敏感字段绕过、项目根可写、T2 元数据未复用、远程 provider 凭据来源缺失和字段诊断不足。
+  - 已确认 T3 不承载工具权限和 phase 策略：固定 phase 规则留在 T5，工具权限决策留在 T14。
+  - `max_context_chars=24000`、`max_trace_events=40` 来自 2026-07-10 已批准的 T3 开发计划，而非返工阶段临时调整。
 - 摘要：
-  - 新增 `src/hancode/path_policy.py`，公开 `PathZone`（`protected`、`artifact`、`source`、`out_of_scope`）和 `PathClassifier.classify()`。
-  - task root 仅六个精确大小写的直系产物可归入 artifact；任务状态、历史、trace 与 checkpoints 为 protected，其他 task 内文件即使 `.hancode` 被配置成可写根也为 out of scope。
-  - source 仅来自配置 `writable_roots`；绝对路径、`..`、resolve 故障和 symlink 逃逸均 fail-closed 为 `OUT_OF_SCOPE`。
+  - `workspace.py` 提供共享 `load_project_metadata()`；T2 与 T3 现在使用同一 workspace metadata 契约。
+  - `ConfigLoader` 只接受 T2 元数据与当前活动配置字段，拒绝未知顶层字段和嵌套配置。
+  - protected patterns 改为不可移除基线并支持项目规则追加；补充 `secrets/**`、密钥文件模式和项目根可写拒绝。
+  - 敏感字段扫描覆盖 `credentials`、`private_key`、`api_key_value` 等绕过形式；远程 provider 要求 credential source；错误消息只含字段名，不回显值。
 - 逐项 TDD 证据：
-  - Red：新增 `tests/test_path_classifier.py` 后，专项在收集阶段因 `hancode.path_policy` 不存在得到预期 `ModuleNotFoundError`。
-  - Green：最小实现后专项为 26 passed、2 skipped；后续审查补充 artifact 大小写、绝对 workspace 内路径和 task-root/write-root 重叠测试，最终专项为 29 passed、2 skipped。
+  - Red-1 / Green-1（元数据）：`test_config_reuses_project_workspace_metadata_validation` 首次运行出现 3 个 `Failed: DID NOT RAISE HanCodeError`；共享校验后该组用例进入返工后专项通过。
+  - Red-2 / Green-2（schema）：评审复现初版对未知顶层字段和嵌套对象直接返回配置；新增 `test_config_rejects_unknown_or_nested_configuration` 锁定该行为，严格字段集合实现后通过。该 Red 为评审复现，未在本次续接会话中重新回放。
+  - Red-3 / Green-3（保护基线）：评审复现 `protected_patterns=[]` 会清空默认规则；`test_config_keeps_mandatory_protected_patterns` 验证基线保留与追加去重，返工后通过。该 Red 依据初版代码路径和评审报告记录。
+  - Red-4 / Green-4（凭据）：评审复现 `credentials.value`、`private_key`、`api_key_value` 可绕过初版后缀扫描；新增三类回归用例，返工后 42 项专项测试通过且异常文本不含测试值。该 Red 未单独在本次续接会话回放。
+  - Red-5 / Green-5（路径与诊断）：评审复现 `writable_roots` 为 `""`、`.` 或 `/**` 可解析到项目根，且错误不带字段名；新增边界与字段诊断用例后通过。
+  - Red-6 / Green-6（provider 与回归）：评审复现远程 provider 缺少 credential source 仍可加载；新增远程必填、local 例外和既有路径/task ID 回归用例后，专项 42 passed、全量 89 passed。
+  - 说明：返工提交 `e3ddce9` 已包含完整测试增量；除 Red-1 外，其余初版失败依据评审报告与初版代码行为记录，不冒充本次续接会话重新执行的命令输出。
 - 两阶段评审：
-  - 阶段一发现 2 项 Important：artifact 白名单错误地 casefold，以及对越界结果的命名质疑。前者已改为精确文件名并有反例测试；后者核对四区契约后保留 `OUT_OF_SCOPE`，因为它是已批准的越界/非法路径唯一返回值。
-  - 阶段二发现 1 项 Important：当 `.hancode` 被列为 writable root 时，未知 task 文件会误落入 source；已在 artifact 后封住其余 task 文件并复验。未实现 T14/T15 的策略机制。
+  - 第一阶段 Spec 合规：确认 T2 元数据复用、不可移除课程保护、严格 schema、24000/40 来源、远程凭据来源和 T5/T14 边界已写入任务契约。
+  - 第二阶段代码质量：确认 `Path.resolve()` / `PureWindowsPath`、字段级错误、敏感值不回显、local provider 例外与无副作用加载；Ruff 与 MyPy 通过。
 - 提交：
-  - `6727894` — `feat: 完成 T13 路径分类器`：新增 PathClassifier 与完整 T13 测试。
+  - `e3ddce9` — `fix: 加固 T3 ConfigLoader`
+  - 文档回填提交：本记录所在的 `docs: 回填 T3 返工验证记录` 提交。
 - 验证：
-  - T3+T13：68 passed、2 skipped；最终 T13 专项：29 passed、2 skipped；跳过均因当前 Windows 环境不允许创建文件 symlink。
-  - 全量沙箱外：286 passed、4 skipped in 2.55s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 14 source files`；`git diff --check` 通过。
-- 剩余风险：
-  - Windows 符号链接权限受限，两个 T13 symlink 回归在本机跳过；逻辑仍以 canonical resolve fail-closed，需在具备创建 symlink 权限的 CI/主机复验。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_config.py -v -p no:cacheprovider`：42 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/config.py tests/test_config.py --no-cache`：All checks passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3-review"`：Success，无问题。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider`：89 passed。
+- 人工干预：
+  - 用户确认采用“仅远程 provider 必须 credential_source，local 可为 None”。
+  - 用户确认 T3 仅支持当前活动字段，未来字段由后续任务加入。
+- 经验教训：
+  - 默认保护规则必须是安全基线，不能把用户配置当作可替换的 deny-list。
+  - 配置 schema 需要先拒绝未知/嵌套数据，再谈字段名敏感扫描；字段名扫描只能作为错误分类和防御纵深。
+
+### 2026-07-10 返工后续 — T3 文档与模板契约对齐
+
+- 触发原因：两阶段评审发现 `docs/PLAN.md`、`docs/系统架构.md` 和 `examples/.hancode-template/project.json` 仍保留 T3 当前不接受的工具/phase/交互字段或旧模板字段。
+- 修改：
+  - 收窄架构文档的 ConfigLoader 当前职责，明确 task state、phase、tool policy 和交互开关属于后续任务。
+  - 将架构中的 `project.json` 示例与 T3 严格 schema 对齐，移除 `stack`、`interactive`、`confirm_before_write`，补齐保护规则和 `project_root`。
+  - 修正模板 `project.json`，并更新脚手架断言验证 `project_root="."` 且不包含未来 `stack`。
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_course_project_scaffold.py -v -p no:cacheprovider`：18 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider`：89 passed。
+  - `git diff --check`：通过；模板 JSON 解析成功，`project_root` 为 `.`，无 `stack` 字段。
+
+### 2026-07-10 __:__ +08:00 — T3 — ConfigLoader
+
+- 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；karpathy-guidelines；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求在 `feature/M1` 的 `.worktrees/M1` 中执行已批准的 T3 计划，沿用 M1 单 worktree / 单 PR 策略，不启用子代理。
+  - T3 只实现项目级 `project.json` 配置加载；不读取 task state、环境变量、`.env` 或真实凭据。
+- 摘要：
+  - 新增 `HanCodeConfig` 与 `load_config()`，提供不可变的项目级配置、默认限制、provider / 凭据来源元数据、可写根和可选 task root。
+  - `max_context_chars` 与 `max_trace_events` 的批准默认值同步为 24000 / 40。
+  - 对损坏配置、非法限制、未知 provider、明文敏感字段、跨平台绝对路径、`..` 与符号链接逃逸返回结构化错误；错误仅含字段名，不回显非法值。
+  - `task_id` 仅复用 T2 的 `task_path()` 派生路径，未创建 Task Workspace 或读取 `state.json`。
+- TDD 证据：
+  - Red/Green-1：默认配置测试先因 `ModuleNotFoundError: hancode.config` 失败，新增最小 dataclass / loader 后通过。
+  - Red/Green-2：项目覆盖测试先仍得到 `mock`，加入 JSON 合并后通过。
+  - Red/Green-3 至 8：依次验证 workspace 前置条件、损坏 JSON 与字段类型、数值边界/布尔值、provider/credential source、递归明文凭据扫描、可写根及 task 路径逃逸；每项先出现预期失败，再以最小实现转绿。
+  - 链接逃逸 fixture 首次将目标放在项目根内，按边界定义不构成逃逸；修正为项目根外的同级临时目录后通过。
+- 两阶段评审：
+  - Spec 合规：核对 FR-9 与 §10.4，确认项目级加载、默认值、凭据不落盘、结构化错误和路径边界均有测试覆盖；未扩展到 CredentialProvider、StateStore、路由或 ContextBuilder。
+  - 代码质量：确认 `Path.resolve()` 与 `PureWindowsPath` 联合处理跨平台路径，敏感错误不包含输入值，静态类型与 lint 均通过；未发现阻塞项。
+- 工作流偏离：
+  - 无子代理；用户已批准 inline 执行，且当前约束不允许未经明确授权的 delegation。
+  - `uv run --extra dev` 首次建立本地开发环境时生成未跟踪 `uv.lock`；该文件不在 T3 范围内，已移除且未提交。
+- 提交：
+  - `e7fcee3` — `feat: 完成 T3 ConfigLoader`
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run pytest tests/test_config.py -v -p no:cacheprovider` 通过，25 passed。
+  - `$env:PYTHONPATH='src'; uv run ruff check src/hancode/config.py tests/test_config.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; uv run mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3"` 通过，no issues found in 1 source file。
+  - `$env:PYTHONPATH='src'; uv run pytest -p no:cacheprovider` 通过，72 passed。
+- 经验教训：
+  - 配置路径的安全判定既要检查字面路径（绝对路径与 `..`），也要检查 `resolve()` 后的真实位置，才能覆盖跨平台字符串与目录链接两类逃逸。
+  - 明文凭据防护必须递归扫描字段名，并把错误输出限制为字段名，不能把解析到的值带入异常或日志。
+
+### 2026-07-10 __:__ +08:00 — T2 — Linux CI 路径判定回归修复
+
+- 使用的技能：systematic-debugging；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户贴出 GitHub Actions / Linux `make test` 失败输出：`test_workspace_rejects_path_outside_project_root[C:/outside]` 期望 `workspace_path_outside_project_root`，实际得到 `invalid_task_id`。
+  - 本轮仅修复 T2 workspace 路径判定的跨平台差异，不扩展 workspace 初始化语义。
+- 根因分析：
+  - `Path("C:/outside").is_absolute()` 在 Windows 本地返回 `True`，但 Linux / POSIX 语义下不会按 Windows drive absolute path 处理。
+  - CI 因此先通过 `Path` 拼接与 `resolve()` 得到仍位于 task root 下的候选路径，随后落入 “包含路径分隔符” 的 `invalid_task_id` 分支。
+- 摘要：
+  - `src/hancode/workspace.py` 引入 `PureWindowsPath`。
+  - `task_path()` 在原有 `Path(task_id).is_absolute()` 基础上增加 `PureWindowsPath(task_id).is_absolute()`，统一拒绝 Windows 风格绝对路径。
+- 提交：
+  - 未提交；用户明确要求提交交给人类开发者。
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-ci-fix` 通过，no issues found in 1 source file。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 通过，47 passed。
+- 经验教训：
+  - 跨平台路径安全测试不能只依赖当前操作系统的 `Path.is_absolute()`；需要显式处理 Windows drive path 与 POSIX path 的差异。
+
+### 2026-07-10 00:02 +08:00 — T2 — 评审后路径逃逸修复与回归补强
+
+- 使用的技能：systematic-debugging；test-driven-development；verification-before-completion
+- 使用的智能体：OpenAI Codex
+- 关键提示词 / 上下文：
+  - 用户要求按“两阶段评审”先做 spec 合规检查、再做代码质量检查，并在收到评审结论后要求“开始修复”。
+  - 评审确认一个真实缺陷和一个测试缺口：`task_path()` 未拒绝 `.hancode/tasks` 经 symlink / junction 逃逸到项目根外；checkpoint / 阶段产物幂等性缺少回归测试。
+- 根因分析：
+  - `task_path()` 只校验 `candidate` 是否位于已解析 `tasks_root` 下；当 `tasks_root` 自身被目录链接重定向到仓库外时，`candidate` 仍满足该条件，从而绕过 project root 边界。
+  - `init_task_workspace` 对 checkpoint / 阶段产物的幂等行为已存在，但此前没有测试锁定，评审只能靠代码阅读确认。
+- TDD 证据：
+  - Red：`$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider -k "escape_via_link or preserves_existing_checkpoints_and_artifacts"` 失败，`test_workspace_rejects_tasks_directory_escape_via_link` 报 `Failed: DID NOT RAISE HanCodeError`；同批次 `test_task_workspace_init_preserves_existing_checkpoints_and_artifacts` 首次即通过，证明这是覆盖补强而非行为缺陷。
+  - Green：`task_path()` 增加 `.hancode` workspace root 内约束后，同一命令通过，2 passed。
+- 摘要：
+  - 新增目录链接逃逸测试，覆盖 `.hancode/tasks` 被 symlink / junction 重定向到 project root 外的场景。
+  - 新增 checkpoint / 阶段产物幂等回归测试，锁定重复 init 不清空既有 evidence。
+  - 最小修改 `src/hancode/workspace.py`，仅收紧 `task_path()` 的根边界判断，不扩展 init 语义。
+- 人工干预：
+  - 用户在看到评审结论后明确要求继续修复。
+- 工作流偏离：
+  - 未派发 reviewer subagent；原因是当前多代理约束要求只有用户显式要求 delegation 时才允许 spawn，故继续使用 inline 修复与验证。
+- 提交：
+  - `6d7f894` — `feat: 完成 T2 Workspace 初始化`
+- 验证：
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
+  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
+  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-fix` 通过，no issues found in 1 source file。
+  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 在当前 worktree 状态通过，47 passed；该结果包含用户已批准同步到该分支但未并入本次 T2 提交的 `tests/test_course_project_scaffold.py` 变更。
+- 经验教训：
+  - 只校验“解析后的候选路径在解析后的任务目录下”不足以防止链接逃逸；还必须确认最终路径仍位于 project workspace 根内。
+  - 评审发现的“现有行为缺测试”也要补成回归用例，否则后续重构时容易把幂等性悄悄打穿。
 
 ### 2026-07-11 — T12 — FileTools 最小读写
 
@@ -1125,548 +817,181 @@
   - TaskState 的构造不变量是下游 PhaseGate 的一部分接口契约；评审建议必须先与这种已验证不变量核对，避免为不可达非法状态扩大 API。
   - Windows 上应区分默认 uv/pytest 临时目录 ACL 与实际断言失败；先用隔离缓存和已批准环境复现，才能保留有效 RED/GREEN 证据。
 
-### 2026-07-10 — T4 — StateStore
+### 2026-07-12 — T15 — 课程文件保护
 
-- 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；verification-before-completion；Superpowers:subagent-driven-development；Superpowers:requesting-code-review
-- 使用的智能体：OpenAI Codex；T4 Spec Reviewer；T4 Quality Reviewer；T4 Fix Agent
+- 使用的技能：test-driven-development；systematic-debugging。
+- 使用的智能体：OpenAI Codex（T15 实现代理）；控制代理负责提交与最终验证。
 - 关键提示词 / 上下文：
-  - 用户要求完成 `docs/PLAN.md` 中的 T4 StateStore，并在 `feature/M1` 的 `.worktrees/M1` 中继续开发。
-  - T4 只实现 `state.json` 机器状态读写、一致性检查和结构化状态错误；不实现 router、trace、Markdown artifact 生成或 T5 以后机制。
-  - `docs/SPEC.md` 是高优先级契约：state.json 是唯一机器状态源，artifact drift 进入 inconsistent 且不得自动反向修复。
+  - T15 只扩展默认保护模式与受保护写入的结构化反馈；PathClassifier 仍是唯一分类来源，ToolPolicy 仍是唯一写策略评估器。
+  - 不新增策略类、HITL 覆盖、删除工具、trace/checkpoint 机制或启发式文件名扫描；不变更 `PathClassifier.classify()` 与 `ToolPolicy.evaluate()` 的公开签名。
 - 摘要：
-  - 新增冻结、slots 化的 `TaskState` 与 `load_state()`、`save_state()`、`reconcile_state()`。
-  - 严格解析 schema v1 的 18 个字段、合法 phase/status/test status、固定 phase/artifact 键和非负计数；结构化错误不回显原始 JSON 内容。
-  - `save_state()` 使用临时文件 + 原子替换，写失败保留原文件；校验 task_id 隔离；仅允许合法 code→code/test 变更 `files_changed`。
-  - `reconcile_state()` 双向检测 artifact 漂移，返回 inconsistent，不回写 artifact 标志、不自动修复、不清除既有 inconsistent。
-  - 使用 `MappingProxyType` 防止 `phase_completed` 与 `artifacts` 被运行时 mutation 绕过校验。
+  - `src/hancode/config.py` 为 assignment、requirements、rubric、course_constraints、教师测试、评分脚本、样例、`.env`、credentials 与 secrets 保留基线模式，并补充对应 `**/` 嵌套路径模式；未使用宽泛的 `requirements*`。
+  - `src/hancode/tool_policy.py` 保持 `denied_rule="protected_path"`，并将 protected write 的 message 与 suggested_fix 收敛为课程/凭据保护的固定反馈。
+  - 新增 `tests/test_course_file_protection.py`，以真实 ToolPolicy 加类型安全测试适配器验证各课程文档、嵌套路径、大小写/反斜杠、protected 优先于 writable root，以及空内容 `write_file` 与 `edit_file` 在 AgentLoop 中均不触发 registry dispatch。
 - 逐项 TDD 证据：
-  - Red/Green-1：`hancode.state` 不存在导致单一机器状态源测试收集失败；新增最小 loader 后 1 passed。
-  - Red/Green-2：损坏 JSON 首先暴露 `JSONDecodeError`；转换为结构化 `state_parse_error` 后专项 2 passed。
-  - Red/Green-3：reconcile 接口缺失导致导入失败；实现漂移检测后专项 3 passed。
-  - Red/Green-4：`save_state` 导入失败；加入枚举稳定序列化后专项 9 passed。
-  - Red/Green-5：非 code phase 修改 `files_changed` 未被拒绝；加入持久化 phase 权限检查后专项 10 passed。
-  - Red/Green-6：schema version、未知字段、非法 test status 和不完整映射未被拒绝；严格 schema 与 TaskState 自校验后专项 16 passed。
-  - Red/Green-7：原子替换失败未结构化处理；加入临时文件清理和 `state_write_error` 后专项 19 passed。
-  - 两阶段评审首次发现 3 个 Important：code→review/deliver 迟到写入、task_id 串写、冻结对象内部映射可变。修复代理补充回归测试并修复后，专项 23 passed。
-- 两阶段评审：
-  - 第一阶段 Spec 合规初评：FAIL（3 个 Important）；修复后 `SPEC RE-VERDICT: PASS`，无 Critical/Important。
-  - 第二阶段代码质量初评：FAIL（同 3 个 Important）；修复后 `QUALITY RE-VERDICT: PASS`，无新的 Critical/Important/Minor。
+  - Red：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_config.py tests/test_path_classifier.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py -v -p no:cacheprovider` 在沙箱外得到 `23 failed, 109 passed, 2 skipped in 5.76s`，失败原因是新默认保护模式和反馈尚未实现。
+  - Green：最小实现后同一命令得到 `132 passed, 2 skipped in 1.25s`。
+  - MyPy 修正：首次静态检查发现 frozen `PolicyDecision` 不满足 AgentLoop 需要可写字段的 `PolicyDecisionLike` Protocol；测试改用真实 ToolPolicy 的字段复制适配器，没有放宽生产类型。随后 `uv run --no-sync mypy src/hancode/config.py src/hancode/tool_policy.py tests/test_course_file_protection.py --cache-dir (Join-Path $env:TEMP 'hancode-mypy-cache-t15')` 输出 `Success: no issues found in 3 source files`。
+- 评审与范围：
+  - 自审确认仅修改默认模式、既有 protected-path 文案与对应测试；没有修改 PathClassifier、ToolPolicy 的公开签名或引入非目标机制。
+  - `uv run --no-sync ruff check src/hancode/config.py src/hancode/tool_policy.py tests/test_config.py tests/test_tool_policy.py tests/test_agent_loop.py tests/test_course_file_protection.py` 输出 `All checks passed!`，`git diff --check` 通过。
+  - 全量回归随后发现 `tests/test_course_project_scaffold.py` 仍断言已被 T14 计划替换的 `test_edit_file_requires_reason` 与 `test_disabled_tool_is_denied`。该后续修复仅将断言更新为当前计划中的 `test_defensively_denies_write_without_reason` 与 `test_denies_tool_not_allowed_in_phase`，并保留既有的 SPEC 语义检查；这不是全量回归通过的声明。
+  - 该回归修复验证：`$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_course_project_scaffold.py::test_edit_file_requires_reason tests/test_course_project_scaffold.py::test_tool_not_allowed_in_workspace_is_denied -p no:cacheprovider` 输出 `2 passed in 0.05s`；同环境下 `uv run --no-sync pytest tests/test_course_project_scaffold.py -p no:cacheprovider` 输出 `18 passed in 0.06s`。
+  - 第二阶段审查发现 assignment、requirements、rubric、course_constraints 的无扩展名或非 Markdown 变体在可写根下仍会归为 source。人工选择扩展保护范围后，规则改为精确基名、`基名.*` 与目录模式：`requirements.txt` 受保护，`requirements-lock.txt` 等前缀变体不因该规则受保护。
+  - 该范围扩展 TDD：先将无扩展名、`.pdf` 与 `requirements.txt` 加入真实 PathClassifier 测试，得到 `10 failed, 6 passed in 0.45s`；最小模式扩展后，`tests/test_config.py tests/test_course_file_protection.py` 为 `69 passed in 1.39s`。
+  - 第二阶段复审确认扩展规则关闭绕过面；按其 Minor 建议补充 `requirements-lock.txt` 与嵌套同类路径的负向分类回归，专项为 `2 passed in 0.10s`，固化“精确基名而非前缀匹配”的边界。
+  - 最终验证：`uv run --no-sync pytest -p no:cacheprovider` 为 `346 passed, 4 skipped in 3.35s`；Ruff 全量输出 `All checks passed!`；MyPy 全量输出 `Success: no issues found in 15 source files`；`git diff --cached --check` 通过。4 个 skip 均为当前 Windows 环境不允许创建文件 symlink。
 - 提交：
-  - `84ba160` — `feat: 完成 T4 StateStore`
-  - 文档回写提交：本记录所在的文档提交。
-- 验证：
-  - `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest tests/test_state.py -v -p no:cacheprovider`：23 passed。
-  - `uv run --no-sync ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed。
-  - `uv run --no-sync mypy src/hancode/state.py --no-incremental`：Success，无问题。
-  - 两阶段复评代理独立确认上述 3 项修复；全量 pytest 首次受 Windows 临时目录 ACL 影响，曾出现 27 passed、81 setup errors。
-  - 之后在 worktree 外重新执行 `$env:PYTHONPATH='src'; $env:UV_CACHE_DIR=Join-Path $env:TEMP 'hancode-uv-cache'; uv run --no-sync pytest -p no:cacheprovider`：112 passed in 1.51s。
-  - 同步复核 `ruff check src/hancode/state.py tests/test_state.py --no-cache`：All checks passed；`mypy src/hancode/state.py`：Success；`git diff --check HEAD~2..HEAD`：通过。
-- 人工干预：
-  - 用户明确要求使用 Superpowers 子代理进行两阶段评审，并随后授权代码提交和文档回写。
-  - 评审结论中关于 code→review/deliver 的 target phase 语义按 SPEC 的“test/review 只能读取”收紧实现。
-- 经验教训：
-  - `frozen` dataclass 不会自动冻结内部 dict；机器状态映射必须在构造时深层转为不可变映射。
-  - StateStore 保存前必须同时校验持久化 task_id 和 phase 所有权，不能只依赖调用方传入对象。
-  - Windows pytest 临时目录 ACL 可能造成 setup 错误；应在批准的沙箱外重跑并区分环境失败和代码失败，最终以新鲜全量结果为准。
+  - `cfac049 feat: 完成 T15 课程文件保护`。
+- 剩余风险：
+  - 当前 Windows 环境的两个既有 symlink 场景仍跳过；T15 的嵌套保护已通过字符串路径确定性覆盖，仍建议在允许创建 symlink 的 CI/主机复验既有 canonical-path 分支。
+  - 已清理 `src`/`tests` 下的 `__pycache__`、`.pyc`/`.pyo`、根目录 `.pytest_cache` 与 `.superpowers`；保留 `.venv`。
 
-### 2026-07-10 返工 — T3 — ConfigLoader 安全与契约加固
+### 2026-07-12 — T14 — ToolPolicy 基础规则
 
-- 使用的技能：receiving-code-review；executing-plans；test-driven-development；verification-before-completion
-- 使用的智能体：OpenAI Codex
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review。
+- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全独立复核。
 - 关键提示词 / 上下文：
-  - 两阶段评审判定 T3 初版不通过，要求修复默认保护可删除、敏感字段绕过、项目根可写、T2 元数据未复用、远程 provider 凭据来源缺失和字段诊断不足。
-  - 已确认 T3 不承载工具权限和 phase 策略：固定 phase 规则留在 T5，工具权限决策留在 T14。
-  - `max_context_chars=24000`、`max_trace_events=40` 来自 2026-07-10 已批准的 T3 开发计划，而非返工阶段临时调整。
+  - T14 只实现 `ToolPolicy(config).evaluate()` 与 `PolicyDecision`；不执行工具、checkpoint、trace 或状态写入，也不修改 Action、AgentLoop、PathClassifier 的生产代码。
+  - T13 PathClassifier 是唯一写入路径分区来源；T14 对 protected/out-of-scope 写入 fail-closed，T15 继续负责课程保护规则扩展。
 - 摘要：
-  - `workspace.py` 提供共享 `load_project_metadata()`；T2 与 T3 现在使用同一 workspace metadata 契约。
-  - `ConfigLoader` 只接受 T2 元数据与当前活动配置字段，拒绝未知顶层字段和嵌套配置。
-  - protected patterns 改为不可移除基线并支持项目规则追加；补充 `secrets/**`、密钥文件模式和项目根可写拒绝。
-  - 敏感字段扫描覆盖 `credentials`、`private_key`、`api_key_value` 等绕过形式；远程 provider 要求 credential source；错误消息只含字段名，不回显值。
+  - 新增 `src/hancode/tool_policy.py`：以静态阶段工具矩阵、T5 artifact gate、T13 PathClassifier 和 TaskState 判定工具调用。
+  - source write 仅在一致的 code phase 且 SPEC/PLAN 完成时允许，并返回 `requires_checkpoint=True`；不在本任务创建 checkpoint。
+  - `finish_phase` 对六阶段使用 artifact、source edit、测试状态和 rollback 状态门禁；`ask_user`、`final` 不触发工具执行。
 - 逐项 TDD 证据：
-  - Red-1 / Green-1（元数据）：`test_config_reuses_project_workspace_metadata_validation` 首次运行出现 3 个 `Failed: DID NOT RAISE HanCodeError`；共享校验后该组用例进入返工后专项通过。
-  - Red-2 / Green-2（schema）：评审复现初版对未知顶层字段和嵌套对象直接返回配置；新增 `test_config_rejects_unknown_or_nested_configuration` 锁定该行为，严格字段集合实现后通过。该 Red 为评审复现，未在本次续接会话中重新回放。
-  - Red-3 / Green-3（保护基线）：评审复现 `protected_patterns=[]` 会清空默认规则；`test_config_keeps_mandatory_protected_patterns` 验证基线保留与追加去重，返工后通过。该 Red 依据初版代码路径和评审报告记录。
-  - Red-4 / Green-4（凭据）：评审复现 `credentials.value`、`private_key`、`api_key_value` 可绕过初版后缀扫描；新增三类回归用例，返工后 42 项专项测试通过且异常文本不含测试值。该 Red 未单独在本次续接会话回放。
-  - Red-5 / Green-5（路径与诊断）：评审复现 `writable_roots` 为 `""`、`.` 或 `/**` 可解析到项目根，且错误不带字段名；新增边界与字段诊断用例后通过。
-  - Red-6 / Green-6（provider 与回归）：评审复现远程 provider 缺少 credential source 仍可加载；新增远程必填、local 例外和既有路径/task ID 回归用例后，专项 42 passed、全量 89 passed。
-  - 说明：返工提交 `e3ddce9` 已包含完整测试增量；除 Red-1 外，其余初版失败依据评审报告与初版代码行为记录，不冒充本次续接会话重新执行的命令输出。
+  - Red：新增 `tests/test_tool_policy.py` 后，因 `hancode.tool_policy` 不存在，收集阶段出现预期 `ModuleNotFoundError`。
+  - Green：最小实现后 ToolPolicy 专项 22 passed；补齐审查回归后 T14 + AgentLoop 专项 43 passed。
 - 两阶段评审：
-  - 第一阶段 Spec 合规：确认 T2 元数据复用、不可移除课程保护、严格 schema、24000/40 来源、远程凭据来源和 T5/T14 边界已写入任务契约。
-  - 第二阶段代码质量：确认 `Path.resolve()` / `PureWindowsPath`、字段级错误、敏感值不回显、local provider 例外与无副作用加载；Ruff 与 MyPy 通过。
+  - 阶段一发现 3 项 Important：PLAN 仍为旧自由函数接口、拒绝序列化断言不完整、四个 finish gate 拒绝分支缺测；均已在 T14 范围内修复并复验。
+  - 阶段二复核 fail-closed 分区、phase/state 优先级、结构化错误、AgentLoop 无 dispatch 集成与范围控制；补充 state current phase 不一致回归后无剩余 Critical/Important。
 - 提交：
-  - `e3ddce9` — `fix: 加固 T3 ConfigLoader`
-  - 文档回填提交：本记录所在的 `docs: 回填 T3 返工验证记录` 提交。
+  - `0c898e8` — `feat: 完成 T14 基础工具策略`：新增 ToolPolicy、结构化决策和完整 T14 测试。
 - 验证：
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_config.py -v -p no:cacheprovider`：42 passed。
-  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/config.py tests/test_config.py --no-cache`：All checks passed。
-  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3-review"`：Success，无问题。
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider`：89 passed。
-- 人工干预：
-  - 用户确认采用“仅远程 provider 必须 credential_source，local 可为 None”。
-  - 用户确认 T3 仅支持当前活动字段，未来字段由后续任务加入。
-- 经验教训：
-  - 默认保护规则必须是安全基线，不能把用户配置当作可替换的 deny-list。
-  - 配置 schema 需要先拒绝未知/嵌套数据，再谈字段名敏感扫描；字段名扫描只能作为错误分类和防御纵深。
+  - T5+T10+T13+T14：82 passed、2 skipped；全量沙箱外：317 passed、4 skipped in 3.45s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 15 source files`；`git diff --check` 通过。
+- 剩余风险：
+  - 两个 T13 symlink 场景在当前 Windows 权限下跳过；T14 对 PathClassifier 的既有 fail-closed 返回值进行策略拒绝，仍应在可创建 symlink 的 CI/主机复验。
 
-### 2026-07-10 返工后续 — T3 文档与模板契约对齐
+### 2026-07-12 — T13 — PathClassifier
 
-- 触发原因：两阶段评审发现 `docs/PLAN.md`、`docs/系统架构.md` 和 `examples/.hancode-template/project.json` 仍保留 T3 当前不接受的工具/phase/交互字段或旧模板字段。
-- 修改：
-  - 收窄架构文档的 ConfigLoader 当前职责，明确 task state、phase、tool policy 和交互开关属于后续任务。
-  - 将架构中的 `project.json` 示例与 T3 严格 schema 对齐，移除 `stack`、`interactive`、`confirm_before_write`，补齐保护规则和 `project_root`。
-  - 修正模板 `project.json`，并更新脚手架断言验证 `project_root="."` 且不包含未来 `stack`。
-- 验证：
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_course_project_scaffold.py -v -p no:cacheprovider`：18 passed。
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider`：89 passed。
-  - `git diff --check`：通过；模板 JSON 解析成功，`project_root` 为 `.`，无 `stack` 字段。
-
-### 2026-07-10 __:__ +08:00 — T3 — ConfigLoader
-
-- 使用的技能：using-superpowers；using-git-worktrees；executing-plans；test-driven-development；karpathy-guidelines；verification-before-completion
-- 使用的智能体：OpenAI Codex
+- 使用的技能：using-superpowers；karpathy-guidelines；executing-plans；using-git-worktrees；test-driven-development；requesting-code-review；receiving-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；第一阶段契约审查智能体；第二阶段质量/安全审查。
 - 关键提示词 / 上下文：
-  - 用户要求在 `feature/M1` 的 `.worktrees/M1` 中执行已批准的 T3 计划，沿用 M1 单 worktree / 单 PR 策略，不启用子代理。
-  - T3 只实现项目级 `project.json` 配置加载；不读取 task state、环境变量、`.env` 或真实凭据。
+  - T13 只实现四区 `PathClassifier(HanCodeConfig)`；不实现 ToolPolicy、phase、checkpoint、trace 或 FileTools 改造。
+  - 相对路径先 canonical resolve 并限制在 `allowed_workspace_root`；受保护模式对词法与 canonical 路径均匹配且优先。
 - 摘要：
-  - 新增 `HanCodeConfig` 与 `load_config()`，提供不可变的项目级配置、默认限制、provider / 凭据来源元数据、可写根和可选 task root。
-  - `max_context_chars` 与 `max_trace_events` 的批准默认值同步为 24000 / 40。
-  - 对损坏配置、非法限制、未知 provider、明文敏感字段、跨平台绝对路径、`..` 与符号链接逃逸返回结构化错误；错误仅含字段名，不回显非法值。
-  - `task_id` 仅复用 T2 的 `task_path()` 派生路径，未创建 Task Workspace 或读取 `state.json`。
-- TDD 证据：
-  - Red/Green-1：默认配置测试先因 `ModuleNotFoundError: hancode.config` 失败，新增最小 dataclass / loader 后通过。
-  - Red/Green-2：项目覆盖测试先仍得到 `mock`，加入 JSON 合并后通过。
-  - Red/Green-3 至 8：依次验证 workspace 前置条件、损坏 JSON 与字段类型、数值边界/布尔值、provider/credential source、递归明文凭据扫描、可写根及 task 路径逃逸；每项先出现预期失败，再以最小实现转绿。
-  - 链接逃逸 fixture 首次将目标放在项目根内，按边界定义不构成逃逸；修正为项目根外的同级临时目录后通过。
+  - 新增 `src/hancode/path_policy.py`，公开 `PathZone`（`protected`、`artifact`、`source`、`out_of_scope`）和 `PathClassifier.classify()`。
+  - task root 仅六个精确大小写的直系产物可归入 artifact；任务状态、历史、trace 与 checkpoints 为 protected，其他 task 内文件即使 `.hancode` 被配置成可写根也为 out of scope。
+  - source 仅来自配置 `writable_roots`；绝对路径、`..`、resolve 故障和 symlink 逃逸均 fail-closed 为 `OUT_OF_SCOPE`。
+- 逐项 TDD 证据：
+  - Red：新增 `tests/test_path_classifier.py` 后，专项在收集阶段因 `hancode.path_policy` 不存在得到预期 `ModuleNotFoundError`。
+  - Green：最小实现后专项为 26 passed、2 skipped；后续审查补充 artifact 大小写、绝对 workspace 内路径和 task-root/write-root 重叠测试，最终专项为 29 passed、2 skipped。
 - 两阶段评审：
-  - Spec 合规：核对 FR-9 与 §10.4，确认项目级加载、默认值、凭据不落盘、结构化错误和路径边界均有测试覆盖；未扩展到 CredentialProvider、StateStore、路由或 ContextBuilder。
-  - 代码质量：确认 `Path.resolve()` 与 `PureWindowsPath` 联合处理跨平台路径，敏感错误不包含输入值，静态类型与 lint 均通过；未发现阻塞项。
-- 工作流偏离：
-  - 无子代理；用户已批准 inline 执行，且当前约束不允许未经明确授权的 delegation。
-  - `uv run --extra dev` 首次建立本地开发环境时生成未跟踪 `uv.lock`；该文件不在 T3 范围内，已移除且未提交。
+  - 阶段一发现 2 项 Important：artifact 白名单错误地 casefold，以及对越界结果的命名质疑。前者已改为精确文件名并有反例测试；后者核对四区契约后保留 `OUT_OF_SCOPE`，因为它是已批准的越界/非法路径唯一返回值。
+  - 阶段二发现 1 项 Important：当 `.hancode` 被列为 writable root 时，未知 task 文件会误落入 source；已在 artifact 后封住其余 task 文件并复验。未实现 T14/T15 的策略机制。
 - 提交：
-  - `e7fcee3` — `feat: 完成 T3 ConfigLoader`
+  - `6727894` — `feat: 完成 T13 路径分类器`：新增 PathClassifier 与完整 T13 测试。
 - 验证：
-  - `$env:PYTHONPATH='src'; uv run pytest tests/test_config.py -v -p no:cacheprovider` 通过，25 passed。
-  - `$env:PYTHONPATH='src'; uv run ruff check src/hancode/config.py tests/test_config.py --no-cache` 通过。
-  - `$env:PYTHONPATH='src'; uv run mypy src/hancode/config.py --cache-dir "$env:TEMP\hancode-mypy-t3"` 通过，no issues found in 1 source file。
-  - `$env:PYTHONPATH='src'; uv run pytest -p no:cacheprovider` 通过，72 passed。
-- 经验教训：
-  - 配置路径的安全判定既要检查字面路径（绝对路径与 `..`），也要检查 `resolve()` 后的真实位置，才能覆盖跨平台字符串与目录链接两类逃逸。
-  - 明文凭据防护必须递归扫描字段名，并把错误输出限制为字段名，不能把解析到的值带入异常或日志。
+  - T3+T13：68 passed、2 skipped；最终 T13 专项：29 passed、2 skipped；跳过均因当前 Windows 环境不允许创建文件 symlink。
+  - 全量沙箱外：286 passed、4 skipped in 2.55s；Ruff 全量通过；MyPy `src` 为 `Success: no issues found in 14 source files`；`git diff --check` 通过。
+- 剩余风险：
+  - Windows 符号链接权限受限，两个 T13 symlink 回归在本机跳过；逻辑仍以 canonical resolve fail-closed，需在具备创建 symlink 权限的 CI/主机复验。
 
-### 2026-07-10 __:__ +08:00 — T2 — Linux CI 路径判定回归修复
+### 2026-07-13 — M3 CI 回归 — search_text 凭据 symlink alias
 
-- 使用的技能：systematic-debugging；verification-before-completion
-- 使用的智能体：OpenAI Codex
+- 问题：Linux CI 的 symlink 场景中，`search_text` 同时报告真实 `.env` 和指向它的 alias；预期只报告 alias。
+- 根因：遍历 canonical 路径时，真实凭据文件和 alias 都进入 `skipped_files`，缺少按 canonical 目标去重。
+- 修复：在 `src/hancode/file_tools.py` 中记录凭据文件的 canonical 路径；存在非凭据 alias 时隐藏真实凭据路径，没有 alias 时保留原有凭据跳过记录。
+- 验证：FileTools 专项 `29 passed, 2 skipped`；Windows 本机因 symlink 权限跳过 alias 用例，需由 Linux CI 复验。
+
+---
+
+### 2026-07-13 — T16 — TraceLogger
+
+- 使用的技能：karpathy-guidelines；test-driven-development；verification-before-completion。
+- 使用的智能体：OpenAI Codex。
 - 关键提示词 / 上下文：
-  - 用户贴出 GitHub Actions / Linux `make test` 失败输出：`test_workspace_rejects_path_outside_project_root[C:/outside]` 期望 `workspace_path_outside_project_root`，实际得到 `invalid_task_id`。
-  - 本轮仅修复 T2 workspace 路径判定的跨平台差异，不扩展 workspace 初始化语义。
-- 根因分析：
-  - `Path("C:/outside").is_absolute()` 在 Windows 本地返回 `True`，但 Linux / POSIX 语义下不会按 Windows drive absolute path 处理。
-  - CI 因此先通过 `Path` 拼接与 `resolve()` 得到仍位于 task root 下的候选路径，随后落入 “包含路径分隔符” 的 `invalid_task_id` 分支。
+  - 在 `feature/M4` worktree 实现 T16；用户确认函数式设计，TraceLogger 负责分配 `event_id` 和 `seq`。
+  - 仅新增 `trace.py` 与 `test_trace.py`，并回填 PLAN / AGENT_LOG；不改 AgentLoop、ToolPolicy、CheckpointManager 或 history summary。
 - 摘要：
-  - `src/hancode/workspace.py` 引入 `PureWindowsPath`。
-  - `task_path()` 在原有 `Path(task_id).is_absolute()` 基础上增加 `PureWindowsPath(task_id).is_absolute()`，统一拒绝 Windows 风格绝对路径。
-- 提交：
-  - 未提交；用户明确要求提交交给人类开发者。
+  - 新增不可变 `TraceEvent` 与 `append_trace()`；事件追加到 task root 的 `trace.jsonl`，并以最后一条合法事件计算连续 `seq` 及 `evt-000001` 格式 ID。
+  - 对 action、observation、state transition 执行递归复制式脱敏；Authorization、api_key、token、secret、password、credential、private_key 等字段只记录 `[REDACTED]`，字符串超过 4096 字符截断为 `...[TRUNCATED]`。
+  - 损坏 trace 或无效既有编号返回 `trace_parse_error`；追加失败返回 `trace_write_error`，不回显底层异常内容。后续高风险调用链可将该错误作为阻断信号。
+- 逐项 TDD 证据：
+  - Red：先因 `hancode.trace` 不存在得到 `ModuleNotFoundError`；随后编号测试断言第二条仍为 `evt-000001`，安全测试发现假 secret 与完整 4097 字符内容出现在 JSONL，异常测试暴露原始 `JSONDecodeError` / `OSError`，编号完整性测试确认无效末条事件未被拒绝。
+  - Green：最小实现分别补齐追加、序号、脱敏截断、结构化错误与编号校验；最终专项为 `8 passed in 0.13s`。
 - 验证：
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
-  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
-  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-ci-fix` 通过，no issues found in 1 source file。
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 通过，47 passed。
-- 经验教训：
-  - 跨平台路径安全测试不能只依赖当前操作系统的 `Path.is_absolute()`；需要显式处理 Windows drive path 与 POSIX path 的差异。
+  - `ruff check src/hancode/trace.py tests/test_trace.py --no-cache`：通过。
+  - `mypy src/hancode/trace.py`：`Success: no issues found in 1 source file`。
+  - 全量 pytest：`354 passed, 4 skipped in 5.14s`；全量 ruff：通过；全量 mypy：`Success: no issues found in 16 source files`。
+- 环境备注：受限 sandbox 无法创建 pytest 临时锁文件，且 `uv run --extra dev` 的 editable 构建临时目录被拒绝访问；使用 `$env:PYTHONPATH='src'` 加 `uv run --no-project --with ...` 并在本机环境运行同一测试命令取得验证证据。
+- 提交：本任务提交（见 `git log`）。
+- 剩余风险：MVP 已逐行验证 task 内历史后分配序号，但尚未实现并发 writer lock、`fsync` 或崩溃后半行恢复；这些与实际 AgentLoop / 高风险工具调用链集成均属于后续任务。
 
-### 2026-07-10 00:02 +08:00 — T2 — 评审后路径逃逸修复与回归补强
+#### 第一阶段评审修正
 
-- 使用的技能：systematic-debugging；test-driven-development；verification-before-completion
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求按“两阶段评审”先做 spec 合规检查、再做代码质量检查，并在收到评审结论后要求“开始修复”。
-  - 评审确认一个真实缺陷和一个测试缺口：`task_path()` 未拒绝 `.hancode/tasks` 经 symlink / junction 逃逸到项目根外；checkpoint / 阶段产物幂等性缺少回归测试。
-- 根因分析：
-  - `task_path()` 只校验 `candidate` 是否位于已解析 `tasks_root` 下；当 `tasks_root` 自身被目录链接重定向到仓库外时，`candidate` 仍满足该条件，从而绕过 project root 边界。
-  - `init_task_workspace` 对 checkpoint / 阶段产物的幂等行为已存在，但此前没有测试锁定，评审只能靠代码阅读确认。
-- TDD 证据：
-  - Red：`$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider -k "escape_via_link or preserves_existing_checkpoints_and_artifacts"` 失败，`test_workspace_rejects_tasks_directory_escape_via_link` 报 `Failed: DID NOT RAISE HanCodeError`；同批次 `test_task_workspace_init_preserves_existing_checkpoints_and_artifacts` 首次即通过，证明这是覆盖补强而非行为缺陷。
-  - Green：`task_path()` 增加 `.hancode` workspace root 内约束后，同一命令通过，2 passed。
-- 摘要：
-  - 新增目录链接逃逸测试，覆盖 `.hancode/tasks` 被 symlink / junction 重定向到 project root 外的场景。
-  - 新增 checkpoint / 阶段产物幂等回归测试，锁定重复 init 不清空既有 evidence。
-  - 最小修改 `src/hancode/workspace.py`，仅收紧 `task_path()` 的根边界判断，不扩展 init 语义。
-- 人工干预：
-  - 用户在看到评审结论后明确要求继续修复。
-- 工作流偏离：
-  - 未派发 reviewer subagent；原因是当前多代理约束要求只有用户显式要求 delegation 时才允许 spawn，故继续使用 inline 修复与验证。
-- 提交：
-  - `6d7f894` — `feat: 完成 T2 Workspace 初始化`
+- 新鲜独立评审发现：仅检查末行会允许中间损坏、重复 ID 或倒退序号的历史继续追加；字符串型凭据和 JSON 编码异常仍可能泄露原始异常；tool 事件字段与 task ID 未验证。
+- 修正：追加前逐行验证完整历史的连续 `seq` 与 `event_id`；将 JSON 序列化失败转为 `trace_write_error`；对全部字符串键值形式的敏感文本脱敏；要求 tool action 的名称、参数、原因和 policy decision，要求失败工具事件携带错误摘要，并绑定 task ID 与 task root。
+- 验证：新增 7 项回归后 `tests/test_trace.py` 为 `15 passed in 0.23s`；全量为 `361 passed, 4 skipped in 2.65s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
+
+#### 第二阶段安全/质量评审修正
+
+- 新鲜独立评审发现：cookie、AWS access key 和无键名 Bearer token 能绕过原始脱敏；历史 task ID、task-root 布局、tool policy decision/状态与非字符串运行时输入未被充分验证。
+- 修正：扩展字段和文本型凭据脱敏；逐行校验历史 task ID；限制 task root 为 `.hancode/tasks/<task_id>`；要求完整 policy decision 与受限工具状态；将非字符串 mapping key 规范化为字符串，并将非字符串 error summary 转为 `invalid_trace_payload`。
+- 范围判断：评审提出的并发 writer lock、`flush/fsync` 和进程崩溃半行恢复确有审计耐久性价值，但 `docs/PLAN.md` 将单 task 单活跃 runner 明确列为 post-MVP，且 T16 只承诺单进程函数式 JSONL MVP；本任务不提前实现并发/耐久化机制，保留为后续风险。
+- 验证：新增 7 项回归后 `tests/test_trace.py` 为 `22 passed in 0.32s`；最终全量为 `368 passed, 4 skipped in 2.54s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
+- Re-verdict 修正：第二阶段代理继续发现受保护短文本仍会原样进入 trace、伪造 `.hancode/tasks/` 布局可通过、非 Mapping payload 会抛原始异常，且 tool event status 与 event type 不一致仍可落盘。所有内容字段现只记录 `[CONTENT_OMITTED]` 与长度；task root 还必须存在有效 `project.json`；payload、policy 字段及工具状态均 fail-closed。
+- 最终 Re-verdict 修正：字段名别名（如 `file_content`、`tool_output`、`response_body`）由精确匹配改为规范化前缀/后缀匹配，嵌套内容同样摘要化。
+- 最终验证：新增 7 项回归后 `tests/test_trace.py` 为 `29 passed in 0.43s`；全量为 `375 passed, 4 skipped in 3.92s`；ruff 全仓通过；mypy `src` 为 `Success: no issues found in 16 source files`。
+- 第二阶段最终 re-verdict：无 Critical、Important 或 Minor；字段别名及嵌套内容摘要、项目 metadata、payload 与工具审计契约均已关闭。并发 writer lock、`fsync` 与崩溃半行恢复仍为已记录的 post-MVP 非目标。
+
+#### 文档收尾（2026-07-13）
+
+- 按 T16 收尾要求只修改文档，不运行测试、不修改 `src/hancode/`。
+- `docs/PLAN.md`：补齐完整函数式接口、29 项实际测试名称、最终验证记录、T16 实现边界、FR-8 `[x]` 状态和实现提交 `df39f8c`。
+- `docs/系统架构.md`：移除与当前实现不一致的 `schema_version` / `LAST_ERROR` / 旧事件示例，统一为 `seq`、`evt-{seq:06d}`、内容摘要、项目 metadata 校验和结构化错误契约。
+- 文档核验：检查 T16 引用、过时事件格式、占位接口和明显笔误；本轮按用户要求未运行测试。
+
+### 2026-07-13 — T17 — CheckpointManager
+
+- 使用的技能：karpathy-guidelines；test-driven-development；systematic-debugging；requesting-code-review；receiving-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；第一阶段新鲜契约审查子代理；第二阶段新鲜安全/持久化审查子代理。
+- 已实现：
+  - 新增函数式 `CheckpointFile` / `CheckpointManifest`、`create_checkpoint()` 与 `commit_checkpoint()`；通过 state 序列生成 `ckpt-NNN`，支持既有 SOURCE 文件与新建 SOURCE 目标的 before/after hash 生命周期。
+  - 创建使用临时 checkpoint 目录后 rename；state 或 trace 失败时恢复 state、删除 checkpoint，无法补偿时返回 `checkpoint_compensation_failed`。
+  - manifest、快照、checkpoint 根/临时目录均验证 task 边界；拒绝外链 symlink/junction、篡改 ID/project/schema、非法状态、快照缺失/逃逸/哈希不匹配、非法 after hash 和 PROTECTED 路径。
+  - manifest reason 与 trace reason 均脱敏敏感赋值和 Bearer token；创建/提交分别写 `checkpoint_created` / `checkpoint_committed`。
+- TDD 与审查：
+  - Red：最初因 `hancode.checkpoints` 不存在得到 `ModuleNotFoundError`；审查后新增 state/trace 补偿、manifest 篡改、before snapshot 完整性、symlink 边界和 reason 脱敏回归。
+  - 第一阶段审查曾发现失败补偿、初始原子发布、manifest 信任边界和 before snapshot 可恢复性缺口；逐项补测试与修复后通过。
+  - 第二阶段审查曾发现 `files/`、manifest 链接边界、reason secret 落盘和 after hash 格式缺口；逐项静态复审后无 Critical/Important，结论可合入。
 - 验证：
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest tests/test_workspace.py -v -p no:cacheprovider` 通过，20 passed。
-  - `$env:PYTHONPATH='src'; uv run --no-sync ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
-  - `$env:PYTHONPATH='src'; uv run --no-sync mypy src/hancode/workspace.py --cache-dir $env:TEMP\hancode-mypy-t2-fix` 通过，no issues found in 1 source file。
-  - `$env:PYTHONPATH='src'; uv run --no-sync pytest -p no:cacheprovider` 在当前 worktree 状态通过，47 passed；该结果包含用户已批准同步到该分支但未并入本次 T2 提交的 `tests/test_course_project_scaffold.py` 变更。
-- 经验教训：
-  - 只校验“解析后的候选路径在解析后的任务目录下”不足以防止链接逃逸；还必须确认最终路径仍位于 project workspace 根内。
-  - 评审发现的“现有行为缺测试”也要补成回归用例，否则后续重构时容易把幂等性悄悄打穿。
+  - 沙箱外专项 `tests/test_checkpoints.py` 为 `40 passed, 4 skipped in 1.93s`；4 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
+  - 沙箱外全量 pytest 为 `415 passed, 8 skipped in 5.10s`。
+  - Ruff 输出 `All checks passed!`；MyPy `src/hancode/checkpoints.py` 为 `Success: no issues found in 1 source file`；`git diff --check` 通过。
+  - 首次全量复验暴露 `tests/test_course_project_scaffold.py` 仍要求 PLAN 保留 `test_edit_file_creates_checkpoint`；已在 T17 测试清单中补回该兼容名称，修复后全量通过。
+- 提交：未提交；T17 已完成验证，是否提交由用户决定。
+- 剩余风险：T18 rollback、T21 自动调度、跨进程锁/TOCTOU、pending crash reconcile 与 pruning 均不在 T17 范围。
 
-### 2026-07-09 22:30 +08:00 — T2 — Workspace 初始化缺口修复
+### 2026-07-13 — T18 — RollbackManager
 
-- 使用的技能：test-driven-development；verification-before-completion
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求评估 worktree 中的 workspace.py 代码，随后要求接续 T2 任务完成。
-  - 评审发现两个阻塞缺口：state.json 缺失 8 个字段（架构文档 §8.4）、init_task_workspace 不幂等。
-- 摘要：
-  - Red-1：写 `test_task_workspace_state_json_contains_all_required_fields`，验证 state.json 包含全部 18 个字段，失败原因正确（缺失 8 个字段）。
-  - Green-1：补齐 `goal`、`checkpoint_seq`、`tests_run`、`test_status_consumed`、`phase_completed`、`source_edits_this_phase`、`rollback_required`、`rollback_done`。
-  - Red-2：写 `test_task_workspace_init_preserves_existing_state_and_trace`，失败原因正确（`FileExistsError`）。
-  - Green-2：`init_task_workspace` 幂等化——`mkdir(exist_ok=True)` + state/trace/history 只在不存在时写入。
-  - 旧测试 `test_task_workspace_initializes_required_artifacts` 的精确等值断言同步更新为完整字段集。
-- 人工干预：
-  - 用户先要求评估代码，确认缺口后再要求修复。
-- 工作流偏离：
-  - 未使用 worktree（已在 `codex/workspace-init` worktree 中）；未使用 brainstorming（缺口明确，无需探索）。
-- 提交：
-  - 未提交
+- 使用的技能：karpathy-guidelines；test-driven-development；systematic-debugging；requesting-code-review；verification-before-completion。
+- 使用的智能体：OpenAI Codex；第一阶段新鲜契约审查子代理；第二阶段新鲜安全/持久化审查子代理。
+- 已实现：
+  - 在 `checkpoints.py` 新增冻结的 `RollbackResult` 与函数式 `rollback_last_checkpoint()`；仅允许在一致的 review state 中恢复最新、同 task / project、已提交且可回退的 code checkpoint。
+  - manifest 生命周期扩展为 `pending -> committed -> rolled_back`；成功回退后保留 checkpoint 序列和 retry budget，重置 review 后的测试/代码完成标记，并写入开始与结果 trace。
+  - 所有 identity、snapshot、PathClassifier、symlink/junction 与 after hash 校验均在写入前完成；冲突或读取错误返回 `blocked`，零业务文件写入。
+  - 多文件、manifest、state 与 trace 任一持久化失败均做反向补偿；补偿失败将 state 标记为 `inconsistent`。文件恢复使用同目录、独占创建的随机临时文件，避免预置路径或链接重定向。
+- TDD 与两阶段审查：
+  - Red：从缺少 rollback 导入开始，再逐项覆盖生命周期、状态复位、冲突、路径/链接边界和补偿。
+  - 阶段一发现 after-hash 预检读取错误被误报为 `failed`；已改为 `rollback_conflict` 的 `blocked` 结果并复核通过。
+  - 阶段二发现可预测临时路径的链接绕过、inconsistent state 仍可执行回退、以及补偿后结果仍虚报已恢复文件；均以最小代码和回归测试修复，复核后无 Critical/Important。
 - 验证：
-  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest -v -p no:cacheprovider` 通过，40 passed。
-  - `ruff check src/hancode/workspace.py tests/test_workspace.py --no-cache` 通过。
-  - `mypy src/hancode/workspace.py` 通过，no issues found in 1 source file。
-- 经验教训：
-  - state.json 初始字段必须与架构文档 §8.4 完全对齐，否则 T4 StateStore、T6 WorkspaceRouter、T17 CheckpointManager 都要补字段，破坏幂等性。
+  - `tests/test_rollback.py tests/test_checkpoints.py` 为 `62 passed, 5 skipped`。
+  - 全量 pytest 为 `437 passed, 9 skipped in 8.33s`；9 个 skip 均因当前 Windows 环境不允许创建文件 symlink。
+  - Ruff 输出 `All checks passed!`；MyPy 输出 `Success: no issues found in 17 source files`；`git diff --check` 通过。
+- 提交：未提交；T18 已完成验证，是否提交由用户决定。
+- 剩余风险：Windows 上链接分支仍需在可创建 symlink 的 CI/主机复验；跨进程锁、TOCTOU 完全消除、pending crash reconcile、pruning 与 T21 自动调度不在 T18 范围。
 
-### 2026-07-09 21:15 +08:00 — T1 — 共享模型与错误类型返工
-
-- 使用的技能：using-superpowers；brainstorming；writing-plans；using-git-worktrees；test-driven-development；requesting-code-review；verification-before-completion
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求“直接按这版 PLAN 返工 T1 代码和测试”。
-  - 已先将 `docs/PLAN.md` 与 `docs/SPEC.md` 的错误契约对齐，T1 需改为 `error_code` / `message` / `phase` / `denied_rule` / `suggested_fix`。
-  - 本轮只允许返工 `src/hancode/errors.py`、`src/hancode/models.py`、`tests/test_errors.py`、`tests/test_models.py`，不扩到 T2 及后续模块。
-- 摘要：
-  - 将 `StructuredError` 从旧字段 `code` / `hint` / `details` 返工为 SPEC 顶层字段契约。
-  - 保持 `HanCodeError` 包装接口不变，但错误展示文案改为基于 `error_code`。
-  - 扩展 `OperationResult.to_dict()` 的递归序列化路径，使嵌套 `Risk`、枚举、tuple/list/mapping 在 `data` 中可稳定导出为 JSON。
-  - 重写 T1 测试，使其同时覆盖新错误字段和嵌套共享模型序列化。
-- TDD 证据：
-  - Red：`$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_errors.py tests/test_models.py -v -p no:cacheprovider` 失败，4 failed；失败原因为 `StructuredError.__init__()` 不接受 `error_code` 等新字段。
-  - Green：同一命令在返工后通过，8 passed。
-- 评审：
-  - Spec 合规检查：确认 `StructuredError` 顶层字段与 `docs/SPEC.md` §10.21.5 一致；解析失败、策略拒绝和工具失败后续可复用同一字段名。
-  - 代码质量检查：确认返工只影响 T1 共享模型和对应测试；通过递归 `to_dict()` 避免 `OperationResult.data` 残留不可 JSON 序列化的共享模型对象。
-- 工作流偏离：
-  - 未创建新 worktree；原因是用户要求在当前工作树直接返工，且目标实现文件在本轮开始时无未提交改动。按当前执行会话保持最小范围修改。
-  - 未派发 code-review subagent；原因是当前多代理约束要求只有用户显式要求 delegation 时才允许 spawn，故改为本会话内联两阶段复核。
-- 提交：
-  - 未提交
-- 验证：
-  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_errors.py tests/test_models.py -v -p no:cacheprovider` 通过，8 passed。
-  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py --no-cache` 通过。
-  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-t1-review` 通过，no issues found in 2 source files。
-  - `$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest -p no:cacheprovider` 通过，27 passed。
-- 经验教训：
-  - 共享错误模型一旦与上位 SPEC 失配，问题会沿 `ParseError`、`PolicyDecision`、`Feedback`、`ToolResult` 整条链路扩散；必须先收敛字段名，再推进后续任务。
-  - 共享结果模型的“可序列化”不能只看顶层字段；嵌套共享 dataclass 也必须在首个任务就被回归测试覆盖。
-
-### 2026-07-09 20:27 +08:00 — DOCS — Python 工具链统一为 uv
-
-- 使用的技能：using-superpowers
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求后续包管理统一使用 uv，并查找 Python 相关内容、更新相应文档。
-  - 本轮仅更新当前规范、开发指南和未执行任务卡，不修改实现代码、CI 或历史验证事实。
-- 摘要：
-  - `AGENTS.md`、`README.md` 和安全验证指南增加 uv 环境初始化与质量门禁命令。
-  - `docs/SPEC.md` 明确 uv 负责 Python 版本、虚拟环境、依赖、命令执行和包构建。
-  - `docs/PLAN.md` 从 T2 起统一使用 `uv run`，T26 增加 `uv.lock`、`uv sync`、`uv build` 和 uv CI 约束。
-  - `docs/系统架构.md` 将 Python 包管理器从 pip 收敛为 uv。
-  - T1、`docs/SPEC_PROCESS.md` 和既有日志中的旧命令作为真实历史证据保留。
-- 工作流偏离：
-  - 未使用 brainstorming、worktree、TDD、subagent、code review 和 branch finishing；原因是本轮属于小型文档与开发命令迁移，不修改运行行为。
-- 提交：
-  - 未提交
-- 验证：
-  - `uv --version` 返回 `uv 0.11.16`。
-  - `uv venv --help`、`uv sync --help`、`uv build --help`、`uv tool install --help` 均确认对应子命令可用。
-  - UTF-8 回读全部 6 个目标文档成功，且均包含 uv 约定。
-  - 检索确认 `docs/PLAN.md` T2 之后不存在 `python -m pytest/ruff/mypy/build` 或 pip 安装命令。
-  - `git diff --check` 通过；本轮未运行代码测试，因为没有修改实现或测试代码。
-- 经验教训：
-  - 工具链迁移应区分当前规范与历史证据；历史命令必须保留，避免把未实际执行的 uv 命令写成既有验证结果。
-
-### 2026-07-08 19:53 +08:00 — T1 — 共享模型与错误类型
-
-- 使用的技能：using-superpowers；using-git-worktrees；writing-plans；test-driven-development；verification-before-completion
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求“现在开始开发，完成 T1，先开辟一个 worktree”，随后修正任务为 T1。
-  - 用户要求后续提交信息中冒号后的信息采用中文。
-  - 已读取 `AGENTS.md`、`docs/PLAN.md` T1、`docs/SPEC.md`、`docs/agent-guides/workflow.md`、`docs/agent-guides/harness-boundary.md`、`docs/agent-guides/safety-and-verification.md`。
-- 摘要：
-  - 创建并使用 worktree `D:\agent-leanring\HanCode\.worktrees\t1`，分支为 `codex/t1`。
-  - 新增 `src/hancode/models.py`，提供 `Phase`、`TaskStatus`、`OperationStatus`、`Risk`、`OperationResult`。
-  - 新增 `src/hancode/errors.py`，提供 `StructuredError` 和 `HanCodeError`。
-  - 新增 `tests/test_models.py` 与 `tests/test_errors.py`，覆盖六阶段枚举、任务状态枚举、受限 operation status、结构化错误字段和 JSON 可序列化结果。
-  - 新增 `docs/superpowers/plans/2026-07-08-t1-shared-models-errors.md` 作为 T1 执行计划产物。
-- TDD 证据：
-  - Red：`$env:PYTHONPATH='src'; python -m pytest tests/test_models.py tests/test_errors.py -v` 失败，原因为 `ModuleNotFoundError: No module named 'hancode.errors'`。
-  - Green：同一命令通过，8 passed。
-- 验证：
-  - `$env:PYTHONPATH='src'; python -m pytest` 通过，27 passed；pytest cache 写入 warning 仍存在。
-  - `python -m ruff check src/hancode/models.py src/hancode/errors.py tests/test_models.py tests/test_errors.py` 通过；ruff cache 写入 warning 仍存在。
-  - 标准 `python -m mypy src/hancode/models.py src/hancode/errors.py` 因 mypy 2.2.0 sqlite cache `disk I/O error` 失败。
-  - `$env:PYTHONPATH='src'; python -m mypy src/hancode/models.py src/hancode/errors.py --cache-dir $env:TEMP\hancode-mypy-cache-t1 --show-traceback` 通过，no issues found in 2 source files。
-- 人工干预：
-  - 用户将任务从 T0 修正为 T1。
-  - 用户要求提交信息冒号后采用中文。
-  - 用户拒绝提交主 checkout 的 `.gitignore` worktree ignore 配置；该拒绝已遵守，T1 在新 worktree 中继续。
-- 工作流偏离：
-  - 未 dispatch 独立 subagent，也未使用 executing-plans；原因是用户明确要求当前会话直接开始 T1，并先开辟 worktree。已用本会话执行 `writing-plans` 和 TDD 流程，并保留计划产物。
-  - 未派发 code-review subagent；原因是当前多代理工具要求只有用户显式要求 subagent / delegation 时才允许 spawn。改为按 review gate 在本会话执行范围与质量自审。
-- 提交：
-  - `895065e` — `feat: 完成 T1 共享模型与结构化错误`
-- 经验教训：
-  - 在 `src/` layout 尚未 editable install 的环境中，T1 测试需要显式 `PYTHONPATH=src` 才能验证本地包。
-  - 当前默认 `python` 是 3.10.11，低于项目 3.11+ 目标；后续环境门禁或 CI 任务需要收敛解释器版本。
-  - Windows worktree 路径下 pytest / ruff / mypy cache 可能受本地权限或路径语义影响；验证时需要区分代码失败和 cache 写入失败。
-
-### 2026-07-08 17:21 +08:00 — T0 — 冷启动后阶段门收拢与正式开发入口确认
-
-- 使用的技能：using-superpowers；verification-before-completion
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户确认冷启动已经完成，并要求“把文档收拢一下，对于冷启动后开始的工作，做最后的文档完善，然后进入正式开发”。
-  - 当前阶段仍只做文档收拢，不修改 `src/hancode/`。
-  - 冷启动样本来自 OpenCode + GLM-5.2，对象为 `D:\agent-leanring\demo` 的 T1 / T2 实现。
-- 摘要：
-  - `AGENTS.md` 的阶段门改为：SPEC / PLAN / 冷启动验证已记录，正式实现可从 `docs/PLAN.md` T1 开始。
-  - `docs/agent-guides/workflow.md` 改为冷启动门已完成，并把冷启动发现作为正式实现约束。
-  - `README.md` 的项目阶段改为正式实现阶段，列明每个任务必须 TDD、验证、更新 PLAN / AGENT_LOG 并接受审查。
-  - `docs/PLAN.md` 的状态改为冷启动后实现准备完成；T1 增加 `OperationResult.status` 边界；T2 增加幂等初始化和 Project Workspace 前置约束；冷启动章节改为结果与正式开发入口。
-  - `docs/SPEC_PROCESS.md` 的冷启动结论收口为扩展上下文冷启动验证完成，阶段门不再阻塞实现。
-- 人工干预：
-  - 用户确认冷启动完成，并要求进入正式开发前做文档收拢。
-- 工作流偏离：
-  - 未使用 worktree、TDD、subagent 和 finishing-a-development-branch；原因是本轮仍是阶段门后的文档收拢，不是 harness kernel 实现任务。
-- 提交：
-  - 未提交
-- 验证：
-  - `Get-Content -Raw -Encoding UTF8` 读取 `AGENTS.md`、`README.md`、`docs/PLAN.md`、`docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`docs/agent-guides/workflow.md` 成功。
-  - `Select-String` 确认正式开发、T1、TDD、扩展上下文冷启动验证、回写约束等关键词已写入。
-  - `rg` 未发现 `仍未实际执行`、`正式冷启动验证仍需`、`不得开始完整实现`、`本仓库处于规范和规划阶段` 等旧阻塞表述。
-  - `Select-String` 确认 T1 / T2 / T26 的新增约束已写入 `docs/PLAN.md`。
-  - `git status --short` 已检查本轮文档修改范围。
-- 经验教训：
-  - 冷启动验证完成后，必须把发现回写到后续任务卡，否则正式开发会重复 demo 中暴露的设计缺口。
-
-### 2026-07-08 17:13 +08:00 — T0 — OpenCode / GLM-5.2 冷启动验证记录补全
-
-- 使用的技能：using-superpowers；verification-before-completion
-- 使用的智能体：
-  - 冷启动执行：OpenCode + GLM-5.2
-  - 复核与记录：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户说明已使用 OpenCode 搭载 GLM-5.2 进行冷启动验证。
-  - 用户说明提供给第二个 agent 的材料为 `系统架构.md`、`SPEC.md`、`PLAN.md`，未提供主开发对话历史或隐藏 memory。
-  - 复核对象为 `D:\agent-leanring\demo` 中的冷启动产物。
-- 摘要：
-  - 第二个 agent 尝试了 T1 共享模型与错误类型、T2 Workspace 初始化。
-  - 冷启动产物包含 `src/hancode/models.py`、`src/hancode/errors.py`、`src/hancode/workspace.py` 以及对应测试。
-  - 复核验证命令结果：`python -m pytest -p no:cacheprovider` 为 19 passed；`python -m ruff check src tests` 通过；`python -m mypy src` 通过；secret 模式扫描无命中。
-  - `docs/SPEC_PROCESS.md` 已补充冷启动记录，明确本次属于“扩展上下文冷启动验证”：额外提供了 `系统架构.md`，因此不能完全等同于课程要求的严格“仅 SPEC + PLAN”版本。
-  - 复核发现的主要代码质量问题：workspace 初始化会覆盖已有证据；task workspace 可绕过 project workspace 初始化；`OperationResult.status` 边界过宽；Python 版本目标与 PLAN 不一致。
-- 人工干预：
-  - 用户指定第二个 agent 与模型，并要求依据课程要求撰写冷启动相关记录说明。
-- 工作流偏离：
-  - 未创建分支或提交；本轮只补充过程文档。
-  - 未把冷启动产物合并到主仓；原因是该产物仍有代码质量问题，且冷启动过程证据不完整。
-- 提交：
-  - 未提交
-- 验证：
-  - 已读取 `docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`D:\agent-leanring\demo` 的源文件和测试文件。
-  - 已运行冷启动产物的 pytest、ruff、mypy 和 secret 模式扫描。
-- 经验教训：
-  - 冷启动验证不仅要看代码能否跑通，还要保存第二个 agent 的上下文、暂停点、误解、红阶段证据和后续修订点。
-  - 对 HanCode 这类可复盘 harness，workspace 初始化语义必须优先保护已有 trace、history、state 和学习产物。
-
-### 2026-07-08 16:40 +08:00 — T0 — 规划文档一致性与冷启动验证准备
-
-- 使用的技能：using-superpowers；executing-plans
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求“现在进行 PLAN.md 的 P0”；本轮按当前 `docs/PLAN.md` 的前置任务 `T0` 执行。
-  - 已读取 `docs/SPEC.md`、课程通用要求、A 类 Harness 要求、`docs/agent-guides/workflow.md` 和 `docs/agent-guides/safety-and-verification.md`。
-  - 当前阶段门仍未通过冷启动验证，因此只修订规划、过程和 README 文档，不修改 `src/hancode/`。
-- 摘要：
-  - `docs/PLAN.md` 统一仓库级文档路径为 `docs/SPEC.md`、`docs/PLAN.md`、`docs/SPEC_PROCESS.md` 和 `docs/AGENT_LOG.md`。
-  - `docs/PLAN.md` 的 T0 状态、验证命令和备注对齐“冷启动准备已完成，但正式冷启动仍未执行”的事实。
-  - `docs/SPEC_PROCESS.md` 修正冷启动候选任务编号，避免继续引用旧版 T1/T3/T5/T8 任务拆分。
-  - `README.md` 的项目阶段和分发说明对齐当前 SPEC：MVP 为 Python package，Docker 仅作可选 MockLLM demo 环境。
-- 人工干预：
-  - 用户直接要求执行 PLAN 前置任务；未要求创建分支、提交或启动第二个 agent。
-- 工作流偏离：
-  - 未使用 worktree、TDD、subagent 和 finishing-a-development-branch；原因是本轮是阶段门前的文档一致性修订，不是实现任务。
-- 提交：
-  - 未提交
-- 验证：
-  - `Get-Content -Raw -Encoding UTF8` 读取 `docs/PLAN.md`、`docs/SPEC_PROCESS.md`、`docs/AGENT_LOG.md`、`README.md` 成功。
-  - `Select-String` 确认 `docs/PLAN.md` 包含 T1、T27、需求追溯、冷启动验证和 `docs/` 路径锚点。
-  - `Select-String` 确认 `docs/SPEC_PROCESS.md` 包含 T1/T2/T5/T13/T20 冷启动候选任务和关键迭代 12。
-  - `rg -F` 未发现旧任务编号组合、`分发格式为 Docker`、根目录 `SPEC_PROCESS.md` / `AGENT_LOG.md` 引用残留。
-  - `git status --short` 显示本轮相关文件已修改；工作区还存在本轮开始前已有的其他未提交修改。
-- 经验教训：
-  - 冷启动验证前，PLAN 的任务编号和文档路径必须比实现细节更先稳定，否则第二个 agent 会在错误入口受阻。
-
-### 2026-07-08 __:__ — 任务 0 — 架构一致性修订 v1.3
-
-- 使用的技能：Superpowers executing-plans
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求按《HanCode 架构一致性修订方案 v1.3》执行。
-  - 本轮只修改文档，不修改 `hancode/` 或 `src/hancode/` 实现代码。
-  - 已确认三项决策：写入边界由 `PathClassifier` 推导；state 对账不自动回写，进入 `inconsistent`；TraceEvent 事件名以 SPEC 为权威。
-- 摘要：
-  - SPEC 中移除显式 `target_kind=artifact|source` 强制要求，改为可写 Action 的目标路径由 `PathClassifier` 分类为 artifact / source / protected zone。
-  - SPEC TraceEvent 表补齐 `state_reconciled`、`state_inconsistent` 和架构文档使用的生命周期事件。
-  - 系统架构文档补齐 CredentialProvider、Config 字段、CLI exit code、`/auth` slash commands、`hancode export`、checkpoint pruning、rollback 副作用、结构化错误、ContextBuilder 限制和 REVIEW / KNOWLEDGE 结构。
-  - reconcile 语义改为只检查一致性；发现漂移时标记 `inconsistent`、写 trace、阻止高风险动作，不自动回写 `state.json`。
-- 人工干预：
-  - 用户提供完整 v1.3 修订方案并要求直接实现。
-- 提交：
-  - TODO
-- 经验教训：
-  - 可测试性约定不能引入与架构机制冲突的新字段；写入边界应由单一 `PathClassifier` 机制统一承载。
-
-### 2026-07-08 __:__ — 任务 0 — SPEC 可测试性契约补强
-
-- 使用的技能：Superpowers brainstorming
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求关注 SPEC 可测试性，并给出 P0/P1/P2 问题清单。
-  - 重点是让 Knowledge、Review、Context、脱敏、性能、CLI 行为具备客观 pass/fail 边界。
-- 摘要：
-  - 当时草稿中，FR-3 曾补充可写 Action 必须携带 `target_kind=artifact|source`；该方案已在后续 v1.3 修订中被 `PathClassifier` 路径推导替代。
-  - §5.1 补充小型项目规模、ContextBuilder、MockLLM demo 和 checkpoint 快照范围的可测阈值。
-  - §10 新增 `### 10.21 可测试性约定`。
-  - §10.21 集中定义 context include/exclude、secret fixture、Markdown 产物最低结构、REVIEW 覆盖表、结构化错误字段、CLI/TUI 命令矩阵、fake keyring、demo trace 和 Docker 可选测试边界。
-- 人工干预：
-  - 用户提供完整可测试性评估和建议修订方式。
-- 提交：
-  - TODO
-- 经验教训：
-  - Harness SPEC 的可测试性不只看机制能否触发，还要把产物质量、脱敏、错误、上下文和 CLI 行为转化为可断言结构。
-
-### 2026-07-08 __:__ — 任务 0 — SPEC 抽象性清理与架构迁移
-
-- 使用的技能：Superpowers brainstorming
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户指出一致性问题已解决，要求主要处理抽象性问题。
-  - 用户强调“开始修改，记住是做迁移而不是删减”。
-- 摘要：
-  - SPEC 中 `CredentialProvider` Python 接口签名改为能力契约表。
-  - SPEC 中具体测试函数名清单迁移到 `docs/系统架构.md` 的 MockLLM 测试架构章节。
-  - SPEC 中 `.gitignore` 模板、导出命令形态和 LLM 调用细节迁移到系统架构文档。
-  - SPEC 的组件图、实体图和机制模块表补充逻辑层级声明。
-- 人工干预：
-  - 用户要求迁移而非删减，并确认部分细节可沉淀到系统架构文档。
-- 提交：
-  - TODO
-- 经验教训：
-  - SPEC 应作为评分入口和需求契约；系统架构文档承接机制展开；PLAN 承接实现任务和测试函数清单。
-
-### 2026-07-07 __:__ — 任务 0 — SPEC 风险与未决问题补全
-
-- 使用的技能：Superpowers brainstorming
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求补充“风险与未决问题”。
-  - 通用 SPEC 要求明确预见可能让智能体出问题的环节。
-- 摘要：
-  - SPEC 新增 `## 12. 风险与未决问题`。
-  - 覆盖 Agent 控制流、上下文与记忆、工具与文件安全、checkpoint / rollback、凭据泄露、测试验证和课程项目价值风险。
-  - 补充未决问题和 P0/P1/P2 风险优先级。
-- 人工干预：
-  - 用户确认 §12 草稿后要求写入。
-- 提交：
-  - TODO
-- 经验教训：
-  - Harness 风险应围绕智能体失控、机制不可验证、状态不可恢复和凭据泄露展开，而不是停留在普通项目管理风险。
-
-### 2026-07-07 __:__ — 任务 0 — SPEC 领域与机制设计补全
-
-- 使用的技能：Superpowers brainstorming
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户要求继续完成最终 SPEC，并先查看“领域与机制设计”。
-  - A 类 Coding Agent Harness 要求 SPEC 独立回答动作 / 工具、客观反馈信号、危险动作和记忆机制。
-- 摘要：
-  - SPEC 新增 `## 11. 领域与机制设计`。
-  - 明确 HanCode 主贡献为 `workspace-scoped course-project memory + reversible coding state`。
-  - 集中补充工具类别、反馈信号、危险动作、Project / Task Workspace 记忆机制、代码模块映射和 MockLLM 机制演示。
-- 人工干预：
-  - 用户确认该节草稿后要求写入。
-- 提交：
-  - TODO
-- 经验教训：
-  - A 类 Harness 的评分锚点应集中呈现，不能只分散在功能规约、架构和验收标准中。
-
-### 2026-07-07 __:__ — 任务 0 — SPEC 第 7/10 节评审修订
-
-- 使用的技能：Superpowers brainstorming / receiving-code-review 语境下的 SPEC 修订
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - 用户对 §7 数据模型和 §10 验收标准给出逐项评审。
-  - 重点问题包括 TraceEvent 唯一 ID、`state_transition` 语义、Project 附属文档、`files_changed` 时机、WorkspaceRouter / FeedbackBuilder / ResultBuilder 验收标准、状态枚举和 Mock Mode 入口一致性。
-- 摘要：
-  - SPEC 第 7 节补充 `event_id`、`state_transition`、Project 附属文档和 `files_changed` 更新规则。
-  - SPEC 第 10 节新增 WorkspaceRouter、FeedbackBuilder、ResultBuilder 独立验收节，并补充 REPL/TUI slash command、CI unit-test 和风险状态判定。
-  - 系统架构文档 MVP 范围同步补充 Python package build 与 CI unit-test 验证要求。
-- 人工干预：
-  - 用户明确指出结构性问题、一致性问题和小问题，并要求修正后写入。
-- 提交：
-  - TODO
-- 经验教训：
-  - SPEC 中出现的每个核心架构模块都应有对应验收标准；状态枚举必须在功能规约、数据模型、结果输出和架构文档中保持一致。
-
-### 2026-07-07 __:__ — 任务 0 — 课程项目定位确认
-
-- 使用的技能：Superpowers brainstorming 语境下的规划确认
-- 使用的智能体：OpenAI Codex
-- 关键提示词 / 上下文：
-  - HanCode 面向学生课程项目，是轻量级 Coding Agent Harness。
-  - 核心机制包括 Workspace 分离、Phase Gate、Tool Policy、Trace Logging、Checkpoint Rollback、MockLLM Testing。
-  - `.hancode/`、Phase Mode、ContextBuilder、ToolPolicy、Demo 和测试叙事均服务课程项目流程。
-- 摘要：
-  - README、SPEC、PLAN 使用课程项目定位。
-  - `.hancode/` 模板采用 Project Workspace / Task Workspace / Knowledge Delivery 结构。
-  - Demo 使用学生成绩统计 CLI 课程项目。
-- 人工干预：
-  - 用户明确要求最小破坏式修改，不引入复杂 Web UI、数据库、MCP 工具市场或企业级权限系统。
-- 提交：
-  - TODO
-- 经验教训：
-  - 课程项目场景要求 Harness 不只控制代码修改，还要沉淀 TEST_REPORT、REVIEW、KNOWLEDGE 和 DELIVERABLES。
-
-### 2026-__-__ __:__ — 任务 0 — 仓库初始化
-
-- 使用的技能：手动初始化 / Superpowers 工作流准备
-- 使用的智能体：ChatGPT 指导
-- 关键提示词 / 上下文：
-  - HanCode 的初始仓库设置。
-  - 项目类型：AI4SE 期末项目 A · 编码智能体框架。
-- 摘要：
-  - 初始化了仓库结构。
-  - 添加了文档占位符。
-  - 添加了 `.gitignore` 和 `.env.example`。
-  - 添加了 Python 打包元数据。
-  - 添加了占位测试和 CI 工作流。
-- 人工干预：
-  - TODO
-- 提交：
-  - TODO
-- 经验教训：
-  - TODO
 ### 2026-07-13 — T19 ContextBuilder
 
 - 使用的技能：`karpathy-guidelines`、`executing-plans`、`test-driven-development`、`subagent-driven-development`。
@@ -1764,6 +1089,39 @@
   - T21 未重构 T16 的完整 phase/context/action 生命周期事件矩阵；当前审计重点是 feedback、retry、rollback 与安全边界事件。
 - 提交：`375f735b535c115b2d897adc52da9ae7371bf1c8`（`feat: 完成 T21 AgentLoop 反馈重试回滚集成`）。
 
+### 2026-07-17 — T21-R1 Task 1 — 安全边界与资源上限
+
+- 使用的技能：test-driven-development。
+- 使用的智能体：OpenAI Codex。
+- 摘要：FileTools 统一拒绝凭据目录、`.env` 变体和常见密钥/证书文件；新任务读取项目 `retry_budget`；checkpoint 与 trace 达到配置上限时 fail-closed；普通 `write_file` 使用同目录临时文件原子替换；workspace 识别 Python 3.11 Windows reparse point。
+- 验证：专项 `tests/test_file_tools.py tests/test_workspace.py tests/test_checkpoints.py tests/test_trace.py` 为 `133 passed, 6 skipped`；Ruff 通过；5 个生产源文件 MyPy 通过。全量曾得 `542 passed, 9 skipped, 3 failed`，其中 2 项为既有 course-file protection trace stub 行为，已记录于任务报告。
+- 提交：`b91ed75`（实现提交；本报告/日志回填为后续文档提交）。
+
+---
+
+### 2026-07-17 — T21-R1 Task 2 — 错误优先级与生命周期审计事件
+
+- 使用的技能：test-driven-development。
+- 使用的智能体：Claude Opus。
+- 背景：Task 1 全量测试遗留 `3 failed`，其中 2 项为 course-file protection trace stub 用例——它们断言"trace 后端完全不可用时，受保护写入仍必须以 `policy_denied` 为主错误被拒"，而 AgentLoop 旧实现让 `trace_write_failed` 覆盖了 `policy_denied`。
+- 修复（均 TDD：先失败测试后最小实现）：
+  - 错误优先级（对齐修复边界"policy denial 保留为主错误；trace 写失败作为审计风险"）：在**已有既存主错误**的两个平行分支——`policy_denied` 与 `action_parse_failed`——写 trace 失败时，保留业务主错误（policy 拒绝 / 解析错误），trace 失败降级为 `Risk(level="medium")` 附加到结果，仍 fail-closed 不派发工具。新增 `_trace_failure_risk()` 辅助函数与 `test_policy_denial_keeps_primary_error_when_trace_write_fails`、`test_parse_error_keeps_primary_error_when_trace_write_fails`。其余 trace 点（tool_called / source_write_authorized / checkpoint 等变更关卡，及 tool_failed / test_failed / retry_budget_consumed 等无既存业务主错误的点）维持原 fail-closed 语义未改。
+  - 生命周期审计事件：补 `phase_started`（阶段切换时，单阶段内不重复）、`phase_completed`（FINISH_PHASE 成功后）、`run_completed`（路由判定 completed 时，含循环内与循环末两条路径）。新增 `test_lifecycle_events_bracket_a_finished_phase`、`test_run_completed_event_is_emitted_on_router_completion`。
+  - 失败语义分层：纯审计标记点（phase_started/phase_completed/run_completed/policy_denied）trace 写失败降级为 risk 累加、不掩盖主错误/结果；变更与工具执行点（tool_called、source_write_authorized、checkpoint）保持 fail-closed BLOCK 不变，作为"无未审计变更"的安全底线。用运行内 `pending_risks` 累加器 + `_result` 闭包自动合并 risks。
+  - 回归测试同步：更新 `test_agent_loop_result_preserves_non_state_port_boundaries`、`GappedTraceAppender` 注入点、`test_failed_test_retries_through_review_then_decrements_once_on_retry_write` 的精确 trace 序列以反映新增生命周期事件。
+- 验证：全量 `uv run pytest -q -p no:cacheprovider` 为 `548 passed, 9 skipped`（较 Task 1 的 3 failed，2 项 course-file protection 转绿，无新增红）；`ruff check src tests --no-cache` 通过；`mypy src` 19 文件无错误；`git diff --check` 干净。
+- 同步文档：`PLAN.md` 收窄 T21-R1 非目标句（原"完整生命周期事件矩阵不在本卡内"改为记录已追加 phase/run 生命周期事件、仅 context/action 级矩阵仍不重构），标注组2工具待实现风险（接真实 registry 时 `edit_file` / `run_tests` 会命中 `tools.py:44` "Tool is not registered."）；`系统架构.md` §10A.2 将 reconcile 的 committed checkpoint 快照校验与 pending checkpoint 自动回滚标记 aborted 标注为"未实现 / post-MVP"，与 `reconcile_state()` 仅做 artifact 漂移检测的实现现状对齐。
+- 审计条目核对说明：
+  - 组3所列"test_trace.py:218 固化反向行为需改"经核实为**行号误标**——该用例测的是 `trace.py::append_trace()` 底层原语契约（写文件失败必须抛 `HanCodeError`），是 loop 层错误优先级决策与 fail-closed 关卡的前提，不能改。真正固化反向行为的是 `test_course_file_protection.py` 两个用例，本批 A 改动后已自动转绿。
+  - H① / H② 目标文本在当前仓库不存在：全仓无 `trace_limit_exceeded` 错误码（代码为 `trace_event_limit_exceeded`，PLAN 未写该码，无不一致）、所有 `.md` 无 `journal` 措辞。未做无依据的"修正"。
+- 剩余风险 / 非目标（本批未实现，留待后续任务）：
+  - 组2内置工具（`edit_file` 恰好一次匹配 + 原子写入、`run_tests` 仅执行配置命令且禁止 `shell=True`、默认工具装配工厂）仍未实现——`tools.py` 当前只提供 `ToolRegistry` dispatch 骨架；接真实 registry 前 `edit_file` / `run_tests` 会在 `tools.py:44` 返回 "Tool is not registered."，仅测试 stub 可用。
+  - PathClassifier / config 保护模式已覆盖 `*.key` / `*.pem`；证书类扩展（如 `*.crt` / `*.cer`）与无扩展名、`.pdf`、`requirements.txt` 的分类扩展未在本批处理。
+  - pending checkpoint 恢复的完整分支覆盖仍依赖 T21 既有 resume 通道；未新增跨会话 observation 重放。
+- 提交：待用户决定。
+
+---
+
 ### 2026-07-17 — T22 Delivery Artifacts 生成（返工完成，待提交）
 
 - 使用的技能：`karpathy-guidelines`、`executing-plans`、`test-driven-development`、`using-git-worktrees`。
@@ -1844,6 +1202,61 @@
 - Linux CI 的 `python -m pytest` 首次暴露两个测试夹具错误：Python 3.11 POSIX 的 `pathlib.Path` 没有 `is_junction`，测试在验证 fail-closed 行为前就因 monkeypatch 默认 `raising=True` 失败。
 - 将 `tests/test_delivery.py` 与 `tests/test_state.py` 的 `is_junction` monkeypatch 改为 `raising=False`，只在测试运行时注入缺失探针；生产代码仍通过 `getattr` 和异常捕获保持跨平台 fail-closed 语义。
 - 验证：两个 junction 回归测试 2 passed；全量 pytest 585 passed、10 skipped；ruff、mypy、`git diff --check` 通过。
+
+### 2026-07-18 — T28 — P0 分层结构重组与装配层抽取
+
+- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：用户要求只做结构重组和装配层抽取；采用 `storage/`、`tooling/`、`providers/` 等实际包名避开既有平铺文件同名冲突；不重写 AgentLoop、ToolPolicy、Checkpoint、Trace、State 业务逻辑，不引入真实网络 Provider。
+- TDD Red：新增 `tests/test_structure_layers.py` 后专项为 6 failed，失败集中在新包缺失、engine 缺失和 Demo 没有 engine factory。
+- 实现摘要：
+  - 将 core、runtime、policy、storage、tooling 模块迁入分层包，内部 import 改为新路径。
+  - 旧平铺模块改为指向新实现的兼容别名；`test_tools.py` 保留普通 re-export，避免 pytest 将兼容源文件识别为导入路径不一致的测试模块。
+  - 将 `llm.py` 拆为 `providers/base.py`、`providers/mock.py`，新增 mock-only factory、确定性 prompt 序列化和 action schema 适配。
+  - 新增 `runtime/engine.py`，支持默认 filesystem 装配及 provider、registry、trace、max steps 等测试/demo 注入；Demo 改用 engine factory。
+  - 将 CLI 实现迁入 `interfaces/cli.py`，旧 `cli.py` 保留入口代理。
+- Green：结构专项 `6 passed`；全量 pytest `730 passed, 13 skipped`。
+- 验证：Ruff `All checks passed!`；MyPy `Success: no issues found in 61 source files`；compileall、`uv build` 和 `git diff --check` 均通过；`uv build` 日志确认七个新分层包进入 sdist / wheel；`hancode --help`、`hancode demo --provider mock`、`hancode auth status --provider mock` 和临时目录 `hancode init` 均返回成功。
+- 提交：未提交，用户未要求创建提交。
+- 人工干预：根据用户计划选择 `storage/`、`tooling/` 和保留平铺 delivery/demo 的 P0 范围；明确 P1/P2 延后。
+- 经验教训：同名旧模块与新包迁移时，单纯 `from ... import *` 无法保留旧模块级 monkeypatch；模块别名能保持实现身份，但 pytest 收集 `test_tools.py` 时必须使用普通 re-export 保留旧 `__file__`。
+- 剩余风险：P1 `app/`、P2 `demo_support/` / `delivery_support/` 尚未拆分；真实远程 Provider 仍未实现。
+
+---
+
+### 2026-07-18 — T29 — P1 应用服务层拆分
+
+- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：只抽取应用编排，不改现有 workspace、engine、credential、export 和 CLI public behavior；保留 CLI 的 `credential_provider`、project service 和 delivery service 注入点。
+- TDD Red：新增 app 层契约测试后，收集阶段因 `hancode.app` 不存在得到预期 `ModuleNotFoundError`。
+- 实现摘要：新增 `ProjectService`、`TaskService`、`AuthService`、`DeliveryService`，分别封装 workspace 初始化、engine run、显式凭据 provider 和 artifact export；`interfaces/cli.py` 改用 Project/Auth/Delivery service。
+- 验证：`tests/test_app_layers.py tests/test_cli.py` 通过；后续全量 pytest `741 passed, 13 skipped`，Ruff、MyPy 和 CLI smoke 通过。
+- 提交：未提交，用户未要求创建提交。
+- 人工干预：未新增 CLI 命令，TaskService 保留为可注入应用 API，不把 task run 暴露为新的 CLI 行为。
+- 经验教训：AuthService 必须每次从当前模块级 `credential_provider` 建立门面，才能同时支持 CLI 旧 monkeypatch 和显式依赖注入。
+- 剩余风险：真实远程 Provider 仍未实现，属于既有 P0 非目标。
+
+---
+
+### 2026-07-18 — T30 — P2 Demo 与 Delivery 支持包拆分
+
+- 使用的技能：未使用 `using-superpowers`；按任务卡执行 TDD、兼容迁移和验证。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：只改变代码布局和 import；必须保持 Delivery Markdown、DeliveryResult、Demo action、fixture digest、trace/state/checkpoint、package data 和旧模块级 monkeypatch 行为。
+- TDD Red：新路径契约测试初次运行时，`delivery_support` / `demo_support` 导入均因包不存在而失败。
+- 实现摘要：
+  - 将 Delivery 核心实现迁入 `delivery_support/result.py`，在 `reports.py`、`review.py`、`knowledge.py`、`deliverables.py` 提供职责化入口；旧 `delivery.py` 别名到同一实现并保留 monkeypatch 语义。
+  - 将 Demo runner 迁入 `demo_support/runner.py`，action 序列迁入 `actions.py`，fixture 校验/复制/配置迁入 `fixture.py`；旧 `demo.py` 别名到 runner。
+  - 新增 `tests/test_app_layers.py` 覆盖 P1/P2 import、身份、服务注入和 action 确定性。
+- Green：P1/P2 专项与现有 CLI、Delivery、Demo 回归通过；全量 pytest `741 passed, 13 skipped`。
+- 验证：Ruff `All checks passed!`；MyPy `Success: no issues found in 76 source files`；compileall、`uv build`、`git diff --check` 通过；build 日志确认 `app`、`delivery_support`、`demo_support` 进入 sdist/wheel；`hancode --help`、`hancode demo --provider mock`、`hancode auth status --provider mock` 返回成功。
+- 提交：未提交，用户未要求创建提交。
+- 人工干预：保留旧 Delivery/Demo 文件为模块别名；没有删除旧入口或引入新的 CLI 命令。
+- 经验教训：对结构迁移而言，旧模块必须别名到实际实现模块；否则现有测试对 `save_state`、`_is_link`、registry 和 knowledge 的 monkeypatch 会失效。
+- 剩余风险：Delivery 专项中的 13 个平台相关 skip 仍需在具备 symlink 权限的 CI 环境复验；真实远程 Provider 不在本轮范围。
+
+---
 
 ### 2026-07-18 — M7 基线 fixture 换行摘要修正
 
@@ -2335,6 +1748,59 @@
 
 ---
 
+### 2026-07-22 — S4-R7 — 评审阻断修复与正式交付闭环
+
+- 使用的技能：未使用 `using-superpowers`；按 S4-R7 任务卡执行 TDD、回归验证和文档同步。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：该条目对应基线提交 `f0f8989`；不使用真实网络、凭据或第三方 Agent 框架。
+- TDD Red：新增正式 `get_diff` evidence 回归后先观察到 evidence 未持久化；移除 Demo 手工交付编排后先观察到 Demo 缺少 Diff gate 和 trace 事件；随后以最小实现接入正式 AgentLoop 路径。
+- 实现摘要：
+  - AgentLoop 对真实 `run_tests` 自动生成测试报告、写入 `test_completed` / `feedback_generated`；对真实 `get_diff` 持久化 Diff digest 并对 drift fail-closed；结构化 review/knowledge/finalize 写入交付 trace。
+  - Demo action 序列通过 MockLLM 驱动 `record_review`、`get_diff`、`record_knowledge` 和 `finish_phase`，移除 Runner 手工写证据、手工切换 Deliver phase 和手工 finalize。
+  - 补齐 BuildService 审计字段、DeliveryPipelinePort 协议、checkpoint snapshot 读取大小上限和 Diff drift 清除语义。
+  - 新增/扩展 `tests/test_s4_review_remediation.py`，并同步 Demo convergence 断言到正式 AgentLoop 装配路径。
+- 验证：专项 `tests/test_s4_delivery_e2e.py tests/test_mock_demo.py tests/test_s4_review_remediation.py` 为 `40 passed`；全量 pytest 为 `1231 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
+- 提交：`f0f8989`（基线实现提交）。
+- 人工干预：基线阶段将 S4 与 S4-R7 在 `docs/PLAN.md` 标记为已完成；后续评审发现审批恢复和 CLI Build 证据缺口，已在本条目后追加返工记录。
+- 经验教训：交付证据必须在 AgentLoop 的真实 ToolResult 分支中持久化；Demo 只能提供确定性 Provider action，不能绕过 Parser、Policy、Registry、Pipeline 或 Delivery gate。
+- 剩余风险：基线阶段仍有 17 个既有平台相关 skip；审批恢复、CLI Build 和 Evidence 安全边界由后续返工处理。
+
+---
+
+### 2026-07-22 — S4-R7 follow-up — 审批恢复与证据安全收口
+
+- 背景：复核确认 `WAITING_APPROVAL -> approve -> resume` 的 Build/source write 路径绕过了状态与 Evidence 后处理，CLI Build 只更新 state；同时发现 Demo 仍使用旧 `ResultBuilder`、结构化 Evidence 缺少统一脱敏/上限、二进制 Diff 未计算 drift hash。
+- TDD Red：新增三条审批/CLI 回归均先失败；新增 Evidence 脱敏/数量限制和二进制 drift 回归先失败。
+- 实现摘要：新增 AgentLoop 审批执行后的统一 `_post_tool_execution`，同步 `_state_after_tool`、Build/Diff/Test Evidence；补充 `DeliveryService.record_build`；Demo 改用持久化 core `DeliveryResult`；Evidence 字段统一脱敏、截断、数量限制和 source_trace_id 校验；二进制文件保留 bounded bytes 计算 drift hash。
+- 额外修复：审批 checkpoint 由外部管理器写 trace 后，同步 AgentLoop 本地 trace 序列，避免合法审批源写入被误判为 trace gap。
+- 验证：S4/审批/Diff/Demo 专项基线记录为 `64 passed`；本轮收尾专项命令实际为 `56 passed`；全量 pytest `1236 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误；`uv build` 成功生成 sdist 与 wheel。
+- 提交：未提交；改动基于 `f0f8989`，等待用户决定是否创建后续提交。
+- 剩余风险：GitHub Actions 尚未取得独立 run 证据；Windows 环境仍保留既有平台相关 skip。
+
+---
+
+### 2026-07-22 — S4-R7 follow-up — Demo trace 序列回归收尾
+
+- 背景：统一普通工具后处理后，Demo 在跨 stage source write 时出现 `trace_event_invalid`，后续表现为 `phase_mismatch`。
+- 根因：checkpoint 管理器直接写入的 trace 事件被重复注入 AgentLoop 本地事件列表；Demo adapter 每个 stage 使用独立逻辑序号，导致事件 ID/序号语义冲突。
+- 修复：移除普通 source write 路径中不必要的 trace 重新同步，仅保留审批恢复所需的外部 trace 同步；不改变状态与交付 Evidence 后处理。
+- 验证：`tests/test_mock_demo.py` 为 `10 passed`；S4/E2E、Demo、审批修复和 Diff 专项为 `56 passed`；全量 pytest 为 `1236 passed, 17 skipped`；Ruff、MyPy 和 `uv build` 均通过。
+- 提交：未提交；改动基于 `f0f8989`，等待用户决定是否创建后续提交。
+- 剩余风险：GitHub Actions 尚未取得独立 run 证据；Windows 环境仍保留既有平台相关 skip。
+
+---
+
+### 2026-07-22 — CI 修复 — 测试跨模块导入 `No module named 'tests'`
+
+- 背景：GitHub Actions CI 用 `uv run pytest` 运行 `tests/test_s4_tools.py` 时，`from tests.test_checkpoint_query import ...` 报 `ModuleNotFoundError: No module named 'tests'`，本地 `python -m pytest` 因 cwd 进 sys.path 而通过。
+- 根因：`tests/` 无 `__init__.py` 也无 `conftest.py`；`pytest` 直接调用时 cwd 不进 sys.path，`tests` 无法作为命名空间包导入。
+- 修复：将 `_write_minimal_manifest` 和 `_make_checkpoint_dir` 提取到 `tests/_checkpoint_helpers.py`（非 `test_` 前缀，pytest 不收集）；`test_checkpoint_query.py` 与 `test_s4_tools.py` 改用 `from _checkpoint_helpers import`，消除跨测试模块导入。
+- 验证：用 `pytest`（非 `python -m`）直接调用模拟 CI，`tests/test_s4_tools.py tests/test_checkpoint_query.py` 为 `18 passed, 2 skipped`；全量 `pytest` 为 `1236 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `94 source files` 无错误。
+- 提交：未提交；改动基于 `e6fc673`，等待用户决定是否创建后续提交。
+- 剩余风险：GitHub Actions 尚需本次改动推送后复验独立 run 证据。
+
+---
+
 ### 2026-07-22 — S4-R5/R6 — Delivery E2E 回归修复
 
 - 使用的技能：未使用 superpowers 流程；按仓库 TDD 与结构化调试约束执行。
@@ -2382,6 +1848,130 @@
 - 提交：未提交，等待用户在 R1-R6 全部完成后统一提交。
 - 剩余边界：完整 Query Worker 取消策略、Inspection Views、HITL 产品化、Export/恢复布局、S5-R6 E2E 与后续全量质量门禁仍待继续开发。
 
+### 2026-07-23 — T21-R1 Task 8 — 动态测试命令审批与执行安全化
+
+- 使用的技能：按用户明确要求不使用 TDD；使用执行计划、代码审查、专项验证和完成前验证流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：保留 LLM 的可选 `run_tests.args.command` 能力；省略命令时使用配置 fallback；显式命令必须人工审批；仅允许单条 argv；保留当前无关 TUI 范围不变。
+- 实现摘要：
+  - `run_tests` dispatch 统一选择显式命令或 `config.test_command`，注入的 `RunTestsTool` 改为接收 `str | None`，并对注入结果复用命令/输出脱敏。
+  - `run_tests` 使用 `shlex.split`、固定 project root、`shell=False`、捕获输出和 `check=False`；拒绝 `&&`、`||`、管道、重定向、分号、命令替换、反引号和换行等 shell 控制语法。
+  - 显式命令复用 `ApprovalCategory.RUN_TESTS`，不受 `approval_mode=disabled` 绕过；审批端口默认装配，拒绝时不进入 ToolRegistry，批准恢复使用带完整 args digest 的原 Action。
+  - 审批预览、trace 的 `tool_called` / `tool_completed` / `test_completed` / `test_failed`、state 和 `TEST_REPORT.md` 的命令字段统一脱敏；敏感值不会进入持久化审批记录。
+  - 更新 ToolSpec、Demo/test stub、schema、工具/审批/AgentLoop 回归测试及 SPEC/PLAN 契约。
+- 验证：
+  - 动态命令专项 pytest：`92 passed`。
+  - 全量 pytest：`1297 passed, 17 skipped in 92.21s`。
+  - `uv run --no-sync ruff check src tests --no-cache`：`All checks passed!`。
+  - `uv run --no-sync mypy src`：`Success: no issues found in 97 source files`。
+  - `uv build`：成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`。
+  - `git diff --check`：通过。
+- 人工干预：用户明确要求本轮不使用 TDD；分支创建因 `.git/refs/heads` 锁文件权限被阻断，未执行 destructive git 命令，改在当前工作区实施。
+- 剩余风险：shell 控制字符拒绝采用保守策略，可能拒绝包含这些字符的合法测试参数；`docs/系统架构.md` 的历史性 run_tests 描述未在本卡允许文件范围内改动，规范以本轮 SPEC/PLAN 为准。
+
+---
+
+### 2026-07-23 — S5-R2 — 通用异步 Operation 查询路由与过期结果防护
+
+- 使用的技能：按用户要求不使用 TDD；使用代码库探索、验证前置和最小范围实现流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R0/R1 已在当前未提交工作区完成；本轮只执行 `docs/PLAN.md` 的 S5-R2，不实现 R3 Inspection View 或新命令。
+- 实现摘要：
+  - `TuiOperationExecutor` 增加 Diff、Test Report、Checkpoint、Delivery evidence 和 Trace 只读路由，统一使用注入的 Application Service。
+  - Trace 通过 `InspectionService.read_trace()` 分页读取并保留有界 `TracePage`；Delivery 查询使用 `get_evidence()`，明确不调用会触发 finalize 的 `get_result()`。
+  - `/trace`、`/artifacts` 和 Artifact 预览均进入 `task-query` Worker；Controller 统一校验 request ID、operation task ID 和当前 active task，拒绝过期结果及错误。
+  - 同步既有源码契约测试以覆盖统一 `_run_operation_worker()`，补充查询路由和 active task 切换回归。
+- 验证：R2 聚焦测试 `20 passed`；TUI/TaskService 回归 `118 passed`；全量 Pytest `1266 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `96 source files` 无错误；`git diff --check` 通过。
+- 提交：未提交；工作区继续保留 S5-R0/R1 与 S5-R2 的合并改动，等待 R2-R6 完成后统一提交。
+- 人工干预：用户明确要求本轮直接开发，不采用 TDD。
+- 剩余风险：R3 尚未接入 Diff/Test/Checkpoint/Delivery/Artifact 的产品化 Detail View 和完整命令参数；本轮未运行 Build/Demo 质量门。
+
+---
+
+### 2026-07-23 — S5-R3 — Inspection Views、命令契约与 Detail 路由
+
+- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R2 已完成；本轮只执行 `docs/PLAN.md` 的 S5-R3，不修改 S4 Inspection 算法，不进入 R4 HITL Modal。
+- 实现摘要：
+  - 扩展 `/diff`、`/test`、`/checkpoints`、`/delivery`、`/trace [event-id]` 等命令，并对 Diff scope 和 Artifact allow-list 做结构化参数校验。
+  - 增加 Diff、Test Report、Checkpoint、Delivery、Export 纯 ViewModel 和 Presenter；统一脱敏、截断、数量上限、绝对路径隐藏和 Plain Text 渲染。
+  - Controller 将 Inspection 结果路由到 `DetailKind`，Trace 支持按 event ID 查看安全事件摘要；Delivery evidence 缺失显示 blocked 只读状态。
+  - Detail Static 明确关闭 Rich markup，Inspection 查询继续通过既有 Application Service，不读取 Git、Manifest 或 Artifact Path。
+- 验证：R3 聚焦测试 `50 passed`；TUI/TaskService 回归 `124 passed`；全量 Pytest `1272 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `96 source files` 无错误。
+- 提交：未提交；工作区继续保留 S5-R0~R3 合并改动。
+- 人工干预：用户要求继续执行 R3-R6，并明确不使用 TDD；按依赖顺序先完成 R3 再进入 R4。
+- 剩余风险：R4 尚未实现 ASK_USER/Approval/Rollback Modal；R5 Export/恢复/响应式布局与 R6 E2E/Build/Demo 仍未完成。
+
+---
+
+### 2026-07-23 — S5-R4 — Human-in-the-Loop Modal 与安全决策
+
+- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R3 已完成；本轮只执行 R4，不修改 Approval/Recovery 状态机和服务算法。
+- 实现摘要：
+  - 新增 Textual `ApprovalDialog`、`RollbackDialog`，分别提供显式 Approve/Reject/Cancel 和 Confirm/Cancel；键盘快捷键只在 Modal 屏幕内生效。
+  - ASK_USER 使用 `InteractionView` 渲染有界安全文本；Approval Modal 校验 approval ID，过期请求不会调用 ApprovalService。
+  - 保留既有 `/approve`、`/reject`、`/rollback confirm` 命令，决策成功后自动 resume，取消和失败不产生写操作或 resume。
+  - 发现并最小修正工作区已有 `tooling/factory.py` 的 Path/dynamic kwargs 类型错误，使全仓 MyPy 恢复可验证；未改变其运行行为。
+- 验证：R4 Modal/HITL 专项 `18 passed`；TUI/TaskService 回归 `128 passed`；全量 Pytest `1277 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误。
+- 提交：未提交；工作区继续保留 S5-R0~R4 合并改动。
+- 人工干预：用户要求继续执行 R3-R6，并明确不使用 TDD；按依赖顺序进入 R5。
+- 剩余风险：R5 尚未实现 Export 命令、启动恢复和响应式布局；R6 E2E/Build/Demo 仍未完成。
+
+---
+
+### 2026-07-23 — S5-R5 — Export、恢复与响应式布局
+
+- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最小范围实现流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R4 已完成；本轮只执行 R5，不引入 IDE/Shell/多项目工作区，也不修改 Delivery export 算法。
+- 实现摘要：
+  - 增加 `/export <directory>` 命令和 Export Mutation Worker 路由，结果通过 `ExportResultView` 显示；实际 artifact allow-list、目录覆盖和 workspace 边界仍由 DeliveryService 保证。
+  - 保留启动同步任务列表初始化以避免立即退出留下可取消 Worker；任务选择继续通过 Query Worker 恢复 Trace、Interaction 和 Approval 状态。
+  - `MainScreen` 根据终端宽度提供 wide/medium/narrow 三档布局，窄终端使用纵向布局，核心 Composer/Task/Activity/Detail 仍可访问。
+  - 最小修正工作区已有 `tooling/factory.py` 类型问题，恢复全仓静态质量门。
+- 验证：R5 相关回归与 TUI/TaskService 测试通过；全量 Pytest `1279 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误。
+- 提交：未提交；工作区继续保留 S5-R0~R5 合并改动。
+- 人工干预：首次异步启动 Query 导致立即 `/quit` 的 WorkerCancelled 回归，已恢复启动阶段同步刷新；运行中查询仍为后台 Worker。
+- 剩余风险：R6 尚未补齐完整产品路径 E2E、Build 命令/Demo 和最终 Build 质量门。
+
+---
+
+### 2026-07-23 — S5-R6 — 完整 TUI E2E、Build、Demo 与最终质量门
+
+- 使用的技能：按用户要求不使用 TDD；使用执行计划、验证前置和最终质量门流程。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：S5-R5 已完成；本轮完成 `docs/PLAN.md` 的 S5-R6，不使用真实网络、凭据或真实 LLM。
+- 实现摘要：
+  - 新增 `/build` 命令、BuildService 注入和 Mutation Worker 展示，配置 Build 结果只显示安全摘要并刷新 Task 状态。
+  - 新增基本任务和 Delivery Inspection/Export Textual `run_test` 路径；与既有 ASK_USER、Approval MockLLM E2E 共同覆盖 S5 产品闭环。
+  - 更新 README 与系统架构文档，记录完整 Inspection、HITL、Export、Build 命令和响应式布局能力。
+  - 修正 Windows 命令解析中 `/export` 路径反斜杠被 shlex 吞掉的问题；保留普通命令的既有解析行为。
+- 验证：全量 Pytest `1283 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误；`git diff --check` 通过；R6 Build/E2E 专项通过；`uv build --offline` 成功生成 sdist/wheel；`uv run hancode demo --provider mock` 返回 completed。
+- 提交：未提交；等待用户统一审阅 S5-R0~R6 后提交。
+- 人工干预：联网 `uv build` 因 TLS handshake eof 失败，改用同一环境缓存依赖的 `uv build --offline`，源码构建过程和 wheel/sdist 生成均成功。
+- 剩余风险：GitHub Actions 尚无本轮独立 run 证据；17 个既有平台相关 skip 保留；工作区仍包含用户在本轮之前的未提交改动。
+
+---
+
+### 2026-07-23 — S5 review follow-up — 三个 P0 状态一致性修复
+
+- 使用的技能：`receiving-code-review`、`systematic-debugging`、`verification-before-completion`；按用户既有要求不使用 TDD。
+- 使用的智能体：OpenAI Codex。
+- 审查结论：确认 Approval 查询会被后续 `LIST_TASKS` 覆盖，Delivery Presenter 会错误推导 Ready，Rollback confirm 未绑定预览 checkpoint。
+- 实现摘要：
+  - 调整 `RUN_TASK`/`GET_STATUS` 的 UI 查询顺序，Task List 完成后才触发 WAITING_INPUT/WAITING_APPROVAL 反映，避免 `GET_APPROVAL` request 被覆盖。
+  - 新增只读 `DeliverySummary` 与 `DeliveryInspectionService.read_delivery_summary()`，复用 DeliveryPipeline 的真实 blocker/status 计算，查询不写 Artifact、不调用 finalize。
+  - `TuiOperation` 携带 `expected_checkpoint_id`；RecoveryService 在 Task Lock 内复核最新 checkpoint，stale 时结构化拒绝并不触碰回滚存储。
+  - 新增 Approval 查询顺序、缺失交付物 blocked、stale rollback 三类回归。
+- 验证：P0 专项 `19 passed`；修复后全量 Pytest `1300 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `97 source files` 无错误；`git diff --check` 通过。
+- 提交：未提交；当前工作区仍包含用户此前的未提交改动。
+- 剩余风险：P1 的 Mutation Worker 全面化、Detail 滚动、Recent Trace 查询和 App 拆分尚未处理；远端 CI 仍无独立 run 证据。
+
+---
+
 ### 2026-07-23 — 修复 /use 在任务运行时无法查询执行状态
 
 - 使用技能：无（直接分析+修复）。
@@ -2399,9 +1989,39 @@
 - Green：TUI 全量测试 `117 passed`。
 - CI 边界：未检查 TypeScript/Lint；无独立 GitHub Actions run。
 
-## Prompt Contract v2
+### 2026-07-27 — T21-R1 Task 9 — Agent 自生成测试命令与审批后续闭环
 
-### 修改内容
+- 使用的技能：未使用 superpowers；使用 `brainstorming`、`writing-plans`、`test-driven-development`、`verification-before-completion` 和 `using-git-worktrees`。用户明确要求直接在 `main` 开发；worktree 创建因 `.git/refs` 权限被阻断后，未执行 destructive git 命令并按用户要求继续使用 `main`。
+- 使用的智能体：OpenAI Codex。
+- 关键提示词 / 上下文：以用户提供的真实 trace 与修改计划为准，基于当前 runtime、ToolSpec、Provider Schema、Router、state 和 AgentLoop 实际行为修复闭环；不重写 `tooling/test_tools.py`、`tooling/factory.py`、`policy/approval_policy.py`、`runtime/delivery_pipeline.py` 或 `core/router.py`。
+- TDD 证据：先添加 TEST 无配置命令、TEST 工具权限、Provider 显式命令、审批后续跑和 Provider 空响应重试测试；实现前聚焦回归为 8 个失败，分别复现原有阶段越界、配置前置条件、Schema 缺少 required、审批后不续跑和 Provider 一次失败即阻塞。
+- 实现摘要：
+  - `ContextBuilder` 将 `config.test_command` 降为可选候选；`run_tests` 限制为 TEST-only；TEST 开放 `list_files`、`read_file`、`search_text`，并为 `list_files.path` 补齐 Schema。
+  - Provider-facing `run_tests` Schema 在 TEST 强制 `args.command`；CODE/TEST/REVIEW Prompt 明确测试基础设施、项目探索、完整行为测试、单条命令和失败进入 REVIEW 的契约。
+  - AgentLoop 对批准的 `run_tests` 回灌完整 `FeedbackBuilder` observation，在同一次 `resume` 继续调用 Provider；通过与失败分别持久化测试结果并走 TEST 完成或 REVIEW 路由。保留非测试审批动作已有的单次执行契约。
+  - Provider `invalid/empty response` 增加连续两次有限重试；审批 manifest/state 同步异常改为结构化 `approval_state_sync_failed`，不再静默吞错。
+  - 新增/更新 context、tool policy、prompt schema、agent loop 和 provider failure 回归测试，覆盖 `TEST -> approval -> run_tests -> state/TEST_REPORT -> finish/REVIEW`。
+- 验证：
+  - 全量 pytest：`1336 passed, 17 skipped`。
+  - `uv run --no-sync ruff check src tests`：`All checks passed!`。
+  - `uv run --no-sync mypy src/hancode`：`Success: no issues found in 98 source files`。
+  - `uv build`：提升权限后成功生成 `dist/hancode-0.1.0.tar.gz` 与 `dist/hancode-0.1.0-py3-none-any.whl`；首次沙箱运行仅因 Windows `WinError 5` 无法写入构建临时目录而失败。
+  - 当前变更未修改 Router、ApprovalPolicy、test_tools、factory 或 delivery pipeline。
+- 提交：未提交；按用户要求保留 `main` 工作区改动。
+- 人工干预：用户提供完整修改计划并明确“不使用 superpowers 技能”“在 main 分支上开发”；未使用真实 LLM、网络 API 或凭据。
+- 剩余风险：严格 mypy 扫描 `src/hancode tests` 仍报告仓库既有测试侧类型错误，本轮只确认生产包 `src/hancode` 98 个文件无错误；未扩大范围修复这些既有测试类型债务。构建/测试生成的临时目录已清理。
+
+---
+
+### 2026-07-27 — 直接修复测试命令审批与状态 Trace
+
+- 范围：在当前 main 工作区修复显式测试命令审批、TEST-only 工具权限、审批恢复后的状态回灌和测试结果 Trace；不创建 worktree、不提交 commit、不新增测试、不做 TDD。
+- 修复：run_tests.command 改为必填；ApprovalPolicy 对所有 run_tests 强制使用测试命令审批；Mock Demo action 携带显式命令并在离线 stage 之间自动批准；TEST Prompt 明确编译-only 使用 run_build。
+- 修复：AgentLoop 在测试状态与 TEST_REPORT.md 持久化后追加 test_result_recorded，记录命令、测试状态、报告状态和前后状态转换；普通工具执行与审批恢复执行均覆盖，trace 写入失败进入 INCONSISTENT。
+- 兼容：保留 Factory 的配置命令 fallback；未修改 Router、DeliveryPipeline 和底层测试命令执行安全机制；仅调整既有测试中的旧 action 数据、审批恢复步骤和事件断言。
+- 验证：全量 pytest 1336 passed, 17 skipped；Ruff All checks passed；MyPy Success: no issues found in 98 source files；uv build 成功；相关回归测试 106 passed，工具/TUI 回归 83 passed。
+- 清理：删除本轮 pytest、Ruff、MyPy、uv build 产生的仓库内缓存和 build/dist/egg-info 构建产物。
+- 剩余风险：本轮按计划未增加编译器命令黑名单或运行时语义分析，因此用户批准的编译-only 命令仍由 Prompt 规范约束，不由 Runtime 语义判定。
 
 ### 2026-07-28 — S6-R0 — 多模式 Structured Action Provider 任务契约
 
@@ -2409,6 +2029,16 @@
 - 决策：把 transport retry 与 protocol retry 分离；Strict JSON Schema 通过带路径元数据的纯投影/归一化处理；自动降级限定为精确 capability 错误且不消耗 AgentLoop 预算。
 - 基线：在未改代码的 `main@9be2e78470d74de00fbacb45f0af266f70daa549` 执行全量 `uv run --no-sync pytest -q -p no:cacheprovider`，结果为 `1341 passed, 17 skipped`（80.52s）。
 - 后续：从 S6-R1 开始，以单个 red→green 切片接入统一 Draft 2020-12 schema 校验，并审计 ToolSpec 约束。
+
+### 2026-07-28 — S5-TUI-R7 — 实时 TaskSummary 状态投影修复
+
+- 使用技能：`tdd`、`karpathy-guidelines`。
+- 范围：在隔离分支 `codex/tui-live-status` 修复 TUI 运行期间只追加 Trace、却不更新 TaskList/PhaseBar/Task Detail 的问题；不修改 AgentLoop、核心 TraceObserver 协议、TaskState/state.json schema、路由或 Delivery 算法；不提交、不推送。
+- Red：新增实时摘要 reducer/Controller 测试后，`uv run --no-sync pytest tests/test_tui_controller.py -q -p no:cacheprovider` 收集期报 `ImportError: cannot import name 'reduce_task_summary_changed'`，确认链路缺失。
+- 修复：Operation 层新增内部 `TuiRunObserver` 与摘要转发器。每条由核心层成功持久化的 Trace 到达 TUI observer 后，仍先投递 `TraceArrived`，再由同一 Mutation Worker 调用 `TaskService.get()` 并投递携带 `request_id + TaskSummary` 的 `TaskSummaryChanged`；读取或 observer 异常只跳过该次快照。Controller 只接受当前 mutation request、`running_task_id`、active task 三者一致的摘要；ViewState reducer 更新任务列表/摘要/HITL 字段，只有 TASK Detail 重绘 Overview，Inspection Detail 不被抢占；`OperationFinished` 终态刷新和 WAITING 聚焦流程保留。
+- Green：真实 `HanCodeTuiApp + TaskService +` 阻塞 Fake Provider 的端到端测试在 Worker 未结束、已进入 PLAN 时确认 Task 为 `running`、TaskList 标签、PhaseBar 和 ActivityLog 都已更新；另覆盖 test/build/checkpoint/artifact/retry/HITL 摘要、旧 request、错误 task、Worker 结束后迟到消息、摘要读取失败和 UI observer 失败。最终新增相关测试 `21 passed`；TUI 范围回归 `44 passed`。
+- 完整验证：全量 pytest `1340 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 98 source files`；`uv build --offline` 成功；`uv run --no-sync hancode demo --provider mock` 返回 `status=completed`；`git diff --check` 通过。首次使用空隔离 uv cache 的 `uv build --offline` 因缓存无 `setuptools>=68` 失败，改用既有用户级缓存后构建成功。
+- 清理：删除本轮 `dist/`、`src/hancode.egg-info/`、`.pytest_cache/`、`.mypy_cache/`、`.ruff_cache/`；无临时源码文件，无 commit。
 
 ### 2026-07-29 — S6-R1 — 统一 Action Schema 校验与 ToolSpec 审计
 
@@ -2465,26 +2095,6 @@
 - `pytest tests/test_provider_factory.py`
 - `pytest tests/test_config.py`
 - 完整测试、lint、type check
-
-### 2026-07-27 — 直接修复测试命令审批与状态 Trace
-
-- 范围：在当前 main 工作区修复显式测试命令审批、TEST-only 工具权限、审批恢复后的状态回灌和测试结果 Trace；不创建 worktree、不提交 commit、不新增测试、不做 TDD。
-- 修复：run_tests.command 改为必填；ApprovalPolicy 对所有 run_tests 强制使用测试命令审批；Mock Demo action 携带显式命令并在离线 stage 之间自动批准；TEST Prompt 明确编译-only 使用 run_build。
-- 修复：AgentLoop 在测试状态与 TEST_REPORT.md 持久化后追加 test_result_recorded，记录命令、测试状态、报告状态和前后状态转换；普通工具执行与审批恢复执行均覆盖，trace 写入失败进入 INCONSISTENT。
-- 兼容：保留 Factory 的配置命令 fallback；未修改 Router、DeliveryPipeline 和底层测试命令执行安全机制；仅调整既有测试中的旧 action 数据、审批恢复步骤和事件断言。
-- 验证：全量 pytest 1336 passed, 17 skipped；Ruff All checks passed；MyPy Success: no issues found in 98 source files；uv build 成功；相关回归测试 106 passed，工具/TUI 回归 83 passed。
-- 清理：删除本轮 pytest、Ruff、MyPy、uv build 产生的仓库内缓存和 build/dist/egg-info 构建产物。
-- 剩余风险：本轮按计划未增加编译器命令黑名单或运行时语义分析，因此用户批准的编译-only 命令仍由 Prompt 规范约束，不由 Runtime 语义判定。
-
-### 2026-07-28 — S5-TUI-R7 — 实时 TaskSummary 状态投影修复
-
-- 使用技能：`tdd`、`karpathy-guidelines`。
-- 范围：在隔离分支 `codex/tui-live-status` 修复 TUI 运行期间只追加 Trace、却不更新 TaskList/PhaseBar/Task Detail 的问题；不修改 AgentLoop、核心 TraceObserver 协议、TaskState/state.json schema、路由或 Delivery 算法；不提交、不推送。
-- Red：新增实时摘要 reducer/Controller 测试后，`uv run --no-sync pytest tests/test_tui_controller.py -q -p no:cacheprovider` 收集期报 `ImportError: cannot import name 'reduce_task_summary_changed'`，确认链路缺失。
-- 修复：Operation 层新增内部 `TuiRunObserver` 与摘要转发器。每条由核心层成功持久化的 Trace 到达 TUI observer 后，仍先投递 `TraceArrived`，再由同一 Mutation Worker 调用 `TaskService.get()` 并投递携带 `request_id + TaskSummary` 的 `TaskSummaryChanged`；读取或 observer 异常只跳过该次快照。Controller 只接受当前 mutation request、`running_task_id`、active task 三者一致的摘要；ViewState reducer 更新任务列表/摘要/HITL 字段，只有 TASK Detail 重绘 Overview，Inspection Detail 不被抢占；`OperationFinished` 终态刷新和 WAITING 聚焦流程保留。
-- Green：真实 `HanCodeTuiApp + TaskService +` 阻塞 Fake Provider 的端到端测试在 Worker 未结束、已进入 PLAN 时确认 Task 为 `running`、TaskList 标签、PhaseBar 和 ActivityLog 都已更新；另覆盖 test/build/checkpoint/artifact/retry/HITL 摘要、旧 request、错误 task、Worker 结束后迟到消息、摘要读取失败和 UI observer 失败。最终新增相关测试 `21 passed`；TUI 范围回归 `44 passed`。
-- 完整验证：全量 pytest `1340 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 98 source files`；`uv build --offline` 成功；`uv run --no-sync hancode demo --provider mock` 返回 `status=completed`；`git diff --check` 通过。首次使用空隔离 uv cache 的 `uv build --offline` 因缓存无 `setuptools>=68` 失败，改用既有用户级缓存后构建成功。
-- 清理：删除本轮 `dist/`、`src/hancode.egg-info/`、`.pytest_cache/`、`.mypy_cache/`、`.ruff_cache/`；无临时源码文件，无 commit。
 
 ### 2026-07-29 — S6 正式计划契约整改（已完成）
 
@@ -2602,6 +2212,141 @@
 - 环境失败单独记录：一次使用新 worktree 空 `.venv` 的 `uv run --no-sync` 因缺少 `jsonschema` 在收集测试时失败；改用已有项目依赖环境重跑后通过，未将其归类为产品失败。
 - 按用户要求保留验证临时目录和构建产物；未提交、未推送。
 
+### 2026-08-03 — 交付阶段状态一致性修复 — AgentLoop blocked 分支复写旧状态
+
+- 使用的技能：`test-driven-development`、`verification-before-completion`、`systematic-debugging`；不使用真实 LLM、网络 API 或凭据。
+- 使用的智能体：GitHub Copilot。
+- 背景：交付阶段任务（`.hancode/tasks/task-001`）在 blocked 后出现 `state_inconsistent`。诊断确认两层原因：直接阻塞是"存在 Checkpoint 但缺少最新 Diff 证据"（`delivery/evidence.json` 的 `latest_diff_sha256` 为 null，交付门禁返回 BLOCKED）；真正丢失状态的代码缺陷是 AgentLoop 的 DELIVER `FINISH_PHASE` blocked 分支用旧的 in-memory `state` 调用 `_block()`，把 `finalize()` 刚通过 `_write_artifact` 持久化的状态（`DELIVERABLES.md` 存在、`delivery_coverage_digest`、`status`）复写回旧值，造成磁盘文件与 `state.json` 漂移，最终被 `reconcile_state` 判为 `state_inconsistent`。
+- TDD Red：新增两个回归测试均先失败——
+  - `tests/test_agent_loop.py::test_deliver_finalize_blocked_preserves_persisted_delivery_state`（单元级，stub delivery pipeline 通过共享 state store 写入状态）失败于 `persisted.artifacts["DELIVERABLES.md"] is True`；
+  - `tests/test_agent_loop.py::test_deliver_finalize_blocked_no_diff_keeps_state_consistent`（集成级，真实 `DeliveryPipeline` + `create_agent_loop` + 真实已提交 checkpoint，复现"checkpoint 存在 + 无 diff"场景）失败于 `final_state.artifacts["DELIVERABLES.md"] is True`。
+- 实现摘要：
+  - `src/hancode/runtime/agent_loop.py` 的 DELIVER `FINISH_PHASE` 两个 blocked 分支（`HanCodeError` 异常分支与 `delivery_status is not COMPLETED` 分支）在 `_block()` 前先 `state = self._state_store.load(task_id)` 重新加载权威状态，与成功分支已有的 reload 行为对齐，确保 finalize() 持久化的交付状态不被旧快照覆盖。
+  - 测试侧：为 `_build_loop` 增加 `delivery_pipeline` 注入；新增 `StubDeliveryPipeline`（实现完整 `DeliveryPipelinePort` 协议）与 `StubDeliveryResult`；`_finish_deliver_action()` helper；集成测试通过 `create_checkpoint` + `commit_checkpoint` 构造真实 checkpoint。
+- Green：两个回归测试通过。
+- 验证：
+  - 相关套件 `tests/test_agent_loop.py tests/test_delivery.py tests/test_s4_delivery_e2e.py tests/test_checkpoints.py`：`141 passed, 5 skipped`。
+  - 全量 pytest：`1467 passed, 17 skipped`。
+  - `ruff check src tests scripts`：`All checks passed!`。
+  - `mypy src`：`Success: no issues found in 130 source files`。
+- 提交：未提交；等待用户审阅。
+- 剩余风险：直接阻塞原因（缺失 Diff 证据）属于业务门禁，需模型在交付前成功执行 `get_diff` 才会解除；本轮仅修复状态被复写的代码缺陷，未改变 `_delivery_blockers` 判定逻辑。测试文件存在仓库既有的 mypy 类型债（不在 `mypy src` 门禁范围内），本轮未扩大范围清理。
+
+---
+
+### 2026-08-04 — S13-R9 — 容量闭环（可审计历史 Blob 淘汰）
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的达配额后永久阻塞、无 compaction/淘汰闭环；用户确认按保守方案（可审计历史 blob 淘汰 + 保留 record 元数据 + `memory_content_evicted`，不删事件、不重编号）实施。
+- 冻结契约：memory_id 永久稳定；只淘汰 blob 内容写独立 `evicted.json` manifest；`memory_read` 已淘汰返回 `memory_content_evicted`；quota 统计完整日志与存活 blob；淘汰资格限“全部引用已 stale 且非当前快照”；先写 manifest 再删文件。
+- 实现摘要：
+  - `_compact_evictable_blobs()` 在 append 配额压力时按字节从大到小淘汰合格历史 blob，先原子写 manifest 再删文件；`load()` 透传 evicted 集合，缺失且在 manifest 跳过、否则 `memory_corrupt`，产生 `memory_blob_evicted`。
+  - `read()` 已淘汰返回非阻塞 `memory_content_evicted`；`search()` 跳过已淘汰 blob 内容。
+- 验证：
+  - 专项 pytest：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 56 passed。
+  - Ruff：`storage/memory.py`、`tooling/memory_tools.py` 与测试通过。
+  - MyPy：两源文件无错误。
+  - `git diff --check`：无空白错误。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户确认保守 compaction 方案、不采用 TDD、在 main 开发。
+- 剩余风险：采用反应式（append 触发）淘汰而非高低水位后台压缩；未做成配置化水位；事件日志本身不压缩，符合冻结契约。
+
+---
+
+### 2026-08-04 — S13-R11 — Recent Events 分层
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的 `MEMORY_ACCESS` 挤掉有价值 recent events；不越界改存储格式、公开输出协议或 Context 预算裁剪。
+- 实现摘要：`MemoryContextPacker` 的 `recent_events` 分层，substantive（TOOL_RESULT/INVALIDATION/ROLLBACK）取最近 `max_memory_recent_events`，`MEMORY_ACCESS` 单独最多 2 条排其后；access 仍完整留在持久化日志。
+- 验证：
+  - 专项 pytest：`tests/test_memory_context.py tests/test_context_builder.py` 24 passed。
+  - Ruff：`runtime/memory.py` 与 Context 测试通过。
+  - MyPy：`runtime/memory.py` 无错误。
+  - `git diff --check`：无空白错误。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
+- 剩余风险：access 上限固定为 2（模块常量），未做成配置项；若后续需要可提为 `HanCodeConfig` 字段。
+
+---
+
+### 2026-08-04 — S13-R10 — 超长单行的字节续传
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的超长单行无法分页恢复——原实现返回同一 `next_start_line=1` 前缀，剩余部分永不可取；不越界改 compaction、recent 分层或 Context 预算。
+- 实现摘要：
+  - `MemorySlice` 增 `start_byte_offset`/`next_byte_offset`；`store.read()` 接受 `start_byte_offset` 只对起始行做 UTF-8 字节续传，越界或断字 fail-closed。
+  - `_fit_memory_slice` 单行超预算时返回 `[TRUNCATED]` 前缀并设 `next_byte_offset`，读完该行恢复行分页；ToolSpec `memory_read` schema 增 `start_byte_offset`，registry kwargs 透传。
+- 验证：
+  - 专项 pytest：`test_memory_models/store/tools/action_schema/action_parser/tool_factory/tool_registry` 135 passed。
+  - Ruff：四个源文件与工具测试通过。
+  - MyPy：四个源文件无错误。
+  - `git diff --check`：无空白错误。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
+- 剩余风险：新增两个整型字段使 memory_read 最小元数据略增，已同步两个预算断言；未引入 continuation token 抽象，采用 line + byte offset 双游标，语义边界已限定为“仅对起始行有效”。
+
+---
+
+### 2026-08-04 — S13-R8 — Event Tail 与 Orphan Blob 崩溃恢复
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的进程硬崩溃恢复不完整——event 写到一半直接判损坏、blob 已提交而 event 未提交产生的 orphan blob 无清理；不越界改 compaction、长行续传、recent 分层或公开输出协议。
+- 实现摘要：
+  - `_recover_incomplete_event_tail()`：仅在结尾缺换行且可信 index 匹配完整前缀时原子截断不完整尾部，产生 `memory_event_tail_recovered`；index 缺失/不符/replay 失败 fail-closed。用 `_InMemoryEvents` 复用 `_read_records`。
+  - `_remove_orphan_blobs()`：replay 后按 referenced 集合清理严格内容寻址命名的未引用普通 blob，产生 `memory_orphan_blob_removed`；链接、临时/杂项文件、已引用 blob 不动。审计信号累加。
+- 验证：
+  - 专项 pytest：`tests/test_memory_store.py` 42 passed。
+  - Ruff：`storage/memory.py` 与测试文件通过。
+  - MyPy：`storage/memory.py` 无错误。
+  - `git diff --check`：无空白错误。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
+- 剩余风险：完整前缀中间损坏仍 fail-closed（不跳过），符合审计要求；更强的 pending 事务标记或 SQLite WAL 属后续可选增强，未纳入本任务。
+
+---
+
+### 2026-08-04 — S13-R7 — Verified Blob 单次读取与单次加载搜索
+
+- 使用的技能：未使用 superpowers；不采用 TDD，直接实现后补回归测试，只跑专项门禁；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的 verified blob TOCTOU 与 `memory_search` 近 O(N²) 全量重放；不越界改崩溃恢复、compaction、长行续传、recent 分层或公开输出协议。
+- 实现摘要：
+  - 新增 `_read_verified_blob()`，单次读取后校验长度与摘要并返回该字节；`_validate_blob()` 改为其只校验包装；`read_blob_bytes()` 不再二次读取路径。
+  - `read()` 只 `load()` 一次并直接读取已验证 blob；`search()` 入口只 `load()` 一次，循环用请求内 `dict[blob_ref, bytes]` 缓存去重。
+  - 保持缺失、篡改、symlink、junction fail-closed。
+- 验证：
+  - 专项 pytest：`tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 49 passed。
+  - Ruff：`storage/memory.py` 与三个测试文件通过。
+  - MyPy：`storage/memory.py` 无错误。
+  - `git diff --check`：仅 LF/CRLF 提示。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。
+- 剩余风险：`load()` 本身仍在重放时逐 blob 校验（O(N) 哈希），属既定 fail-closed 完整性要求；跨请求缓存未引入以避免外部篡改后的一致性风险。
+
+---
+
+### 2026-08-04 — S13-R6 — 文件快照正确性与热点连续性
+
+- 使用的技能：未使用 superpowers；按用户明确要求不采用 TDD，直接实现后补回归测试，只跑专项门禁。用户要求在 `main` 上开发，未执行 destructive git 命令。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：修复审核提出的两个 P1 记忆正确性问题——同路径旧快照可能永不 stale、全局 generation 误伤未修改文件热点正文；不越界处理 blob 读取优化、崩溃恢复、compaction、长行续传或 recent 分层。
+- 实现摘要：
+  - `_validate_replay()` 从既有 append-only 事件派生 `superseded_by`：路径出现新成功 `read_file` 快照时把该路径上一份 current 快照标记 superseded，不增加 generation、不追加事件、不改持久化 schema。`MemorySnapshot` 增派生字段 `superseded_by`。
+  - `MemorySlice`、`MemorySearchHit` 增 `superseded_by`；`read()`/`search()` 把 invalidated 或 superseded 统一视为 stale，superseded 场景 reason 为 `superseded`、非权威；`memory_read`/`memory_search` 输出同步暴露该字段。默认搜索排除 superseded，`include_stale=True` 可恢复历史。
+  - `MemoryContextPacker` 热点资格与 `hot_eligible` 移除全局 generation 相等限制，只依赖 freshness 后的 `latest_by_path`、文本媒体类型与去重；无关路径 mutation 抬升 generation 后当前文件仍保留在 file index 和 hot contents。
+- 验证：
+  - 专项 pytest：`tests/test_memory_models.py tests/test_memory_store.py tests/test_memory_tools.py tests/test_memory_context.py` 55 passed。
+  - Ruff：核心四模块与四个测试文件 `All checks passed!`。
+  - MyPy：`core/memory.py storage/memory.py runtime/memory.py tooling/memory_tools.py` 无错误。
+  - `git diff --check`：仅 LF/CRLF 提示，无空白错误。
+- 提交：未提交；按用户要求保留 `main` 工作区改动。
+- 人工干预：用户指定不采用 TDD、分任务修复、全量测试留到最后、在 main 开发。未使用真实 LLM、网络或凭据。
+- 剩余风险：新增字段使 memory_read 最小元数据略增，已同步调整一个预算断言；全量 pytest、全仓 Ruff/MyPy、build 按计划在所有小任务完成后统一执行。
+
 ### 2026-08-04 — S12-R1 TUI 协作式安全暂停
 
 - 用户明确要求直接在 `main` 开发、先补任务卡，并采用 TDD；未创建分支或 worktree，未提交、未推送。
@@ -2706,6 +2451,27 @@
 - 验证：providers/test_tool_policy/test_phases/test_context_builder/test_tool_factory/test_action_schema 相关套件 `258 passed`；契约文件 ruff/mypy 无新错误。
 - 说明：全量 pytest 被工作区未完成的 `src/hancode/storage/memory.py` 等改动阻塞（mypy：`_SHA256_RE` 未定义、`_recover_incomplete_event_tail` 缺参数；116 个 TUI/memory 测试失败），与本次契约改动无关，待该改动完成后统一回填全量门禁。
 
+### 2026-08-05 — S13 追踪修复 — remediation 范围直达模型（消除 read_file 死循环）
+
+- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：分析 `.hancode/tasks/task-003` trace，发现模型 56 次 read_file 中 23 次读 index.html、8 次 edit_file 全被 remediation planned_paths policy 拒绝，陷入 read→edit→denied→memory_search 循环。根因：CODE 阶段看不到 remediation 决策，模型被迫去 memory 里猜。用户批准按 5 个修改点实施。
+- 实现摘要：
+  - 修改点 1（确定性兜底）：`context.py` 在 CODE 阶段有 failed 状态且 remediation 存在时注入 `sections.remediation_scope`（kind/planned_paths/digest），stale binding 抛结构化错误；`_TRUNCATION_ORDER[CODE]` 末位加入 `remediation_scope`（最后才被截断）。
+  - 修改点 2（确定性兜底）：`tool_policy.py` 的 `_evaluate_remediation_path` 拒绝 `remediation_planned_path_required` 时 suggested_fix 直接列出允许的 planned_paths。
+  - 修改点 3（提示词）：`prompt_contract.py` CODE 契约明确"读 sections.remediation_scope / test_remediation.json，不要用 memory_read 查 remediation"；REVIEW 契约声明 remediation 持久化到 test_remediation.json。
+  - 修改点 4（去误导）：`tool_specs.py` memory_search 描述声明内部决策不入 memory；`storage/memory.py` `_memory_content_unavailable` 的 suggested_fix 指引改读 `.hancode/tasks/<task>/test_remediation.json`。
+  - 修改点 5（纪律）：`BASE_SYSTEM_CONTRACT` 决策程序新增"读工具失败后切换不同读法，不重试同一 memory 工具"。
+- 验证：
+  - 全量 pytest：`1607 passed, 17 skipped`。
+  - Ruff：`All checks passed!`（5 源文件 + 5 测试文件）。
+  - MyPy：`Success: no issues found in 5 source files`。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户确认执行全部 5 个修改点。
+- 剩余风险：remediation_scope 注入依赖 `latest_test_status == "failed"`；`modify_test` 类 remediation 的 planned_paths 仍可能不含目标源码路径，属决策正确性问题而非可见性问题，未在本轮改变。
+
+---
+
 ### 2026-08-05 — Provider 能力协商重构：auto 从线性模式跳转改为单调能力移除状态机
 
 - 背景：task-003 接入 DeepSeek（`openai_compatible` + `provider_action_mode=json_object`）后卡死。诊断：`json_object` 只保证合法 JSON、不保证符合根 `oneOf` action schema，DeepSeek 靠 prompt 猜结构失败 → `provider_action_schema_invalid ($ oneOf)`，重试耗尽后返回空内容 → `provider_empty_response`；且固定模式无降级出口。更深层：`auto` 把非线性的能力组合压成 4 个整体模式，降级粒度过大（`parallel_tool_calls`/`tool_choice` 被拒直接跳过 native_tools）、错误识别过窄（只认 `unsupported_parameter/unsupported_value` + 硬编码 `tools[0]` 路径）、HTTP 200 协议失败不驱动降级 → 在 OpenAI/DeepSeek/自建兼容服务间无法稳定收敛。
@@ -2717,6 +2483,208 @@
 - 验证：`tests/providers/` + `tests/test_provider_failure_loop.py` `143 passed`；`tests/test_agent_loop.py`+`test_config.py`+real_provider_smoke `141 passed, 1 skipped`；全量 pytest `1599 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 136 source files`；`hancode demo --provider mock` 输出 `completed`。
 - 剩余风险：真实 DeepSeek 端到端未跑（无凭据），仅以 scripted transport 验证收敛；prompt_json 兜底依赖弱模型能按 prompt 输出合法 JSON，若仍不合规将由 action schema 校验拦截并耗尽重试预算。
 
+### 2026-08-06 — S17-P0 — Provider Prompt 明确 Steering 权威契约
+
+- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用 RED → GREEN → REFACTOR。
+- 根因：Context 已注入 `user_interventions.effective`，但 Provider-facing system contract 未说明 Steering 覆盖任务目标、旧计划和 observation，也未说明 sequence 覆盖及当前 run 持续有效。
+- 实现摘要：
+  - `providers/prompt_contract.py` 新增共享 `RUNTIME_STEERING_CONTRACT`，嵌入 `BASE_SYSTEM_CONTRACT`，并在 authority 顺序中置于任务目标与 workspace evidence 之前。
+  - `providers/prompt_builder.py` 让 native tool-calling system message 复用同一契约，不改变既有 Function Tool 输出格式。
+  - 契约明确 `task_context.user_interventions.effective`、当前 run 全程有效、较大 sequence 覆盖较小 sequence，以及不得覆盖 system rules、phase gates、ToolPolicy、Approval、Checkpoint。
+  - `tests/providers/test_prompt_builder.py` 新增文本 Prompt 与 native Prompt 的契约测试；`docs/PLAN.md` 新增并完成 S17-P0 任务卡，SPEC/架构同步更新。
+- 验证：
+  - Prompt/Provider 专项：`90 passed`。
+  - 全量 pytest：`1776 passed, 15 skipped`。
+  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 148 source files`。
+  - `uv build`：sdist + wheel 成功；`git diff --check` 通过。
+- 备注：首次专项命令误包含不存在的 `tests/providers/test_prompt_contract.py`，已改用实际存在的 Prompt 测试文件重新验证通过。未修改 `.hancode/tasks/task-001/**`。
+- 剩余风险：Prompt 只负责引导模型；最终 Steering 优先级仍由已有 deterministic Context、Policy、Approval、Checkpoint 和 commit gate 机制强制执行。完整 Prepare—Commit—Apply、CANCEL/STOP、跨进程文件锁仍未实现。
+
+---
+
+### 2026-08-06 — S17-R4 — Approval 绑定、失效、二次提交门与 WAITING_APPROVAL Steering
+
+- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用 RED → GREEN → REFACTOR；未修改 `.hancode/tasks/task-001/**`。
+- 任务边界：只实现 `docs/PLAN.md` S17-R4 任务卡；CANCEL/STOP、跨进程锁、完整 Prepare—Commit—Apply 副作用搬迁不在范围。
+- 实现摘要：
+  - `core/approvals.py`、`runtime/approval_request.py`：Approval manifest 绑定 `run_id`/`steering_revision_at_request`；新记录要求真实 run，旧 manifest 保持显式 unbound。
+  - `storage/approvals.py`：校验 project/task/approval identity；收紧生命周期迁移；仅 PENDING/APPROVED 可过期，EXPIRED/REJECTED 清理幂等；EXECUTING/CONSUMED 禁止过期。
+  - `runtime/agent_loop.py`：绑定漂移与旧 unbound 恢复失效；按固定双写顺序过期并重新规划；EXECUTING/CONSUMED 绑定异常 fail-closed；批准 Action 使用独立 Approval commit key 二次调用 `commit_action()`；非 checkpoint Action 在 dispatch 前进入 EXECUTING；低层 AgentLoop 无 TaskService run identity 时生成真实 active run。
+  - `interfaces/tui/commands.py`、`interfaces/tui/app.py`：WAITING_APPROVAL 普通文本写 Steering，不隐式 approve/reject，成功后自动 resume；显式 `/approve`/`/reject` 不回归。
+- TDD 证据：R4 binding/lifecycle/AgentLoop 测试先出现失败，再经最小实现变绿；新增 `tests/test_approval_r4_binding.py`。
+- 验证：
+  - Approval/AgentLoop/TUI 专项：通过；其中最终组合回归 `110 passed`，TUI Steering/commands `28 passed`。
+  - 全量 pytest：`1774 passed, 15 skipped`。
+  - Ruff：`All checks passed!`；MyPy：改动 6 个源文件 `Success: no issues found`。
+  - 旧 `test_tui_approval.py` 语义测试已同步为 Steering + auto-resume，并通过 `7 passed`。
+- 提交：未提交；按规范保留 `main` 工作区改动。
+- 剩余风险：完整 Prepare—Commit—Apply 副作用边界、CANCEL/STOP、跨进程文件锁仍未实现。
+
+---
+
+### 2026-08-06 — S17-TUI — 运行中普通文本 Steering 接入
+
+- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用纵向 TDD。
+- 任务边界：只接入运行中普通文本 Steering；不启动第二个 mutation Worker。`WAITING_INPUT` 继续回答问题，`WAITING_APPROVAL` 的普通文本接入留给 R4，`PAUSED` 继续要求显式 `/resume`。
+- 实现摘要：
+  - `app/intervention_service.py`：新增 `InterventionService`/`SteeringSubmission`，校验 task、`active_run_id`、空内容和长度，委托 InterventionStore 脱敏与纯敏感拒绝。
+  - `interfaces/tui/commands.py`：新增 `PlainTextIntent.STEER` 与 `busy` 路由；保持 `WAITING_APPROVAL`/`WAITING_INPUT` 优先级。
+  - `interfaces/tui/app.py`：注入 InterventionService；busy 普通文本调用 `submit_steering`，UI 线程同步写 Store，显示 sequence 与下一安全点提示，不调用 `run_worker`。
+- 验证：
+  - `test_tui_commands.py`：`24 passed`。
+  - Steering/service/commands 专项：`32 passed`；加入 RunControl/task identity 边界回归后组合专项：`48 passed`。
+  - TUI app/controller/e2e/worker/hitl 回归：`63 passed`。
+  - 全量 pytest：最终 `1755 passed, 17 skipped`（约 204s，使用隔离 basetemp）；首次全量运行有 1 个既有 WAITING_INPUT placeholder 时序失败，单测复跑与第二次全量均通过。
+  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 148 source files`。
+  - `uv build`：sdist + wheel 成功；`git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
+- 提交：未提交；按规范 §17 保留 `main` 工作区改动，恢复包待全量质量门后保存。
+- 剩余风险：跨进程 writer 与完整 Prepare—Commit—Apply 仍是后续范围；WAITING_APPROVAL Steering 已在 S17-R4 完成。
+
+---
+
+### 2026-08-06 — S17-R3 — Runtime Steering 确认（acknowledge / CONSUMED）
+
+- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用纵向 TDD。
+- 任务边界：只补 R2 里 `acknowledge=False` 的缺口——成功 apply 后把该 Action 实际处理的 Steering 标 CONSUMED；全量 Prepare—Commit—Apply 副作用搬迁本轮不做，Approval 绑定留给 R4，TUI 接入留待后续。
+- 实现摘要：
+  - `runtime/agent_loop.py`：新增 `_acknowledge_steering`（无 store/无 snapshot/无 delivery 短路；复用 `mark_consumed`；失败吞掉不破坏已 apply 状态；成功写 `intervention_consumed` trace）；在 TOOL_CALL 成功与 FINISH_PHASE 成功两个 choke point 调用；`InterventionStorePort` 增 `mark_consumed`。
+  - CONSUMED 记录仍持续进入 Context 的 `effective`，仅从 `awaiting_acknowledgement` 移除——符合规范"CONSUMED 不代表失效"。
+- 验证：
+  - 专项 pytest：`test_agent_loop.py` 64（新增 acknowledge/denial 两例）；interventions + task_service 回归 55。
+  - 全量 pytest：`1744 passed, 17 skipped`。
+  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
+  - `uv build`：sdist + wheel 成功。
+  - `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
+- 提交：未提交；按规范 §17 保留 `main` 工作区改动，恢复包存于仓库外 artifacts 目录。
+- 剩余风险：全量 Prepare—Commit—Apply 副作用搬迁未做——旧决策的部分副作用（recovery state、checkpoint 等）仍在提交门之前发生，严格的"未越过提交门零副作用"需后续重构；已开始的原子操作不被打断，符合规范；TUI 尚未接入。
+
+---
+
+### 2026-08-06 — S17-R2 — Runtime Steering 并发 revision 线性化
+
+- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用纵向 TDD。
+- 任务边界：仅实现 revision 并发线性化（`commit_action` + 幂等 ledger + AgentLoop 陈旧输出丢弃）；`acknowledge`/CONSUMED 标记与 Prepare—Commit—Apply 大重构留给 S17-R3，Approval 绑定留给 S17-R4，TUI 接入留待后续。
+- 实现摘要：
+  - `core/interventions.py`：新增 `ActionCommitStatus`(COMMITTED/REPLAN) 与 `ActionCommitResult`。
+  - `storage/interventions.py`：新增 `commit_action`（共享路径锁下与 `submit` 线性化；幂等 ledger `action_commits.jsonl` + `os.fsync`；REPLAN 不 acknowledge；ledger 损坏 fail-closed）与 `_CommitLedgerEntry`。
+  - `runtime/agent_loop.py`：`InterventionStorePort` 增 `current_revision`/`commit_action`；Provider 前 `mark_delivered` 返回 STALE 时丢弃并 `stale_context_discarded`；Provider 返回后 `current_revision` 变化时丢弃；有效 Action 前 commit 门返回 REPLAN 时丢弃并 `stale_action_discarded`；三者均不消耗 recovery budget、不派发工具。
+- 验证：
+  - 专项 pytest：`test_interventions_commit.py` 7、`test_interventions_runtime.py` 新增 5、`test_interventions_store.py` 回归；`test_agent_loop.py` 回归。
+  - 全量 pytest：`1742 passed, 17 skipped`。
+  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
+  - `uv build`：sdist + wheel 成功。
+  - `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
+- 提交：未提交；按规范 §17 保留 `main` 工作区改动，恢复包存于仓库外 artifacts 目录。
+- 剩余风险：commit 门当前 `acknowledge=False`，Steering 处理后不立即标记 CONSUMED（依赖 R3 Prepare—Commit—Apply 精确判定可安全 apply 后再 acknowledge）；已开始的原子操作（checkpoint/dispatch）不被打断，符合规范原子边界；TUI 尚未接入，运行中提交仅经 Store API。
+
+---
+
+### 2026-08-06 — S17-R1 — Runtime Steering 基础切片（Store + Snapshot + Context 注入）
+
+- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用纵向 TDD。
+- 任务边界：仅实现 S17-R1 基础切片（阶段 0-2）；并发线性化 `commit_action`、Prepare—Commit—Apply、Approval revision 绑定、orphan 恢复与完整 run 生命周期表、TUI 接入均明确延后至 S17-R2+。
+- 实现摘要：
+  - `core/interventions.py`（新增）：Steering 领域模型（事件、记录投影、Snapshot、DeliveryResult），`content` 仅 SUBMITTED 事件携带。
+  - `storage/interventions.py`（新增）：append-only `interventions.jsonl` + `os.fsync`；模块级路径锁；`submit/prepare_context/mark_delivered/mark_consumed/current_revision`；严格重放校验、损坏 fail-closed、`redact_text` 脱敏与纯敏感拒绝、幂等。
+  - `core/state.py`：新增可选 `active_run_id`（5 处 additive，向后兼容旧 `state.json`）。
+  - `runtime/context.py`：`build` 增 `user_interventions`/`intervention_revision`，注入持续有效的 Steering 块，预算不足返回 `intervention_context_budget_exceeded`，Steering 不被静默裁剪；正文脱敏。
+  - `runtime/agent_loop.py`：`InterventionStorePort` + 可选 `intervention_store`；每轮生成 Snapshot、注入 Context、Provider 前 `mark_delivered`；无 store 或无 `active_run_id` 时行为不变。
+  - `runtime/engine.py`、`app/task_service.py`：透传 store（引擎默认注入）；最小 run 生命周期（创建/复用/拒绝/清除）。
+- 验证：
+  - 专项 pytest：`test_interventions_store.py` 10、`test_interventions_context.py` 5、`test_interventions_runtime.py` 7；相关回归 `test_context_builder/test_state/test_agent_loop/test_task_service` 通过。
+  - 全量 pytest：`1730 passed, 17 skipped`（约 169s，需超时 >120s 复跑）。
+  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 147 source files`。
+  - `uv build`：sdist + wheel 成功（`--offline` 仅因 setuptools 未进缓存失败，非代码问题）。
+  - `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
+- 提交：未提交；按规范 §17 保留 `main` 工作区改动，恢复包存于仓库外 artifacts 目录（`slice-all.patch` + `untracked/`）。
+- 剩余风险：并发 revision 线性化未做，Provider 调用期间到达的 Steering 在本切片仅通过「持续注入下一轮」生效，不保证旧 Action 失效（留待 S17-R2 `commit_action`）；TUI 尚未接入，运行中提交仅经 Store API 可用。
+
+---
+
+### 2026-08-06 — S16 — TUI 凭据输入支持系统剪贴板
+
+- 使用的技能：未使用；沿用用户要求的 `main` 分支快速修复，不采用 TDD。
+- 根因：Textual 8.2.8 的 `Input.action_paste()` 只读取 Textual 内部 clipboard，不读取操作系统剪贴板；Windows Terminal 常用的 `Ctrl+Shift+V` 也未绑定到凭据输入控件。
+- 实现摘要：
+  - `interfaces/tui/config_dialogs.py` 新增 `CredentialInput`，覆盖 `Ctrl+V`、`Ctrl+Shift+V`、`Shift+Insert`，优先读取系统剪贴板，失败时回退 Textual 内部 clipboard。
+  - Windows 使用固定 PowerShell `Get-Clipboard -Raw` 命令，macOS 使用 `pbpaste`，Linux 依次使用 `wl-paste`/`xclip`/`xsel`；所有调用 `shell=False`、1 秒超时，不记录剪贴板内容。
+  - 保留原有密码掩码、Keyring 写入和 `project.json` 不落 secret 的行为；bracketed paste 仍由 Textual 原生 Input 处理。
+  - `test_config_tui_s8.py` 参数化覆盖三种快捷键，并继续验证 Keyring 存储和脱敏展示。
+- 验证：
+  - TUI 配置专项：`12 passed`。
+  - 相关配置/凭据回归：`130 passed, 1 skipped`。
+  - 全量 pytest：`1709 passed, 17 skipped`。
+  - Ruff：通过。
+  - MyPy：`config_dialogs.py` 无错误；全仓 `src` 145 个源文件无错误。
+  - 全局 `git diff --check` 仅命中并行修改的 `README.md` 文件末尾空行；本任务改动文件检查通过，未修改该文件。
+- 剩余风险：系统剪贴板读取依赖终端所在系统提供对应命令；若命令不可用，用户仍可逐字输入或使用终端 bracketed paste，不会抛出未处理异常。
+
+---
+
+### 2026-08-06 — S15 — CODE 可写目标发现、遍历去噪与无进展保护
+
+- 使用的技能：未使用；按用户要求直接在 `main` 分支快速修改，未采用 TDD。
+- 任务边界：不修改 `.hancode/project.json`、`.hancode/tasks/task-001/**` 或 `core/config.py`；配置由用户后续调整。
+- 实现摘要：
+  - `runtime/context.py` 在 CODE context 中对不存在的 `writable_roots` 注入 `writable_roots_warning`，明确首次合法 `write_file` 会创建父目录。
+  - `providers/prompt_contract.py` 明确以 `sections.writable_roots` 为权威目标，禁止因目录尚不存在而重复 `list_files` 或修改配置。
+  - `tooling/file_tools.py` 将 `rglob` 替换为 top-down 安全遍历，在下降前剪枝 `.git`、虚拟环境、依赖与缓存目录，并保留敏感路径、凭据别名、符号链接和项目根约束。
+  - `runtime/agent_loop.py` 新增 CODE 只读探索 action key；无 source write 时重复探索先反馈，继续重复按交互配置进入 `WAITING_INPUT` 或 `BLOCKED/code_progress_stalled`，不重复调用工具。
+  - 对应补充文件工具、上下文、提示词和 AgentLoop 回归测试；更新 `docs/PLAN.md` 的 S15 任务卡。
+- 验证：
+  - 专项及相关回归：`462 passed, 4 skipped`。
+  - 全量 pytest：`1707 passed, 17 skipped`。
+  - 全仓 Ruff：`All checks passed!`。
+  - 全仓 MyPy：`Success: no issues found in 145 source files`。
+  - `git diff --check` 通过。
+- 工作区备注：`README.md` 与 `src/hancode/README.md` 存在本任务未修改的并行工作区变化，已保留且未纳入本次修复。
+- 剩余风险：CODE 探索重复集合按单次 AgentLoop run 维护，跨进程 resume 不重建历史集合；后续若需跨 resume 检测，应单独设计持久化契约。
+
+---
+
+### 2026-08-06 — S14-R2~R7 — 学习证据链、五步交付、发布 Profile 与反思服务
+
+- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：按 `docs/deliver计划.md` 逐 R 推进，重心放在编码，专项测试为主，1-7 完成后统一全量。旁路新建学习证据链，不侵入既有 AgentLoop 主循环以避免大范围回归。
+- 实现摘要：
+  - R2：`delivery_support/renderer.py`（generated/student 分区，仅重写 generated 区、标记歧义 fail-closed、secret 扫描、幂等）；`app/learning_service.py` 的 `record_requirements`/`record_plan`/`record_change` 三闭环（事件→快照→稳定 ID→引用校验→渲染 SPEC/PLAN/IMPLEMENTATION）。
+  - R3：`LearningService` 扩展 `record_test_attempt`（`T-*`）/`record_failure`（`F-*`）/`record_recovery`（`REC-*`）与 TEST_REPORT.md 渲染，历史失败不被后续通过覆盖。
+  - R4：`runtime/traceability_builder.py`（8 种关系链 + 严格 covered 判定）；`record_review`（REVIEW.md）/`record_knowledge`（KnowledgeCard→KNOWLEDGE.md，evidence_refs 与 transfer_example 硬约束）。
+  - R5：`delivery_support/collector.py` + `validator.py`（Collect→Validate，S14.6 硬门禁/warning）；`DeliveryResult` 增 `submission_eligible`/`learning_contract_status`/`learning_warnings`（默认值向后兼容）；`DeliveryService.evaluate_learning`（旧任务标 `legacy_unverified`，不改历史状态）。
+  - R6：`storage/export.py` 的 `ExportProfile` + `export_task_profile`（submission/learning/audit，显式 allow-list、staging 原子发布、防覆盖、自描述 manifest，排除 state/trace/memory/凭据/原始 checkpoint）；`DeliveryService.export_profile` facade。
+  - R7：`app/reflection_service.py`（`learning/reflections.json` 权威 + revision 乐观锁 + secret 拒绝 + 投影学生区）；`app/learning_inspection_service.py`（只读 overview）。
+  - 后续接线项（未做，避免侵入主循环大范围回归）：`DeliveryPipeline` 完全 cutover、AgentLoop 成功修改后自动 `record_change`、SPEC/PLAN phase 拒绝 `write_file`、CLI/TUI `--profile` 与 Textual 学习/反思组件。
+- 验证：
+  - S14 专项 pytest：12 个 `tests/test_s14_*.py` 共 80 passed。
+  - 全量 pytest：`1699 passed, 17 skipped, 1 failed`；唯一失败 `test_course_project_scaffold.py::test_code_change_requires_test_or_risk_note` 经 `git stash` 确认为基线既有失败（断言 SPEC.md 文本，与 S14 代码无关）。
+  - 全仓 Ruff：`All checks passed!`；MyPy：`src/hancode` 145 源文件无错误。
+  - 修复：`load_state` 对显式为 null 的 `learning_contract_version` 兼容（save_state 总是写出该键），修复由此引发的 `test_cli_tasks` 3 项回归。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户要求重心在编码、逐任务推进、专项为主、最后全量。
+- 剩余风险：上列后续接线项未实施；`test_course_project_scaffold` 的既有失败需由 SPEC 文本维护单独处理（非本轮范围）；build/demo/三种 export E2E 未纳入本轮（可在接线任务一并补充）。
+
+---
+
+### 2026-08-06 — S14-R1 — 学习证据模型、事件 Store 与状态/配置兼容
+
+- 使用的技能：未使用 superpowers；采用 TDD（先红后绿）；在 `main` 开发。
+- 使用的智能体：OpenCode。
+- 关键提示词 / 上下文：按 `docs/deliver计划.md` 的 S14 执行计划推进 R1，用户批准的三项决策——事件命名采用 SPEC 冻结的 9 种；RecoveryEvidence 使用独立 `REC-*` 前缀；digest 复用现有 `delivery_coverage_digest`（不新增 `delivery_evidence_digest`）。旁路新建学习证据链，不改 `DeliveryPipeline`。
+- 实现摘要：
+  - R1.1：`core/state.py` 增 `learning_contract_version` 与 `IMPLEMENTATION.md` artifact（load 兼容旧 6 键/新 7 键并归一化，旧 state 读取不自动升级）；`core/config.py`+`core/project_config.py` 增 `submission_paths`（仅项目内相对路径，`_validate_submission_path` 拒绝绝对/`..`/`.hancode` 内部/符号链接逃逸）；`storage/workspace.py` 初始化 `learning/` 目录与 7 键 artifacts、`learning_contract_version=1`。
+  - R1.2：`core/learning_evidence.py` 九个 frozen 证据模型 + `LearningSnapshot`、`TraceabilityLink`；`EvidenceKind` 与 ID 格式化/校验/解析函数集中管理前缀与位宽。
+  - R1.3：`storage/learning_store.py` append-only 哈希链事件日志（9 种 event_type）+ `evidence.json` 派生投影（可删可重建）；task identity/seq/previous_digest/schema 校验，尾部半行只取完整前缀，中间损坏/digest 断裂 fail-closed。
+- 验证：
+  - 专项 pytest：`tests/test_s14_learning_store.py tests/test_s14_learning_models.py tests/test_state.py tests/test_config.py tests/test_workspace.py tests/test_memory_store.py` 238 passed。
+  - 相关回归：`tests/test_phases.py tests/test_phase_gate.py tests/test_router.py tests/test_tool_policy.py tests/test_export.py tests/test_delivery.py tests/test_agent_loop.py` 205 passed。
+  - Ruff/MyPy：新增与改动文件通过。
+- 提交：未提交；保留 `main` 工作区改动。
+- 人工干预：用户批准 3 项契约决策并要求重心放在编码、逐任务推进、专项测试为主、全量留到 R1-R7 完成后。
+- 剩余风险：架构 §S14.2 的 ID 前缀表仍写 7 种，`REC-*` 需在后续 R3 契约变动时补记；`learning_store` 尚未接入 Recorder 与 Pipeline（R2 起接入）；全量 pytest/build/demo/export E2E 留待收尾统一执行。
+
+---
+
 ### 2026-08-06 — S14-R0 Deliver 学习发布文档契约
 
 - 需求与判断：按用户给定设计，将 Deliver 从“文件存在/完成证明”重新定义为把结构化过程证据编译成提交包、学习包和审计包的发布阶段；本轮只做 Markdown 契约，不修改 Python、模板、CLI/TUI 或 export 实现。
@@ -2725,6 +2693,32 @@
 - 架构：升级为 v1.7；`DeliveryPipeline` 收敛为编排器，协作 `LearningEvidenceCollector`、`TraceabilityBuilder`、`DeliveryValidator`、`ArtifactRenderer`、`DeliveryPublisher`，执行 `Collect → Validate → Synthesize → Reflect → Publish`；发布分为 submission、learning、audit 三种显式 allow-list Profile。
 - 边界：保留 `state.json` 生命周期权威、现有六阶段和 `completed / blocked / failed`；Runtime Memory 与 Learning Evidence 分离；不以扩写 Markdown 模板冒充机制实现；未触碰工作区已有 TUI 配置代码与测试改动。
 - 验证：必需术语定向检查全部命中；旧的“双 Markdown 存在即可完成”门禁检索无命中；四份文档代码围栏均成对；generated 区域示例起止标记成对；`git diff --check -- docs/SPEC.md docs/PLAN.md docs/系统架构.md docs/AGENT_LOG.md` 通过。本轮没有代码改动，因此未运行 pytest、Ruff、MyPy 或 Build。
+
+### 2026-08-07 — Prompt 产物语言契约（md 产物简体中文撰写）
+
+- 需求：hancode 生成的 md 阶段产物（`SPEC.md`、`PLAN.md`、`TEST_REPORT.md`、`REVIEW.md`）应统一使用简体中文撰写，而非依赖模型随机性。
+- 实现摘要：
+  - `providers/prompt_contract.py` 新增共享 `ARTIFACT_LANGUAGE_CONTRACT` 并嵌入 `BASE_SYSTEM_CONTRACT`（文本 Prompt 模式）。
+  - 契约明确：用 `write_file` 撰写的阶段产物正文使用简体中文；技术标识（文件名、命令、测试名、证据 ID `R-*`/`D-*`/`C-*`/`T-*`/`F-*`/`K-*`、类/函数/变量名、代码片段）保留原文；保留当前阶段契约要求的产物结构与证据引用。
+  - `providers/prompt_builder.py` 让 native tool-calling system message 复用同一契约。
+  - `tests/providers/test_prompt_builder.py` 新增文本与 native 两种模式的契约断言。
+- 验证：Prompt 专项 `39 passed`；全量 pytest `1785 passed, 17 skipped`；Ruff `All checks passed!`；MyPy `Success: no issues found in 2 source files`。
+- 边界：确定性渲染产物（`IMPLEMENTATION.md`、`KNOWLEDGE.md`、`DELIVERABLES.md`）由 S14 Renderer 从结构化证据生成，不在本次 Prompt 契约范围内；未修改 `.hancode/tasks/**`。
+
+---
+
+### 2026-08-07 — S17-TUI-R2 — 常驻输入与协作式打断
+
+- 任务边界：修复 TUI 将 Worker `busy`、`PauseToken`、`request_id` 快照误当作输入资格的问题；普通文本有 active task 时写入 Steering，正在执行的原子操作不被强制终止。
+- 实现摘要：
+  - `interfaces/tui/commands.py`：active task 普通文本统一路由为 `STEER`；`WAITING_INPUT` 仍路由为回答；无 active task 仍创建任务。
+  - `interfaces/tui/app.py`：以 active task 路由 Steering，保留不同 running task 的串线保护；真实 `active_run_id` 由 `InterventionService` 校验；已有 Worker 不重复启动，Worker 已结束且任务仍可运行时自动 resume，PAUSED 不隐式恢复。
+  - 更新 `docs/PLAN.md`、`docs/SPEC.md`、`docs/系统架构.md`。
+- 验证：TUI commands/steering/approval 专项 `36 passed`；全量 pytest `1776 passed, 15 skipped`；Ruff、MyPy 148 源文件、`uv build`、`git diff --check` 通过。
+- 未修改 `.hancode/tasks/task-001/**`；未提交 commit。
+- 剩余边界：当前仍是协作式打断，不强杀 Provider 请求、工具进程或已开始的 checkpoint/原子操作。
+
+---
 
 ### 2026-08-07 — `/help` 帮助界面重设计
 
