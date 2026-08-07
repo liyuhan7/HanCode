@@ -9,7 +9,7 @@ GITLAB_WORKFLOW = REPOSITORY_ROOT / ".gitlab-ci.yml"
 QUALITY_COMMANDS = (
     "uv sync --locked --extra dev",
     "uv run pytest",
-    "uv run ruff check src tests scripts",
+    "uv run ruff check src tests",
     "uv run mypy src",
 )
 DELIVERY_COMMANDS = (

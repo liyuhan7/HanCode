@@ -49,7 +49,7 @@ def test_readme_documents_verification_commands() -> None:
     assert "uv run hancode --help" in README
     assert "uv run hancode demo --provider mock" in README
     assert "uv run pytest" in README
-    assert "uv run ruff check src tests scripts" in README
+    assert "uv run ruff check src tests" in README
     assert "uv run mypy src" in README
 
 

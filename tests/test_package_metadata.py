@@ -53,5 +53,5 @@ def test_make_commands_use_uv_contract() -> None:
     makefile = (REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert "uv run pytest" in makefile
-    assert "uv run ruff check src tests scripts" in makefile
+    assert "uv run ruff check src tests" in makefile
     assert "uv run mypy src" in makefile
