@@ -71,15 +71,20 @@ def _run_inputs(app: HanCodeTuiApp, *inputs: str) -> None:
     asyncio.run(_run())
 
 
-def test_help_command_shows_notice(tmp_path: Path) -> None:
+def test_help_command_opens_help_center(tmp_path: Path) -> None:
     _project(tmp_path)
-    notices: list[str] = []
     app = _app(tmp_path, _FakeTaskService((_summary(),)))
-    app._notify = notices.append  # type: ignore[method-assign]
+    opened = 0
+
+    def _show_help() -> None:
+        nonlocal opened
+        opened += 1
+
+    app._show_help = _show_help  # type: ignore[method-assign]
 
     _run_inputs(app, "/help")
 
-    assert any("/task" in n or "命令" in n for n in notices)
+    assert opened == 1
 
 
 def test_tasks_command_refreshes_task_list(tmp_path: Path) -> None:

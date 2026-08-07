@@ -330,12 +330,13 @@ HanCode 必须把凭据安全、文件边界和工具治理作为基础安全要
 - 用户应能在 Agent 运行过程中提交新的文本要求（Steering），并让 Agent 在安全边界上重新规划后续行为。
 - Steering 是高优先级的持续运行约束：当前运行（run）内提交的每条 Steering 应持续进入后续每轮 Context，直到该 run 结束；不得作为一次性 observation 处理。
 - 优先级固定为：系统规则与安全约束 > ToolPolicy/Approval/Checkpoint/Phase Gate > 当前 run 最新 Steering > 任务原始目标 > 旧计划与 observation。Steering 不得绕过任何安全机制。
+- Provider-facing system contract 必须显式声明 `task_context.user_interventions.effective` 的权威语义：当前 run 内持续有效；较大 sequence 覆盖冲突的较小 sequence；冲突时覆盖任务目标、旧计划和 observation，但不得覆盖 system rules、phase gates、ToolPolicy、Approval 或 Checkpoint。
 - Steering 正文必须经脱敏处理，纯敏感内容（凭据等）必须拒绝；Trace、日志与快照不得泄露 Steering 正文或密钥。
 - Steering 必须持久化且可跨进程重启重放；日志损坏时 fail-closed。
 - 每个运行绑定稳定的 run 身份：`/run` 创建、`/resume` 复用、终态清除；不同 run 的 Steering 不得污染彼此的 Context。
 - 运行中到达的新 Steering 必须能让越过决策点的旧模型输出失效并重新规划，且不产生半副作用：每个 Action 绑定生成时的 Steering 版本，提交前经确定性线性化判定 `COMMITTED` 或 `REPLAN`。
 - 只有当某个 Action 真正通过策略并成功进入 apply 时，才把它实际处理过的 Steering 标记为已确认（CONSUMED）；被拒绝或丢弃的决策不得确认任何 Steering。已确认的 Steering 仍作为运行约束持续注入，直到该 run 结束。
-- TUI 运行中普通文本应作为当前 active run 的 Steering 持久化，并在下一个安全点生效；该输入不得启动第二个 mutation Worker。`WAITING_INPUT` 普通文本仍回答问题，`WAITING_APPROVAL` 普通文本作为 Steering 并自动 resume，但不得隐式 approve/reject；`PAUSED` 仍要求显式 `/resume`。
+- TUI composer 应始终接受用户文本；有 active task 且不在 `WAITING_INPUT` 时，普通文本作为当前 active run 的 Steering 持久化，并在下一个安全点生效，不依赖 TUI Worker 的 busy/PauseToken/request identity 快照。Worker 忙时不得启动第二个 mutation Worker；Worker 已结束但 run 仍有效时自动 resume。`WAITING_INPUT` 普通文本仍回答问题，`WAITING_APPROVAL` 普通文本作为 Steering 并自动 resume，但不得隐式 approve/reject；`PAUSED` 接受 Steering 但仍要求显式 `/resume`。
 - S17-R1 交付持久化、持续注入与 run 隔离；S17-R2 交付并发线性化（`commit_action` + 幂等 ledger + AgentLoop 陈旧输出丢弃）；S17-R3 交付成功 apply 后的 Steering 确认；S17-TUI 交付运行中普通文本入口；S17-R4 交付 Approval 的 run/revision 绑定、漂移失效、恢复 fail-closed 与二次 commit gate。完整 Prepare—Commit—Apply 副作用边界搬迁仍是后续任务。MVP 限单进程写者，不支持多个 HanCode 进程同时操作同一任务。
 
 ## 6. 系统架构

@@ -355,6 +355,9 @@ def test_native_tool_prompt_does_not_expose_action_json_contract() -> None:
     assert "output_contract" not in prompt.messages[1].content
     assert "response_contract" not in prompt.messages[1].content
     assert "Function Tool" in prompt.messages[0].content
+    assert "ACTION REUSE" in prompt.messages[0].content
+    assert "reusable_evidence" in prompt.messages[0].content
+    assert "memory_search" in prompt.messages[0].content
 
 
 def test_strict_mode_omits_embedded_output_contract() -> None:
@@ -500,3 +503,34 @@ def test_system_contract_forbids_retrying_same_memory_tool_after_failed_read() -
 
     assert "switch to a different" in BASE_SYSTEM_CONTRACT
     assert "read_file" in BASE_SYSTEM_CONTRACT
+
+
+def test_system_contract_declares_runtime_steering_authority() -> None:
+    from hancode.providers.prompt_contract import BASE_SYSTEM_CONTRACT
+
+    contract = " ".join(BASE_SYSTEM_CONTRACT.lower().split())
+    required_fragments = (
+        "runtime steering",
+        "task_context.user_interventions.effective",
+        "remain effective for the entire current run",
+        "higher sequence supersedes a conflicting lower sequence",
+        "supersedes the original task goal, previous plans, and observations where they conflict",
+        "never overrides system rules, phase gates, toolpolicy, approval, or checkpoint requirements",
+    )
+
+    for fragment in required_fragments:
+        assert fragment in contract
+
+
+def test_native_tool_prompt_includes_runtime_steering_contract() -> None:
+    prompt = PromptBuilder().build(
+        context=_make_context(),
+        tool_catalog=_make_catalog(),
+        native_tool_calling=True,
+    )
+
+    system_content = prompt.messages[0].content.lower()
+
+    assert "runtime steering" in system_content
+    assert "task_context.user_interventions.effective" in system_content
+    assert "never overrides system rules" in system_content

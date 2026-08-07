@@ -181,7 +181,7 @@ T24 CLI 可先实现 --help / init 骨架，demo 命令等 T23 后接入。
 | M4 反馈与回退闭环成立 | 测试失败 -> feedback -> retry -> rollback 可在 MockLLM 下确定性复现                 | T19-T21 |
 | M5 Demo 可证明机制 | MockLLM demo 生成 trace、TEST_REPORT、REVIEW、KNOWLEDGE、DELIVERABLES         | T22-T23 |
 | M6 可交付        | CLI、凭据边界、package build、CI、README 完成                                     | T24-T27 |
-| M8 Runtime Memory 成立 | 工具摘要与文件快照可跨进程恢复，stale 不自动注入，Context 总预算和 Memory Tool 可确定性验证 | S13-R0-R5 |
+| M8 Runtime Memory 成立 | 工具摘要与文件快照可跨进程恢复，stale 不自动注入，Context 总预算、Memory Tool 和有效只读动作复用约束可确定性验证 | S13-R0-R5 |
 
 ---
 
@@ -8091,6 +8091,37 @@ Textual `Input` 的 `Ctrl+V` 只读取 Textual 自己维护的内部 clipboard�
 
 S17 拆分为多张子卡逐步交付。本阶段已交付 **S17-R1/R2/R3/R4 与 S17-TUI**；完整 Prepare—Commit—Apply 副作用边界搬迁仍留给后续独立任务。
 
+### S17-P0：Provider Prompt 的 Steering 权威契约
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；Prompt 专项验证通过（2026-08-06） |
+| 依赖 | S17-R1、S17-R2、S17-R3、S17-R4 |
+| 开发方式 | RED → GREEN → REFACTOR |
+
+范围：把 Runtime Steering 的优先级、sequence 覆盖和当前 run 持续有效语义明确写入 Provider-facing system contract，确保模型不会把原始目标、旧计划或 observation 误当成高于 Steering 的指令。
+
+允许修改：
+
+- `src/hancode/providers/prompt_contract.py`
+- `src/hancode/providers/prompt_builder.py`
+- `tests/providers/test_prompt_builder.py`
+- `docs/PLAN.md`、`docs/SPEC.md`、`docs/系统架构.md`、`docs/AGENT_LOG.md`
+
+验收标准：
+
+- `task_context.user_interventions.effective` 被声明为当前 run 提交的用户指令集合，并在整个 run 内持续有效。
+- 较大 sequence 覆盖冲突的较小 sequence。
+- Steering 冲突时高于原始任务目标、旧计划和 observation。
+- Steering 不得覆盖 system rules、phase gates、ToolPolicy、Approval 或 Checkpoint。
+- 文本 Prompt 与 native tool-calling Prompt 都包含该契约；不改变既有 Action/Function 输出格式。
+
+### S17-P0 实际实现与验证（2026-08-06）
+
+- `providers/prompt_contract.py` 新增共享 `RUNTIME_STEERING_CONTRACT`，嵌入 `BASE_SYSTEM_CONTRACT`；明确 `task_context.user_interventions.effective`、当前 run 持续有效、sequence 覆盖和安全边界。
+- `providers/prompt_builder.py` 让 native tool-calling system message 复用相同 Steering 契约，保持既有 Function Tool 输出格式。
+- `tests/providers/test_prompt_builder.py` 新增普通文本和 native Prompt 契约断言；Prompt 专项：`37 passed`。
+
 ### 冻结边界（S17 整体非目标，后续单独立卡）
 
 - `CANCEL`、`NOTE`、`SUPERSEDED`、`/steer`、`/stop`。
@@ -8215,6 +8246,31 @@ Red 测试至少覆盖：
 - `uv build`：sdist + wheel 成功。
 - `git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
 
+### 2026-08-07 — `/help` 左右箭头切换焦点
+
+- 修改：左侧分类列表获得焦点时，按 `→` 切换到右侧命令列表；右侧命令列表获得焦点时，按 `←` 返回左侧分类列表；搜索框继续保留左右箭头编辑行为。
+- 提示：帮助弹窗操作提示补充 `←→ 切换列表`。
+- 验收：新增 `/help` 焦点切换回归，确认左右切换不影响现有上下浏览和搜索。
+
+---
+
+### /help 帮助界面改版（2026-08-07）
+
+本次按用户确认的设计直接更新现有 TUI，不新增任务卡，不调整命令解析或业务流程。
+
+- 新增 `src/hancode/interfaces/tui/help.py`：提供四类命令导航、全局搜索、命令说明、新手建议和 Esc 关闭行为。
+- `src/hancode/interfaces/tui/app.py`：`/help` 从单行通知改为打开 `HelpScreen`，并增加帮助弹窗布局样式。
+- 新增 `tests/test_tui_help.py`：覆盖打开帮助、搜索命令和关闭弹窗。
+- 验证：帮助专项 `1 passed`；TUI 聚焦回归 `39 passed`；相关 Ruff 通过；相关 MyPy `Success: no issues found in 2 source files`。
+
+### `/help` 视觉修正（2026-08-07）
+
+- 分类导航和底部提示改为纯文字，移除表情与装饰符号。
+- 命令区与“新手建议”区统一为可伸展高度并顶部对齐，修正内部框线上下边界不一致。
+- 回归验证：TUI 聚焦回归 `39 passed`；Ruff 通过；MyPy 对相关 2 个源文件无错误。
+- 分类导航支持在搜索框保持焦点时使用 `↑/↓` 循环切换，右侧内容同步刷新；点击分类仍可用。
+- 移除“新手建议”面板及其专用布局样式，右侧内容区仅保留分类标题和命令列表。
+
 ---
 
 ### S17-TUI：运行中普通文本 Steering 接入
@@ -8257,6 +8313,32 @@ Red 测试至少覆盖：
 - 全量 pytest：`1755 passed, 17 skipped`；首次全量运行有 1 个既有 WAITING_INPUT placeholder 时序失败，单测复跑与第二次全量均通过。
 - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 148 source files`。
 - `uv build`：sdist + wheel 成功；`git diff --check` 通过；未修改 `.hancode/tasks/task-001/**`。
+
+---
+
+### S17-TUI-R2：常驻输入与协作式打断
+
+| 元信息 | 值 |
+| --- | --- |
+| 状态 | [x] 已实现；TUI 输入回归与全量质量门通过（2026-08-07） |
+| 依赖 | S17-R1、S17-R2、S17-R4、S17-TUI |
+| 开发方式 | 直接修复；保留回归验证 |
+
+范围：输入框始终接受用户文本；有 active run 时普通文本写入 Steering，不再依赖 TUI Worker 的 `busy`、`PauseToken` 或 `request_id` 才能提交。正在运行的 Worker 不启动第二个 Worker，Worker 已结束但 run 仍有效时自动 resume。
+
+验收标准：
+
+- running 状态、TUI `busy=False` 或 PauseToken 已清除时仍可提交 Steering。
+- active task 与另一个 running task 不一致时拒绝写入，防止任务串线。
+- `WAITING_INPUT` 继续作为回答；`WAITING_APPROVAL` 继续 Steering 并自动 resume；PAUSED 接受 Steering 但不隐式 resume。
+- 已开始的模型请求、工具调用和 checkpoint 不被强制终止，Steering 在下一个安全点生效。
+
+### S17-TUI-R2 实际实现与验证（2026-08-07）
+
+- `interfaces/tui/commands.py`：有 active task 且不在 `WAITING_INPUT` 时，普通文本统一路由为 `STEER`，不再依赖 `busy` 快照。
+- `interfaces/tui/app.py`：以 `active_task_id` 路由提交，保留不同 running task 的串线保护；SteeringService 负责校验真实 `active_run_id`；Worker 忙时不启动第二个 Worker，Worker 已结束且任务仍为 RUNNING/WAITING_APPROVAL 时自动 resume，PAUSED 不隐式恢复。
+- 测试覆盖：idle running view、PauseToken/request 状态过期、非 Agent Worker 忙、WAITING_APPROVAL 自动 resume；TUI 专项 `36 passed`。
+- 全量 pytest：`1776 passed, 15 skipped`；Ruff、MyPy、`uv build`、`git diff --check` 通过。
 
 ---
 
@@ -8314,6 +8396,26 @@ Red 测试至少覆盖：
 - 提交：未提交；继续保留 `main` 工作区改动。
 
 剩余边界：完整 Prepare—Commit—Apply 副作用搬迁、CANCEL/STOP、跨进程文件锁仍未实现。
+
+### 重复只读动作修复（2026-08-07）
+
+- freshness checker：读取策略与写入策略分离；可读但不可写的 `.hancode/project.json` 不再被标记为 `unsafe`，避免无意义地递增 workspace generation 并丢失目录读取证据。
+- runtime memory：将 `action_constraints.forbidden_repeats` 改为 `action_guidance.reusable_evidence`，表达“可复用证据”而不是绝对禁止；目录读取证据不再仅因 generation 变化被丢弃。
+- AgentLoop：SPEC、PLAN、CODE 共用重复探索 guard；首次重复只给出 memory_search/memory_read 引导，memory 检索后允许再次读取；只有连续重复且仍有当前证据时才进入 stalled/交互边界。
+- 验证：第一轮相关回归 `131 passed`；AgentLoop 回归 `66 passed`；Ruff 通过；未修改 `.hancode/tasks/task-001/**`，未提交、未推送。
+
+### 重复 memory 动作修复（2026-08-07）
+
+- 根因：上一轮为允许合理重读而完全跳过 `memory_read` / `memory_search` 的重复 guard，导致同一 memory 片段可以无限读取。
+- 修复：memory_search 按 query/path/phase、memory_read 按 memory_id/行范围参与动作身份；只有搜索返回新 hit 或读取新证据时才释放文件重读边界；重复的相同 memory 动作进入 warning/stalled。
+- SPEC 契约明确下一写入目标必须是 `artifact_targets.SPEC.md`，memory_search 必须提供 query，memory_read 只能读取搜索返回的 memory_id。
+- 验证：相关回归 `133 passed`；Ruff、MyPy 通过；未修改 `.hancode/tasks/task-001/**`，未提交、未推送。
+
+### `/help` 右侧命令列表滚动浏览（2026-08-07）
+
+- 将右侧命令内容从静态长文本改为 `ListView`，每条命令独立显示并支持终端高度不足时滚动。
+- 焦点在搜索框/左侧分类时，↑/↓继续切换分类；焦点进入右侧命令列表后，↑/↓只移动命令选中项，分类和搜索变化会重置命令索引。
+- 验证：TUI help/commands/steering 回归 `30 passed`；Ruff、MyPy 通过；未提交、未推送。
 
 ---
 

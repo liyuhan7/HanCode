@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from hancode.app.task_models import TaskSummary
 from hancode.app.intervention_service import SteeringSubmission
+from hancode.core.models import Phase, TaskStatus
 from hancode.interfaces.tui.app import HanCodeTuiApp
 from hancode.interfaces.tui.view_state import TuiViewState
 from hancode.runtime.pause import PauseToken
@@ -66,7 +68,9 @@ def test_steering_submission_does_not_start_a_second_worker(tmp_path: Path) -> N
     assert started == []
 
 
-def test_busy_non_agent_worker_does_not_accept_steering(tmp_path: Path) -> None:
+def test_busy_non_agent_worker_accepts_steering_without_starting_worker(
+    tmp_path: Path,
+) -> None:
     service = _RecordingInterventionService()
     app = HanCodeTuiApp(
         project_root=tmp_path,
@@ -84,8 +88,8 @@ def test_busy_non_agent_worker_does_not_accept_steering(tmp_path: Path) -> None:
 
     app.submit_input("Do not steer during export.")
 
-    assert service.calls == []
-    assert any("不在等待输入状态" in message for message in notices)
+    assert service.calls == [(tmp_path, "task-001", "Do not steer during export.")]
+    assert notices == ["已接收新要求（#1），将在下一个安全点生效。"]
 
 
 def test_waiting_approval_plain_text_steers_and_auto_resumes(tmp_path: Path) -> None:
@@ -106,5 +110,42 @@ def test_waiting_approval_plain_text_steers_and_auto_resumes(tmp_path: Path) -> 
 
     assert service.calls == [
         (tmp_path, "task-001", "Use the safer implementation instead.")
+    ]
+    assert resumed == [True]
+
+
+def test_stale_running_view_accepts_steering_and_resumes(tmp_path: Path) -> None:
+    service = _RecordingInterventionService()
+    app = HanCodeTuiApp(
+        project_root=tmp_path,
+        intervention_service=service,  # type: ignore[arg-type]
+    )
+    app.controller._state = TuiViewState(
+        project_root=tmp_path,
+        active_task_id="task-001",
+        active_task=TaskSummary(
+            task_id="task-001",
+            goal="g",
+            status=TaskStatus.RUNNING,
+            current_phase=Phase.CODE,
+            retry_budget_remaining=1,
+            latest_test_status="none",
+            files_changed=(),
+            tests_run=(),
+            latest_checkpoint=None,
+            rollback_required=False,
+            inconsistent=False,
+            artifacts={},
+            resumable=False,
+        ),
+        busy=False,
+    )
+    resumed: list[bool] = []
+    app.start_run = lambda *, resume: resumed.append(resume)  # type: ignore[method-assign]
+
+    app.submit_input("Continue with the safer approach.")
+
+    assert service.calls == [
+        (tmp_path, "task-001", "Continue with the safer approach.")
     ]
     assert resumed == [True]

@@ -424,6 +424,24 @@ class SpyToolRegistry:
         return ToolResult(success=True, action_name=action.tool_name or "unknown")
 
 
+class MemoryEvidenceToolRegistry(SpyToolRegistry):
+    def dispatch(self, action: Action) -> ToolResult:
+        result = super().dispatch(action)
+        if action.tool_name == "memory_search":
+            return ToolResult(
+                success=True,
+                action_name="memory_search",
+                output={"returned_count": 1, "hits": [{"memory_id": "mem-000001"}]},
+            )
+        if action.tool_name == "memory_read":
+            return ToolResult(
+                success=True,
+                action_name="memory_read",
+                output={"memory_id": "mem-000001", "content": "evidence"},
+            )
+        return result
+
+
 class PauseAfterFirstActionLLM(MockLLM):
     def __init__(self, actions: list[dict[str, object]], token: PauseToken) -> None:
         super().__init__(actions)
@@ -992,6 +1010,77 @@ def test_code_exploration_guard_is_disabled_after_source_edit() -> None:
     assert not any(
         event.event_type.startswith("code_exploration_") for event in trace.events
     )
+
+
+def test_spec_repeated_exploration_warns_then_blocks_without_redispatch() -> None:
+    trace = SpyTraceAppender()
+    loop, _, _, _, tools, _ = _build_loop(
+        [_read_file_action(phase="spec")] * 3,
+        max_steps=3,
+        state=_task_state(
+            phase=Phase.SPEC,
+            phase_completed={phase.value: False for phase in Phase},
+            artifacts={
+                "SPEC.md": False,
+                "PLAN.md": False,
+                "TEST_REPORT.md": False,
+                "REVIEW.md": False,
+                "KNOWLEDGE.md": False,
+                "DELIVERABLES.md": False,
+            },
+        ),
+        trace_appender=trace,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "spec_progress_stalled"
+    assert [action.tool_name for action in tools.actions] == ["read_file"]
+    assert [event.event_type for event in trace.events][-2:] == [
+        "spec_exploration_repeated",
+        "spec_exploration_stalled",
+    ]
+
+
+def test_repeated_memory_read_warns_then_blocks_without_redispatch() -> None:
+    trace = SpyTraceAppender()
+    loop, _, _, _, tools, _ = _build_loop(
+        [_memory_read_action()] * 3,
+        max_steps=3,
+        trace_appender=trace,
+    )
+
+    result = loop.run("task-001")
+
+    assert result.status is TaskStatus.BLOCKED
+    assert result.error is not None
+    assert result.error.error_code == "code_progress_stalled"
+    assert [action.tool_name for action in tools.actions] == ["memory_read"]
+
+
+def test_memory_lookup_allows_a_reasoned_repeat_of_a_read() -> None:
+    events: list[str] = []
+    loop, _, _, _, tools, _ = _build_loop(
+        [
+            _read_file_action(),
+            _read_file_action(),
+            _memory_search_action(),
+            _read_file_action(),
+        ],
+        max_steps=4,
+        events=events,
+        tool_registry=MemoryEvidenceToolRegistry(events),
+    )
+
+    loop.run("task-001")
+
+    assert [action.tool_name for action in tools.actions] == [
+        "read_file",
+        "memory_search",
+        "read_file",
+    ]
 
 
 @pytest.mark.parametrize("interaction_enabled", [False, True])
@@ -1898,6 +1987,7 @@ def _build_loop(
 
 def _task_state(
     *,
+    phase: Phase = Phase.CODE,
     phase_completed: Mapping[str, bool] | None = None,
     artifacts: Mapping[str, bool] | None = None,
     latest_test_status: str = "none",
@@ -1907,7 +1997,7 @@ def _task_state(
         task_id="task-001",
         goal="Implement the loop.",
         status=TaskStatus.CREATED,
-        current_phase=Phase.CODE,
+        current_phase=phase,
         files_changed=(),
         latest_checkpoint=None,
         checkpoint_seq=0,
@@ -2059,13 +2149,35 @@ def test_steering_not_acknowledged_on_policy_denial() -> None:
     assert store.consumed == []
 
 
-def _read_file_action(path: str = "src/example.py") -> dict[str, object]:
+def _read_file_action(
+    path: str = "src/example.py", *, phase: str = "code"
+) -> dict[str, object]:
     return {
         "type": "tool_call",
-        "phase": "code",
+        "phase": phase,
         "tool_name": "read_file",
         "args": {"path": path},
         "reason": None,
+    }
+
+
+def _memory_search_action(query: str = "src/example.py") -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": "code",
+        "tool_name": "memory_search",
+        "args": {"query": query},
+        "reason": "Check prior read evidence before rereading.",
+    }
+
+
+def _memory_read_action(memory_id: str = "mem-000001") -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "phase": "code",
+        "tool_name": "memory_read",
+        "args": {"memory_id": memory_id, "start_line": 1, "end_line": 20},
+        "reason": "Read the memory evidence.",
     }
 
 

@@ -98,10 +98,11 @@ class MemoryFreshnessChecker:
             reason = _stale_reason(
                 probe.status, probe.content_sha256, record.content_sha256
             )
-            if classifier.classify(path) in {
-                PathZone.PROTECTED,
-                PathZone.OUT_OF_SCOPE,
-            }:
+            # Read scope and write scope are different policies.  A file such
+            # as .hancode/project.json is intentionally not writable, but a
+            # successful read of it is still valid evidence that can be
+            # fingerprinted and reused.
+            if classifier.classify(path) is PathZone.PROTECTED:
                 reason = "unsafe"
             if reason is not None:
                 reason_by_path[path] = reason

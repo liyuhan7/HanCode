@@ -4,6 +4,38 @@
 
 ---
 
+### 2026-08-07 — S17-TUI-R2 — 常驻输入与协作式打断
+
+- 任务边界：修复 TUI 将 Worker `busy`、`PauseToken`、`request_id` 快照误当作输入资格的问题；普通文本有 active task 时写入 Steering，正在执行的原子操作不被强制终止。
+- 实现摘要：
+  - `interfaces/tui/commands.py`：active task 普通文本统一路由为 `STEER`；`WAITING_INPUT` 仍路由为回答；无 active task 仍创建任务。
+  - `interfaces/tui/app.py`：以 active task 路由 Steering，保留不同 running task 的串线保护；真实 `active_run_id` 由 `InterventionService` 校验；已有 Worker 不重复启动，Worker 已结束且任务仍可运行时自动 resume，PAUSED 不隐式恢复。
+  - 更新 `docs/PLAN.md`、`docs/SPEC.md`、`docs/系统架构.md`。
+- 验证：TUI commands/steering/approval 专项 `36 passed`；全量 pytest `1776 passed, 15 skipped`；Ruff、MyPy 148 源文件、`uv build`、`git diff --check` 通过。
+- 未修改 `.hancode/tasks/task-001/**`；未提交 commit。
+- 剩余边界：当前仍是协作式打断，不强杀 Provider 请求、工具进程或已开始的 checkpoint/原子操作。
+
+---
+
+### 2026-08-06 — S17-P0 — Provider Prompt 明确 Steering 权威契约
+
+- 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用 RED → GREEN → REFACTOR。
+- 根因：Context 已注入 `user_interventions.effective`，但 Provider-facing system contract 未说明 Steering 覆盖任务目标、旧计划和 observation，也未说明 sequence 覆盖及当前 run 持续有效。
+- 实现摘要：
+  - `providers/prompt_contract.py` 新增共享 `RUNTIME_STEERING_CONTRACT`，嵌入 `BASE_SYSTEM_CONTRACT`，并在 authority 顺序中置于任务目标与 workspace evidence 之前。
+  - `providers/prompt_builder.py` 让 native tool-calling system message 复用同一契约，不改变既有 Function Tool 输出格式。
+  - 契约明确 `task_context.user_interventions.effective`、当前 run 全程有效、较大 sequence 覆盖较小 sequence，以及不得覆盖 system rules、phase gates、ToolPolicy、Approval、Checkpoint。
+  - `tests/providers/test_prompt_builder.py` 新增文本 Prompt 与 native Prompt 的契约测试；`docs/PLAN.md` 新增并完成 S17-P0 任务卡，SPEC/架构同步更新。
+- 验证：
+  - Prompt/Provider 专项：`90 passed`。
+  - 全量 pytest：`1776 passed, 15 skipped`。
+  - Ruff：`All checks passed!`；MyPy：`Success: no issues found in 148 source files`。
+  - `uv build`：sdist + wheel 成功；`git diff --check` 通过。
+- 备注：首次专项命令误包含不存在的 `tests/providers/test_prompt_contract.py`，已改用实际存在的 Prompt 测试文件重新验证通过。未修改 `.hancode/tasks/task-001/**`。
+- 剩余风险：Prompt 只负责引导模型；最终 Steering 优先级仍由已有 deterministic Context、Policy、Approval、Checkpoint 和 commit gate 机制强制执行。完整 Prepare—Commit—Apply、CANCEL/STOP、跨进程文件锁仍未实现。
+
+---
+
 ### 2026-08-06 — S17-R4 — Approval 绑定、失效、二次提交门与 WAITING_APPROVAL Steering
 
 - 使用的技能：未使用；遵循用户规范 §17 直接在 `main` 开发（不建分支、不 commit），采用 RED → GREEN → REFACTOR；未修改 `.hancode/tasks/task-001/**`。
@@ -2680,3 +2712,62 @@
 - 架构：升级为 v1.7；`DeliveryPipeline` 收敛为编排器，协作 `LearningEvidenceCollector`、`TraceabilityBuilder`、`DeliveryValidator`、`ArtifactRenderer`、`DeliveryPublisher`，执行 `Collect → Validate → Synthesize → Reflect → Publish`；发布分为 submission、learning、audit 三种显式 allow-list Profile。
 - 边界：保留 `state.json` 生命周期权威、现有六阶段和 `completed / blocked / failed`；Runtime Memory 与 Learning Evidence 分离；不以扩写 Markdown 模板冒充机制实现；未触碰工作区已有 TUI 配置代码与测试改动。
 - 验证：必需术语定向检查全部命中；旧的“双 Markdown 存在即可完成”门禁检索无命中；四份文档代码围栏均成对；generated 区域示例起止标记成对；`git diff --check -- docs/SPEC.md docs/PLAN.md docs/系统架构.md docs/AGENT_LOG.md` 通过。本轮没有代码改动，因此未运行 pytest、Ruff、MyPy 或 Build。
+
+### 2026-08-07 — `/help` 帮助界面重设计
+
+- 背景：原 `/help` 使用一条通知输出全部命令，命令没有分类、说明和可搜索入口，用户需要在长文本中自行定位。
+- 修改：新增 `HelpScreen` 作为居中模态帮助界面；命令按“快速开始 / 任务流程 / 审查与交付 / 界面与设置”分组；增加全局搜索、新手建议、快捷键提示和 Esc 关闭；`/help` 改为打开该界面。
+- 边界：未修改命令解析、命令执行、业务服务或任务状态机；本次按用户要求不新增任务卡、不采用 TDD 流程。
+- 验证：`tests/test_tui_help.py` `1 passed`；TUI 聚焦回归 `39 passed`；Ruff 通过；MyPy 对 `help.py` 与 `app.py` 无错误。
+
+### 2026-08-07 — `/help` 框线与文字样式修正
+
+- 根据界面截图移除帮助分类中的表情/图标及底部装饰符号，保留纯文字导航。
+- 将命令列表区和新手建议区设置为相同的可伸展高度，并固定顶部对齐，避免中间框线错位。
+- 验证：TUI 聚焦回归 `39 passed`；Ruff 通过；MyPy 对相关源文件无错误。
+
+### 2026-08-07 — `/help` 键盘分类导航
+
+- 帮助弹窗增加 `↑/↓` 分类导航；即使搜索框保持焦点，左右布局中的左侧分类也会移动，右侧标题和命令列表同步刷新。
+- 鼠标点击分类行为保留，分类切换采用循环索引，首尾可连续导航。
+- 验证：TUI 聚焦回归 `39 passed`；Ruff、MyPy 通过。
+
+### 2026-08-07 — `/help` 移除新手建议
+
+- 按界面调整要求删除“新手建议”面板及对应 CSS，右侧帮助内容保持为分类标题加命令列表。
+- 验证：TUI 聚焦回归 `39 passed`；Ruff、MyPy 通过。
+
+### 2026-08-07 — Provider 重复只读动作提示词与 Context 约束
+
+- 背景：task-001 在 SPEC 阶段重复调用相同的 `list_files` / `read_file`，已有 Memory 记录没有转化为 Provider 可直接使用的动作复用约束。
+- 提示词：新增公共 `ACTION_REUSE_CONTRACT`，Native Tools 与 JSON 两种 Provider 模式都注入；明确以 `tool_name + normalized path` 识别动作，变更自然语言 reason 不构成新动作；SPEC 在证据充分后停止只读探索并创建 `SPEC.md`。
+- Context：`MemoryContextPacker` 从当前、成功、未失效的 `read_file` / `list_files` 记录生成紧凑的 `runtime_memory.action_constraints.forbidden_repeats`，携带路径和 `memory_id`；目录列表仅在当前 workspace generation 有效时复用。
+- 工具描述：`read_file` 与 `list_files` 改为条件式发现，禁止为了确认已知结构重复读取；压缩约束投影以避免挤掉热点正文。
+- 验证：Prompt/Context/Memory 聚焦回归 `65 passed`；改动范围 Ruff 通过；4 个改动源文件 MyPy 通过；`git diff --check` 通过。
+- 边界：本轮仍是 Provider/Context 软约束，没有新增 AgentLoop dispatch 硬拦截；未修改 `.hancode/tasks/task-001/**`，未提交、未推送。
+
+### 2026-08-07 — 重复只读动作的 freshness 与 memory 引导修复
+
+- 根因：`MemoryFreshnessChecker` 把可读但不可写的 `.hancode/project.json` 判为 `unsafe`，每次 Context 构建都递增 workspace generation，随后目录读取记录被排除；SPEC 阶段没有对应的重复探索 guard，因此模型需要人工 Steering 才开始写 `SPEC.md`。
+- 修复：读取 freshness 不再把 `PathZone.OUT_OF_SCOPE` 当作 unsafe；runtime memory 将 `action_constraints.forbidden_repeats` 改为 `action_guidance.reusable_evidence`，目录证据不再仅因 generation 变化丢失。
+- 修复：AgentLoop 将 SPEC/PLAN/CODE 纳入统一探索边界。首次重复只产生 memory_search/memory_read 引导；memory 检索会开启新的证据边界，允许随后合理重读；只有在当前证据仍存在且连续重复时才进入 stalled/交互边界。
+- 测试：`tests/test_memory_context.py`、`tests/test_context_builder.py`、`tests/test_agent_loop.py`、`tests/providers/test_prompt_builder.py`；相关回归 `131 passed`，AgentLoop 回归 `66 passed`；Ruff 通过。
+- 边界：未修改 `.hancode/tasks/task-001/**`，未提交、未推送；Provider 非法 JSON 的独立问题未在本轮扩大范围处理。
+
+### 2026-08-07 — memory_read 无限循环修复
+
+- 现场 trace 显示 task-001 在 SPEC 阶段反复 memory_read，未写入 `SPEC.md`；此前为支持合理重读而将 memory_read/memory_search 完全排除在探索 guard 外，导致相同 memory 片段没有终止条件。
+- 修复：memory_read 按 memory_id 与行范围、memory_search 按 query/path/phase 纳入精确动作身份；重复相同 memory 动作先 warning，再 stalled；仅新搜索命中或新 memory 内容可以释放文件/目录重读边界。
+- Prompt/工具说明补充 query 必填、memory_id 来源和 SPEC 首个写入目标；新增 AgentLoop 回归覆盖重复 memory_read 与 memory_search 后合理重读。
+- 验证：相关回归 `133 passed`；Ruff、MyPy 通过；未修改 `.hancode/tasks/task-001/**`，未提交、未推送。
+
+### 2026-08-07 — `/help` 右侧命令列表滚动浏览
+
+- 背景：右侧命令曾使用单个 Static 长文本，终端高度较小时下方命令无法显示，也无法通过键盘浏览。
+- 修改：右侧改为 ListView，每条命令独立为可选列表项；焦点位于右侧时 ↑/↓由 ListView 滚动/选择，焦点位于搜索框或左侧分类时保留分类导航；搜索和分类切换会重置右侧索引。
+- 验证：`tests/test_tui_help.py tests/test_tui_commands.py tests/test_tui_steering.py` 共 `30 passed`；Ruff、MyPy 通过。
+
+### 2026-08-07 — `/help` 左右箭头切换焦点
+
+- 左侧分类列表按 `→` 聚焦右侧命令列表，右侧命令列表按 `←` 返回左侧；搜索框左右箭头行为不拦截。
+- 帮助弹窗提示同步显示 `←→ 切换列表`，并新增对应 UI 回归断言。

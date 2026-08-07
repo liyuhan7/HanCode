@@ -92,7 +92,54 @@ def test_packer_projects_current_read_file_as_file_index_and_hot_content(
                 "content": "VALUE = 1\n",
             }
         ],
+        "directory_listings": [],
+        "action_guidance": {
+            "reusable_evidence": [
+                {
+                    "tool_name": "read_file",
+                    "path": "src/main.py",
+                    "memory_id": record.memory_id,
+                }
+            ]
+        },
     }
+
+
+def test_packer_keeps_readable_non_source_metadata_as_reusable_evidence(
+    tmp_path: Path,
+) -> None:
+    task_root = _workspace(tmp_path)
+    project_metadata = tmp_path / ".hancode" / "project.json"
+    content = project_metadata.read_text(encoding="utf-8")
+    store = FilesystemMemoryStore(tmp_path)
+    record = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.SPEC,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="read_file",
+            success=True,
+            summary="Read .hancode/project.json.",
+            paths=(".hancode/project.json",),
+            blob=MemoryBlob.text(content),
+        ),
+    ).record
+
+    memory = MemoryContextPacker(
+        project_root=tmp_path,
+        config=load_config(tmp_path, "task-001"),
+        store=store,
+    ).build(
+        task_id="task-001",
+        phase=Phase.SPEC,
+        state=load_state(task_root),
+        observation=None,
+        source_snippets={},
+    )
+
+    assert memory.workspace_generation == 0
+    assert memory.file_index[0].path == ".hancode/project.json"
+    assert memory.action_constraints[0].memory_id == record.memory_id
 
 
 def test_packer_persists_external_content_change_as_invalidation(tmp_path: Path) -> None:
@@ -235,3 +282,62 @@ def test_unrelated_write_generation_keeps_current_file_hot(tmp_path: Path) -> No
     assert memory.file_index[0].hot_eligible is True
     assert memory.hot_contents[0].memory_id == record.memory_id
     assert memory.hot_contents[0].content == "A = 1\n"
+
+
+def test_packer_projects_latest_list_files_as_directory_listing(
+    tmp_path: Path,
+) -> None:
+    task_root = _workspace(tmp_path)
+    store = FilesystemMemoryStore(tmp_path)
+    store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.SPEC,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="list_files",
+            success=True,
+            summary='{"outcome":"succeeded"}',
+            paths=(".hancode/src",),
+            blob=MemoryBlob.json({"path": ".hancode/src", "files": ["old.py"]}),
+        ),
+    )
+    latest = store.append(
+        "task-001",
+        MemoryRecordDraft(
+            phase=Phase.SPEC,
+            kind=MemoryKind.TOOL_RESULT,
+            tool_name="list_files",
+            success=True,
+            summary='{"outcome":"succeeded"}',
+            paths=(".hancode/src",),
+            blob=MemoryBlob.json(
+                {"path": ".hancode/src", "files": ["a.py", "b.py"]}
+            ),
+        ),
+    ).record
+
+    memory = MemoryContextPacker(
+        project_root=tmp_path,
+        config=load_config(tmp_path, "task-001"),
+        store=store,
+    ).build(
+        task_id="task-001",
+        phase=Phase.SPEC,
+        state=load_state(task_root),
+        observation=None,
+        source_snippets={},
+    )
+
+    assert len(memory.directory_listings) == 1
+    listing = memory.directory_listings[0]
+    assert listing.path == ".hancode/src"
+    assert listing.memory_id == latest.memory_id
+    assert listing.files == ("a.py", "b.py")
+    assert memory.to_dict()["directory_listings"] == [
+        {
+            "path": ".hancode/src",
+            "memory_id": latest.memory_id,
+            "seq": latest.seq,
+            "files": ["a.py", "b.py"],
+        }
+    ]

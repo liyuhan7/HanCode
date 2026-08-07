@@ -210,12 +210,11 @@ def classify_plain_text(
         return PlainTextIntent.STEER
     if waiting_input:
         return PlainTextIntent.ANSWER
-    if busy:
-        # A run is in progress: plain text steers it rather than being dropped.
+    if has_active_task:
+        # An active task accepts steering even when the TUI Worker snapshot is
+        # stale or the previous Worker has already returned.
         return PlainTextIntent.STEER
-    if not has_active_task:
-        return PlainTextIntent.CREATE_TASK
-    return PlainTextIntent.REJECT
+    return PlainTextIntent.CREATE_TASK
 
 
 __all__ = [

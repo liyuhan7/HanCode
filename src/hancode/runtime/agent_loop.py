@@ -451,7 +451,8 @@ _TEST_DISCOVERY_TOOLS = frozenset(
     }
 )
 _REVIEW_EVIDENCE_TOOLS = _TEST_DISCOVERY_TOOLS
-_CODE_EXPLORATION_TOOLS = frozenset(
+_PREWRITE_EXPLORATION_PHASES = frozenset({Phase.SPEC, Phase.PLAN, Phase.CODE})
+_PREWRITE_EXPLORATION_TOOLS = frozenset(
     {
         "get_diff",
         "list_checkpoints",
@@ -468,10 +469,11 @@ _TEST_COMMAND_QUESTION = (
     "No executable behavioral test command was found. "
     "Provide one exact command to run, or add a project test runner before resuming."
 )
-_CODE_EXPLORATION_QUESTION = (
-    "CODE has repeated read-only exploration without a source write. "
-    "Use sections.writable_roots and write_file to create an allowed target, "
-    "or explain what is blocking progress."
+_EXPLORATION_QUESTION = (
+    "The current phase has repeated read-only exploration. First use memory_search "
+    "and memory_read to reuse existing evidence. If a new file or directory read "
+    "is genuinely necessary, explain what changed or what evidence is missing. "
+    "Otherwise choose the phase's required artifact or source write."
 )
 
 
@@ -806,8 +808,9 @@ class AgentLoop:
         completed_test_discovery_actions: set[str] = set()
         completed_review_evidence_actions: set[str] = set()
         review_progress_warning = False
-        completed_code_exploration_actions: set[str] = set()
-        code_progress_warning = False
+        completed_exploration_actions: set[str] = set()
+        exploration_progress_warning = False
+        exploration_warning_phase: Phase | None = None
 
         def _result(
             status: TaskStatus,
@@ -1746,18 +1749,25 @@ class AgentLoop:
                     ),
                 )
 
-            code_exploration_key = _code_exploration_action_key(action, routing.phase)
+            if exploration_warning_phase is not routing.phase:
+                exploration_progress_warning = False
+                exploration_warning_phase = routing.phase
+            exploration_key = _exploration_action_key(action, routing.phase)
             if (
-                code_exploration_key is not None
+                exploration_key is not None
                 and state.source_edits_this_phase == 0
-                and code_exploration_key in completed_code_exploration_actions
+                and exploration_key in completed_exploration_actions
+                and (
+                    _is_memory_exploration_action(action)
+                    or _has_current_reusable_evidence(context, action)
+                )
             ):
-                if code_progress_warning:
-                    stalled_error = _code_progress_stalled_error(routing.phase)
+                if exploration_progress_warning:
+                    stalled_error = _exploration_progress_stalled_error(routing.phase)
                     trace_error = self._append_trace(
                         task_id,
                         trace_events,
-                        event_type="code_exploration_stalled",
+                        event_type=_exploration_event_type(routing.phase, "stalled"),
                         phase=routing.phase,
                         status="waiting" if self._interaction_enabled else "failed",
                         observation={
@@ -1795,8 +1805,8 @@ class AgentLoop:
                         type=ActionType.ASK_USER,
                         phase=routing.phase,
                         tool_name=None,
-                        args={"question": _CODE_EXPLORATION_QUESTION},
-                        reason="Repeated CODE exploration needs a concrete next step.",
+                        args={"question": _EXPLORATION_QUESTION},
+                        reason="Repeated exploration needs a concrete next step.",
                     )
                     try:
                         state, interaction = self._request_user_input(
@@ -1844,11 +1854,11 @@ class AgentLoop:
                         ),
                     )
 
-                code_progress_warning = True
+                exploration_progress_warning = True
                 trace_error = self._append_trace(
                     task_id,
                     trace_events,
-                    event_type="code_exploration_repeated",
+                    event_type=_exploration_event_type(routing.phase, "repeated"),
                     phase=routing.phase,
                     status="waiting",
                     observation={
@@ -1868,13 +1878,12 @@ class AgentLoop:
                         state,
                     )
                 observation = {
-                    "kind": "code_exploration_repeated",
+                    "kind": f"{routing.phase.value}_exploration_repeated",
                     "summary": (
-                        "A completed read-only exploration was repeated without a source write."
+                        "A read-only exploration action was repeated while current evidence exists."
                     ),
                     "next_action_hint": (
-                        "Use sections.writable_roots and write_file directly; "
-                        "do not repeat list_files, read_file, or search_text."
+                        _exploration_next_action_hint(action)
                     ),
                     "source_edits_this_phase": state.source_edits_this_phase,
                 }
@@ -2815,13 +2824,25 @@ class AgentLoop:
                     completed_key = _test_discovery_action_key(action, routing.phase)
                     if completed_key is not None:
                         completed_test_discovery_actions.add(completed_key)
-                    if code_exploration_key is not None:
-                        is_new_code_exploration = (
-                            code_exploration_key not in completed_code_exploration_actions
+                    if action.tool_name in {"memory_read", "memory_search"}:
+                        if _memory_lookup_produced_new_evidence(action, tool_result):
+                            # Only a successful memory lookup with new evidence
+                            # releases prior file/directory reads. The exact
+                            # memory action remains tracked, so repeating the
+                            # same lookup still reaches the exploration guard.
+                            completed_exploration_actions = {
+                                key
+                                for key in completed_exploration_actions
+                                if not _is_file_exploration_key(key)
+                            }
+                            exploration_progress_warning = False
+                    if exploration_key is not None:
+                        is_new_exploration = (
+                            exploration_key not in completed_exploration_actions
                         )
-                        completed_code_exploration_actions.add(code_exploration_key)
-                        if is_new_code_exploration:
-                            code_progress_warning = False
+                        completed_exploration_actions.add(exploration_key)
+                        if is_new_exploration:
+                            exploration_progress_warning = False
                 tool_calls.append(action.tool_name)
                 if requires_checkpoint:
                     if not tool_result.success:
@@ -7206,21 +7227,97 @@ def _test_discovery_action_key(action: Action, phase: Phase) -> str | None:
     )
 
 
-def _code_exploration_action_key(action: Action, phase: Phase) -> str | None:
+def _exploration_action_key(action: Action, phase: Phase) -> str | None:
     if (
-        phase is not Phase.CODE
+        phase not in _PREWRITE_EXPLORATION_PHASES
         or action.type is not ActionType.TOOL_CALL
-        or action.tool_name not in _CODE_EXPLORATION_TOOLS
+        or action.tool_name not in _PREWRITE_EXPLORATION_TOOLS
     ):
         return None
     return json.dumps(
         {
+            "phase": phase.value,
             "tool_name": action.tool_name,
             "args": dict(action.args),
         },
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
+    )
+
+
+def _is_memory_exploration_action(action: Action) -> bool:
+    return action.tool_name in {"memory_read", "memory_search"}
+
+
+def _is_file_exploration_key(key: str) -> bool:
+    try:
+        action = json.loads(key)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(action, Mapping) and action.get("tool_name") not in {
+        "memory_read",
+        "memory_search",
+    }
+
+
+def _memory_lookup_produced_new_evidence(action: Action, result: ToolResult) -> bool:
+    if not result.success:
+        return False
+    if action.tool_name == "memory_read":
+        return True
+    if action.tool_name != "memory_search" or not isinstance(result.output, Mapping):
+        return False
+    returned_count = result.output.get("returned_count")
+    return isinstance(returned_count, int) and not isinstance(returned_count, bool) and returned_count > 0
+
+
+def _exploration_next_action_hint(action: Action) -> str:
+    if action.tool_name == "memory_search":
+        return (
+            "This exact memory_search produced no new step. Use a different query "
+            "or use a returned memory_id with memory_read; do not repeat the same "
+            "query without new evidence."
+        )
+    if action.tool_name == "memory_read":
+        return (
+            "This exact memory_read produced no new step. Use the returned content "
+            "to advance, or choose a different memory_id or line range; do not reread "
+            "the same memory slice."
+        )
+    return (
+        "Use memory_search with a concrete query, then memory_read only for a "
+        "returned memory_id. Repeat the file or directory read only if the evidence "
+        "is stale or incomplete, and explain why."
+    )
+
+
+def _exploration_event_type(phase: Phase, suffix: str) -> str:
+    return f"{phase.value}_exploration_{suffix}"
+
+
+def _has_current_reusable_evidence(context: Mapping[str, object], action: Action) -> bool:
+    """Return whether context confirms this exact read can be reused."""
+    runtime_memory = context.get("runtime_memory")
+    if not isinstance(runtime_memory, Mapping):
+        # Keep compatibility with lightweight loop adapters that do not project
+        # runtime memory; their in-process action guard remains authoritative.
+        return True
+    guidance = runtime_memory.get("action_guidance")
+    if not isinstance(guidance, Mapping):
+        return False
+    evidence = guidance.get("reusable_evidence")
+    if not isinstance(evidence, list):
+        return False
+    path = action.args.get("path")
+    if not isinstance(path, str):
+        return False
+    normalized_path = path.replace("\\", "/")
+    return any(
+        isinstance(entry, Mapping)
+        and entry.get("tool_name") == action.tool_name
+        and entry.get("path") == normalized_path
+        for entry in evidence
     )
 
 
@@ -7268,6 +7365,24 @@ def _code_progress_stalled_error(phase: Phase) -> StructuredError:
         suggested_fix=(
             "Use write_file under sections.writable_roots, or provide human guidance "
             "before resuming."
+        ),
+    )
+
+
+def _exploration_progress_stalled_error(phase: Phase) -> StructuredError:
+    if phase is Phase.CODE:
+        return _code_progress_stalled_error(phase)
+    return StructuredError(
+        error_code=f"{phase.value}_progress_stalled",
+        message=(
+            f"{phase.value.upper()} repeated read-only exploration without "
+            "advancing the phase."
+        ),
+        phase=phase.value,
+        denied_rule="phase_progress_required",
+        suggested_fix=(
+            "Search task runtime memory first, then create the required phase "
+            "artifact when the available evidence is sufficient."
         ),
     )
 

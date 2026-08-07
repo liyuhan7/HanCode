@@ -84,6 +84,8 @@ def test_context_builder_budgets_observation_and_runtime_memory_together(
         "recent_events": [],
         "file_index": [],
         "hot_contents": [],
+        "directory_listings": [],
+        "action_guidance": {"reusable_evidence": []},
     }
 
 

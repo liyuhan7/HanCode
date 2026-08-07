@@ -11,9 +11,11 @@ from hancode.policy.tool_policy import allowed_tools_for_phase
 from hancode.providers.action_schema import build_action_schema
 from hancode.providers.base import ToolDescriptor
 from hancode.providers.prompt_contract import (
+    ACTION_REUSE_CONTRACT,
     BASE_SYSTEM_CONTRACT,
     INTERACTION_CONTRACT,
     PHASE_CONTRACTS,
+    RUNTIME_STEERING_CONTRACT,
 )
 
 __all__ = ["ChatMessage", "PromptBuilder", "ProviderPrompt", "build_prompt"]
@@ -108,6 +110,8 @@ def _build_system_message(
         parts = [
             "You are HanCode's next-action selector. Select exactly one Function Tool. "
             "Do not output an Action JSON object, Markdown, or prose. Never select final.",
+            RUNTIME_STEERING_CONTRACT,
+            ACTION_REUSE_CONTRACT,
         ]
         if interaction_enabled:
             parts.append(INTERACTION_CONTRACT)

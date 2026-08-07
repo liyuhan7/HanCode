@@ -99,14 +99,14 @@ def test_plain_text_answers_when_waiting_input() -> None:
     assert intent is PlainTextIntent.ANSWER
 
 
-def test_plain_text_is_rejected_during_normal_idle() -> None:
+def test_plain_text_with_active_task_is_steering_even_when_worker_is_idle() -> None:
     intent = classify_plain_text(
         "just chatting",
         has_active_task=True,
         waiting_input=False,
     )
 
-    assert intent is PlainTextIntent.REJECT
+    assert intent is PlainTextIntent.STEER
 
 
 def test_plain_text_steers_when_run_busy() -> None:

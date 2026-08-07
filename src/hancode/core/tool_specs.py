@@ -27,8 +27,10 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         description=(
             "Read one UTF-8 file inside the allowed workspace. "
             "Use this before editing when the current file content is not already "
-            "available in the supplied context. "
-            "Do not use it for paths outside the workspace or protected credentials."
+            "available in the supplied context. When the same path was already "
+            "read, search task runtime memory first; repeat the read only when "
+            "the evidence is stale, incomplete, or the workspace may have changed. "
+            "Do not use it for protected credentials."
         ),
         args_schema={
             "type": "object",
@@ -52,7 +54,9 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="memory_read",
         description=(
             "Read a line range from one persisted memory blob in the current task. "
-            "Stale history is readable but is explicitly non-authoritative."
+            "Use a memory_id returned by memory_search. Stale history is readable "
+            "but explicitly non-authoritative; do not repeat the same memory_id and "
+            "line range unless the previous output was incomplete."
         ),
         args_schema={
             "type": "object",
@@ -81,7 +85,8 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
             "Search tool-call summaries, recorded file paths, and verified "
             "file-content blobs in task runtime memory. Internal decisions such "
             "as test_remediation or test_failure are NOT stored here; read them "
-            "via read_file at .hancode/tasks/<task>/test_remediation.json."
+            "via read_file at .hancode/tasks/<task>/test_remediation.json. The "
+            "query argument is required; use path only as an optional filter."
         ),
         args_schema={
             "type": "object",
@@ -111,7 +116,10 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="list_files",
         description=(
             "List project files visible to the current workspace policy. "
-            "Use it to discover project structure before reading relevant files."
+            "Use it to discover project structure only when no sufficient listing "
+            "for the path is available in the supplied context. If the path was "
+            "already listed, search task runtime memory first; repeat it only when "
+            "the listing may be stale or a narrower scope is needed."
         ),
         args_schema={
             "type": "object",

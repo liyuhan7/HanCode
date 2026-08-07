@@ -519,6 +519,15 @@ def _trim_runtime_memory(
                 truncated.append(
                     f"runtime_memory.hot_contents:{removed.get('memory_id', 'unknown')}"
                 )
+    directory_listings = memory.get("directory_listings")
+    if isinstance(directory_listings, list):
+        while directory_listings and len(_canonical_json(context)) > max_context_chars:
+            removed = directory_listings.pop()
+            if isinstance(removed, Mapping):
+                truncated.append(
+                    "runtime_memory.directory_listings:"
+                    f"{removed.get('memory_id', 'unknown')}"
+                )
     for key in ("recent_events", "file_index"):
         values = memory.get(key)
         if isinstance(values, list):

@@ -40,6 +40,7 @@ from hancode.interfaces.tui.commands import (
 from hancode.interfaces.tui.command_actions import available_actions
 from hancode.interfaces.tui.controller import TuiSessionController
 from hancode.interfaces.tui.dialogs import ApprovalDialog, RejectionReasonDialog, RollbackDialog
+from hancode.interfaces.tui.help import HelpScreen
 from hancode.interfaces.tui.messages import (
     OperationFailed,
     OperationFinished,
@@ -125,6 +126,31 @@ class HanCodeTuiApp(App[None]):
         width: 76%; max-width: 92; height: auto; max-height: 80%;
         background: $panel; border: heavy $primary; padding: 1 2;
     }
+    HelpScreen { align: center middle; }
+    #tui-help-dialog {
+        width: 88%; max-width: 120; height: 86%; min-height: 24;
+        background: $panel; border: heavy $primary; padding: 1 2;
+    }
+    #tui-help-title { height: 2; content-align: center middle; text-style: bold; }
+    #tui-help-search-row { height: 3; margin: 0 0 1 0; }
+    #tui-help-search { width: 1fr; border: round $primary; }
+    #tui-help-search-hint { width: auto; padding: 1 0 0 2; color: $text-muted; }
+    #tui-help-body { height: 1fr; }
+    #tui-help-categories {
+        width: 24; margin: 0 1 0 0; border: round $primary; background: $surface;
+    }
+    #tui-help-categories ListItem { height: 3; padding: 1 1; }
+    #tui-help-categories ListItem.-selected { background: $primary; border-left: wide $success; }
+    #tui-help-content { width: 1fr; border: round $primary; padding: 1 2; }
+    #tui-help-section-title { height: 2; color: $success; text-style: bold; }
+    #tui-help-commands {
+        width: 1fr; height: 1fr; border: round $primary; padding: 1 2; overflow-y: auto;
+    }
+    #tui-help-commands ListItem { height: 3; padding: 0 1; }
+    #tui-help-commands ListItem.-selected { background: $primary; border-left: wide $success; }
+    #tui-help-footer { height: 2; margin: 1 0 0 0; }
+    #tui-help-footer-list { color: $success; }
+    #tui-help-footer-close { width: 1fr; text-align: right; color: $text-muted; }
     """
     BINDINGS = [
         ("f2", "toggle_display_mode", "聚焦/检查"),
@@ -293,18 +319,12 @@ class HanCodeTuiApp(App[None]):
 
     def _handle_plain_text(self, text: str) -> None:
         state = self.controller.state
-        run_control_active = (
-            state.busy
-            and state.active_task_id == state.running_task_id
-            and self._active_pause_token is not None
-            and self._pause_request_id == state.current_request_id
-        )
         intent = classify_plain_text(
             text,
             has_active_task=state.active_task_id is not None,
             waiting_input=bool(state.pending_interaction_id),
             waiting_approval=bool(state.pending_approval_id),
-            busy=run_control_active,
+            busy=state.busy,
         )
         if intent is PlainTextIntent.CREATE_TASK:
             self._create_and_run(text)
@@ -324,22 +344,13 @@ class HanCodeTuiApp(App[None]):
         worker picks it up on its next turn via the shared, path-locked log.
         """
         state = self.controller.state
-        waiting_approval = state.pending_approval_id is not None and not state.busy
-        if not (
-            state.busy
-            and state.active_task_id == state.running_task_id
-            and self._active_pause_token is not None
-            and self._pause_request_id == state.current_request_id
-        ) and not waiting_approval:
-            self._notify("当前没有正在运行的任务。")
+        task_id = state.active_task_id
+        if task_id is None:
+            self._notify("当前没有选中的任务。")
             return
-        task_id = state.running_task_id
-        if waiting_approval:
-            task_id = state.active_task_id
-            if task_id is None or not self.controller.can_mutate():
-                self._notify("任务正在运行，请稍后。")
-                return
-        assert task_id is not None
+        if state.busy and state.running_task_id != task_id:
+            self._notify("另一个任务正在运行，暂时无法提交当前任务的要求。")
+            return
         try:
             result = self._intervention_service.submit(
                 self._project_root, task_id, text
@@ -350,7 +361,17 @@ class HanCodeTuiApp(App[None]):
         self._notify(
             f"已接收新要求（#{result.sequence}），将在下一个安全点生效。"
         )
-        if waiting_approval:
+        should_resume = (
+            not state.busy
+            and (
+                state.pending_approval_id is not None
+                or (
+                    state.active_task is not None
+                    and state.active_task.status is TaskStatus.RUNNING
+                )
+            )
+        )
+        if should_resume:
             self.start_run(resume=True)
 
     def _sync_value(self, intent: TuiIntent) -> TuiOperationValue:
@@ -597,13 +618,7 @@ class HanCodeTuiApp(App[None]):
             self.cancel_rollback()
 
     def _show_help(self) -> None:
-        self._notify(
-            "命令：/task <goal> /tasks /use <id> /run /resume /pause /approve "
-            "/reject <理由> /status /diff [task|latest] [path] /test "
-            "/checkpoints /delivery /trace [event-id] /artifacts /open <name> "
-            "/export <directory> /build /rollback [confirm|cancel] /view [focus|inspect] "
-            "/theme [dark|light] /config /clear /quit"
-        )
+        self.push_screen(HelpScreen())
 
     def _open_config(self) -> None:
         if not self.controller.can_mutate():

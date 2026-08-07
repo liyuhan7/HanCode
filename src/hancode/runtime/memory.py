@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
 from hancode.core.config import HanCodeConfig
 from hancode.core.errors import HanCodeError, StructuredError
-from hancode.core.memory import MemoryKind, MemoryMediaType, MemoryRecord
+from hancode.core.memory import (
+    MemoryKind,
+    MemoryMediaType,
+    MemoryRecord,
+    MemorySnapshot,
+)
 from hancode.core.models import Phase
 from hancode.core.state import TaskState
 from hancode.storage.memory import FilesystemMemoryStore
@@ -78,11 +84,43 @@ class MemoryHotContent:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryDirectoryListing:
+    path: str
+    memory_id: str
+    seq: int
+    files: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "memory_id": self.memory_id,
+            "seq": self.seq,
+            "files": list(self.files),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryActionConstraint:
+    tool_name: str
+    path: str
+    memory_id: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "tool_name": self.tool_name,
+            "path": self.path,
+            "memory_id": self.memory_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryContext:
     workspace_generation: int
     recent_events: tuple[MemoryEventContext, ...]
     file_index: tuple[MemoryFileContext, ...]
     hot_contents: tuple[MemoryHotContent, ...]
+    action_constraints: tuple[MemoryActionConstraint, ...]
+    directory_listings: tuple[MemoryDirectoryListing, ...]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -90,6 +128,14 @@ class MemoryContext:
             "recent_events": [event.to_dict() for event in self.recent_events],
             "file_index": [entry.to_dict() for entry in self.file_index],
             "hot_contents": [entry.to_dict() for entry in self.hot_contents],
+            "directory_listings": [
+                entry.to_dict() for entry in self.directory_listings
+            ],
+            "action_guidance": {
+                "reusable_evidence": [
+                    entry.to_dict() for entry in self.action_constraints
+                ],
+            },
         }
 
 
@@ -140,7 +186,78 @@ class MemoryContextPacker:
             )
             for record in (*substantive, *accesses)
         )
-        return MemoryContext(snapshot.workspace_generation, recent, file_index, hot_contents)
+        action_constraints = _action_constraints(
+            snapshot, self.config.max_memory_file_entries
+        )
+        directory_listings = self._directory_listings(
+            snapshot, invalidated_by, state.task_id
+        )
+        return MemoryContext(
+            snapshot.workspace_generation,
+            recent,
+            file_index,
+            hot_contents,
+            action_constraints,
+            directory_listings,
+        )
+
+    def _directory_listings(
+        self,
+        snapshot: MemorySnapshot,
+        invalidated_by: Mapping[str, str],
+        task_id: str,
+    ) -> tuple[MemoryDirectoryListing, ...]:
+        """Project the latest non-stale ``list_files`` result for each directory.
+
+        Directory listings are stored as JSON blobs but are never promoted into
+        ``latest_by_path`` (only ``read_file`` is). Without this projection the
+        discovered directory contents survive only in the single turn that ran
+        ``list_files`` and then vanish, forcing the model to re-list or chase a
+        memory_id it cannot recover. Surfacing the latest listing keeps that
+        evidence available across turns so the phase can advance.
+        """
+        latest: dict[str, MemoryRecord] = {}
+        for record in snapshot.records:
+            if (
+                record.kind is not MemoryKind.TOOL_RESULT
+                or record.tool_name != "list_files"
+                or not record.success
+                or record.blob_ref is None
+                or record.memory_id in invalidated_by
+            ):
+                continue
+            path = record.paths[0] if record.paths else "."
+            previous = latest.get(path)
+            if previous is None or record.seq > previous.seq:
+                latest[path] = record
+        selected = sorted(
+            latest.values(), key=lambda record: -record.seq
+        )[: self.config.max_memory_file_entries]
+        listings: list[MemoryDirectoryListing] = []
+        for record in selected:
+            path = record.paths[0] if record.paths else "."
+            try:
+                payload = json.loads(
+                    self.store.read_blob_bytes(task_id, record.memory_id).decode("utf-8")
+                )
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise _memory_context_error("memory_corrupt", record.phase) from exc
+            if not isinstance(payload, Mapping):
+                raise _memory_context_error("memory_corrupt", record.phase)
+            raw_files = payload.get("files")
+            if not isinstance(raw_files, list) or any(
+                not isinstance(name, str) for name in raw_files
+            ):
+                raise _memory_context_error("memory_corrupt", record.phase)
+            listings.append(
+                MemoryDirectoryListing(
+                    path=path,
+                    memory_id=record.memory_id,
+                    seq=record.seq,
+                    files=tuple(raw_files),
+                )
+            )
+        return tuple(listings)
 
     def _hot_contents(
         self, selected: tuple[tuple[str, MemoryRecord], ...], generation: int,
@@ -171,6 +288,53 @@ class MemoryContextPacker:
 
 def _records_by_id(records: tuple[MemoryRecord, ...]) -> dict[str, MemoryRecord]:
     return {record.memory_id: record for record in records}
+
+
+def _action_constraints(
+    snapshot: MemorySnapshot, limit: int
+) -> tuple[MemoryActionConstraint, ...]:
+    """Project successful discovery actions into reusable prompt evidence."""
+    records = snapshot.records
+    invalidated_by = dict(snapshot.invalidated_by)
+    superseded_by = dict(snapshot.superseded_by)
+    stale_ids = set(invalidated_by) | set(superseded_by)
+    latest: dict[tuple[str, str], MemoryRecord] = {}
+
+    for record in records:
+        if (
+            record.kind is not MemoryKind.TOOL_RESULT
+            or not record.success
+            or record.tool_name not in {"read_file", "list_files"}
+            or record.memory_id in stale_ids
+        ):
+            continue
+        path = (
+            record.paths[0]
+            if record.paths
+            else "." if record.tool_name == "list_files" else None
+        )
+        if path is None:
+            continue
+        key = (record.tool_name, path)
+        previous = latest.get(key)
+        if previous is None or record.seq > previous.seq:
+            latest[key] = record
+
+    selected = sorted(
+        latest.values(),
+        key=lambda record: (
+            record.tool_name or "",
+            record.paths[0] if record.paths else ".",
+        ),
+    )[:limit]
+    return tuple(
+        MemoryActionConstraint(
+            tool_name=record.tool_name or "",
+            path=record.paths[0] if record.paths else ".",
+            memory_id=record.memory_id,
+        )
+        for record in selected
+    )
 
 
 def _select_current_files(
