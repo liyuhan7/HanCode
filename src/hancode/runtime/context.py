@@ -199,6 +199,8 @@ def build_context(
             _safe_changed_files(current_state, config, risks)
         )
         _add_checkpoint_summary(sections, risks, task_root, current_state, config, phase)
+    if phase in {Phase.REVIEW, Phase.DELIVER}:
+        _add_learning_evidence_catalog(sections, resolved_project_root, task_id)
     if (
         phase is Phase.REVIEW
         and current_state.latest_test_failure_digest is not None
@@ -480,6 +482,93 @@ def _apply_context_budget(
         "context_budget_sufficient",
         "Increase max_context_chars or reduce the required task artifacts.",
     )
+
+
+def _add_learning_evidence_catalog(
+    sections: dict[str, object], project_root: Path, task_id: str
+) -> None:
+    from hancode.app.learning_service import LearningService
+
+    snapshot = LearningService().load_snapshot(project_root, task_id)
+    if not snapshot.requirements:
+        return
+    sections["learning_evidence"] = {
+        "requirements": [
+            {
+                "id": item.id,
+                "source_text": redact_text(item.source_text),
+                "student_understanding": redact_text(item.student_understanding),
+                "acceptance_evidence": redact_text(item.acceptance_evidence),
+                "priority": redact_text(item.priority),
+                "is_core": item.is_core,
+            }
+            for item in snapshot.requirements
+        ],
+        "decisions": [
+            {
+                "id": item.id,
+                "chosen_option": redact_text(item.chosen_option),
+                "rationale": redact_text(item.rationale),
+                "requirement_refs": list(item.requirement_refs),
+            }
+            for item in snapshot.decisions
+        ],
+        "plan_steps": [
+            {
+                "id": item.id,
+                "description": redact_text(item.description),
+                "requirement_refs": list(item.requirement_refs),
+                "planned_paths": list(item.planned_paths),
+                "verification": redact_text(item.verification),
+            }
+            for item in snapshot.plan_steps
+        ],
+        "changes": [
+            {
+                "id": item.id,
+                "changed_paths": list(item.changed_paths),
+                "reason": redact_text(item.reason),
+                "requirement_refs": list(item.requirement_refs),
+                "plan_step_refs": list(item.plan_step_refs),
+            }
+            for item in snapshot.changes
+        ],
+        "test_attempts": [
+            {
+                "id": item.id,
+                "status": item.status,
+                "passed_count": item.passed_count,
+                "failed_count": item.failed_count,
+                "failure_category": item.failure_category,
+                "summary": redact_text(item.summary),
+                "tested_change_ids": list(item.tested_change_ids),
+                "requirement_refs": list(item.requirement_refs),
+            }
+            for item in snapshot.test_attempts
+        ],
+        "failures": [
+            {
+                "id": item.id,
+                "test_attempt_id": item.test_attempt_id,
+                "category": item.category,
+                "summary": redact_text(item.summary),
+                "failing_tests": list(item.failing_tests),
+                "affected_paths": list(item.affected_paths),
+            }
+            for item in snapshot.failures
+        ],
+        "recoveries": [
+            {
+                "id": item.id,
+                "failure_id": item.failure_id,
+                "decision": item.decision,
+                "planned_paths": list(item.planned_paths),
+                "reason": redact_text(item.reason),
+                "rollback_required": item.rollback_required,
+            }
+            for item in snapshot.recoveries
+        ],
+    }
 
 
 def _truncate_source_snippets(

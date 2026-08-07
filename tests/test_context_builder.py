@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import hancode.runtime.context as context_module
+from hancode.app.learning_service import LearningService
 from hancode.core.config import load_config
 from hancode.core.interactions import InteractionRecord, InteractionStatus
 from hancode.core.memory import MemoryBlob, MemoryKind, MemoryRecordDraft
@@ -470,6 +471,74 @@ def test_review_phase_includes_test_report_changed_files_and_checkpoint(tmp_path
         "files": ["src/main.py"],
         "rollback_available": True,
         "status": "committed",
+    }
+
+
+def test_review_phase_includes_authoritative_learning_evidence_details(
+    tmp_path: Path,
+) -> None:
+    project_root, task_root = _workspace(tmp_path)
+    service = LearningService()
+    service.record_requirements(
+        project_root,
+        "task-001",
+        goal="parser",
+        requirements=[
+            {
+                "source_text": "reject empty input",
+                "student_understanding": "empty input is invalid",
+                "acceptance_evidence": "pytest passes",
+                "is_core": True,
+            }
+        ],
+    )
+    service.record_change(
+        project_root,
+        "task-001",
+        pre_change_checkpoint_id=None,
+        action_id="write:parser",
+        changed_paths=["src/parser.py"],
+        diff_digest="a" * 64,
+        reason="add validation",
+        requirement_refs=["R-0001"],
+        plan_step_refs=[],
+    )
+    (task_root / "PLAN.md").write_text("# Plan\n", encoding="utf-8")
+    (task_root / "TEST_REPORT.md").write_text("# Tests\n", encoding="utf-8")
+    config = load_config(project_root, "task-001")
+    state = _state(
+        task_root,
+        goal="parser",
+        artifact_names=("SPEC.md", "PLAN.md", "IMPLEMENTATION.md", "TEST_REPORT.md"),
+    )
+
+    context = build_context(project_root, "task-001", Phase.REVIEW, config, state=state)
+
+    assert context["sections"]["learning_evidence"] == {
+        "requirements": [
+            {
+                "id": "R-0001",
+                "source_text": "reject empty input",
+                "student_understanding": "empty input is invalid",
+                "acceptance_evidence": "pytest passes",
+                "priority": "normal",
+                "is_core": True,
+            }
+        ],
+        "decisions": [],
+        "plan_steps": [],
+        "changes": [
+            {
+                "id": "C-0001",
+                "changed_paths": ["src/parser.py"],
+                "reason": "add validation",
+                "requirement_refs": ["R-0001"],
+                "plan_step_refs": [],
+            }
+        ],
+        "test_attempts": [],
+        "failures": [],
+        "recoveries": [],
     }
 
 

@@ -100,6 +100,105 @@ def test_successful_strategy_record_updates_task_digest() -> None:
     assert updated.test_strategy_digest == "a" * 64
 
 
+def test_record_requirements_marks_spec_artifact_and_phase() -> None:
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.SPEC,
+        tool_name="record_requirements",
+        args={"requirements": [], "goal": "g"},
+        reason=None,
+    )
+    result = ToolResult(
+        success=True,
+        action_name="record_requirements",
+        output={"artifact": "SPEC.md"},
+        mutation_applied=True,
+    )
+
+    updated = _state_after_tool(
+        _task_state(),
+        action,
+        result,
+        False,
+        source_write=False,
+    )
+
+    assert updated.artifacts["SPEC.md"] is True
+    assert updated.phase_completed[Phase.SPEC.value] is True
+
+
+def test_record_plan_marks_plan_artifact_and_phase() -> None:
+    action = Action(
+        type=ActionType.TOOL_CALL,
+        phase=Phase.PLAN,
+        tool_name="record_plan",
+        args={"decisions": [], "plan_steps": []},
+        reason=None,
+    )
+    result = ToolResult(
+        success=True,
+        action_name="record_plan",
+        output={"artifact": "PLAN.md"},
+        mutation_applied=True,
+    )
+
+    updated = _state_after_tool(
+        _task_state(),
+        action,
+        result,
+        False,
+        source_write=False,
+    )
+
+    assert updated.artifacts["PLAN.md"] is True
+    assert updated.phase_completed[Phase.PLAN.value] is True
+
+
+def test_record_spec_and_plan_tools_persist_completion_before_code() -> None:
+    events: list[str] = []
+    initial = _task_state(
+        phase=Phase.SPEC,
+        phase_completed={phase.value: False for phase in Phase},
+        artifacts={
+            "SPEC.md": False,
+            "PLAN.md": False,
+            "TEST_REPORT.md": False,
+            "REVIEW.md": False,
+            "KNOWLEDGE.md": False,
+            "DELIVERABLES.md": False,
+        },
+    )
+    loop, _, context_builder, _, _, _ = _build_loop(
+        [
+            {
+                "type": "tool_call",
+                "phase": "spec",
+                "tool_name": "record_requirements",
+                "args": {"requirements": [], "goal": "g"},
+                "reason": None,
+            },
+            {
+                "type": "tool_call",
+                "phase": "plan",
+                "tool_name": "record_plan",
+                "args": {"decisions": [], "plan_steps": []},
+                "reason": None,
+            },
+        ],
+        max_steps=2,
+        state=initial,
+        events=events,
+        tool_registry=ArtifactToolRegistry(events),
+    )
+
+    result = loop.run("task-001")
+
+    assert [phase for _, phase, _ in context_builder.calls] == [Phase.SPEC, Phase.PLAN]
+    assert result.final_state.current_phase is Phase.PLAN
+    assert result.final_state.phase_completed[Phase.SPEC.value] is True
+    assert result.final_state.phase_completed[Phase.PLAN.value] is True
+
+
 def test_strategy_preflight_failure_clears_digest_without_recording_test() -> None:
     action = Action(
         type=ActionType.TOOL_CALL,
@@ -422,6 +521,18 @@ class SpyToolRegistry:
         self.events.append("tool")
         self.actions.append(action)
         return ToolResult(success=True, action_name=action.tool_name or "unknown")
+
+
+class ArtifactToolRegistry(SpyToolRegistry):
+    def dispatch(self, action: Action) -> ToolResult:
+        result = super().dispatch(action)
+        artifact = {
+            "record_requirements": "SPEC.md",
+            "record_plan": "PLAN.md",
+        }.get(action.tool_name or "")
+        if artifact is None:
+            return result
+        return replace(result, output={"artifact": artifact}, mutation_applied=True)
 
 
 class MemoryEvidenceToolRegistry(SpyToolRegistry):

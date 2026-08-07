@@ -446,6 +446,7 @@ class LearningService:
             | {item.id for item in snapshot.decisions}
             | {item.id for item in snapshot.plan_steps}
             | {item.id for item in snapshot.changes}
+            | {item.id for item in snapshot.test_attempts}
             | {item.id for item in snapshot.failures}
             | {item.id for item in snapshot.recoveries}
         )
@@ -464,7 +465,7 @@ class LearningService:
             _require_refs(evidence_refs, groundable)
             if not any(ref in groundable for ref in evidence_refs):
                 raise _reference_invalid(
-                    "KnowledgeCard must reference at least one R/D/P/C/F/REC."
+                    "KnowledgeCard requires at least one evidence reference."
                 )
             if not any(ref in concrete for ref in evidence_refs):
                 raise _reference_invalid(
@@ -980,7 +981,11 @@ def _str_tuple(value: object) -> tuple[str, ...]:
 def _require_refs(refs: Sequence[str], known: set[str]) -> None:
     for ref in refs:
         if ref not in known:
-            raise _reference_invalid(f"Unknown evidence reference: {ref!r}.")
+            available = ", ".join(sorted(known)) or "none"
+            raise _reference_invalid(
+                f"Unknown evidence reference: {ref!r}. Available IDs: {available}. "
+                "File paths and memory IDs are not evidence IDs."
+            )
 
 
 def _now() -> str:

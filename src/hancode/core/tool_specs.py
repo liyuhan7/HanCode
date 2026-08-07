@@ -331,49 +331,247 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
         read_only=True,
     ),
     ToolSpec(
-        name="record_review",
-        description="Record structured review evidence.",
+        name="record_requirements",
+        description=(
+            "Record structured requirement understanding and render SPEC.md. "
+            "Each requirement carries the original source text, the student's "
+            "own understanding, acceptance evidence, priority, and whether it "
+            "is a core requirement."
+        ),
         args_schema={
             "type": "object",
             "properties": {
+                "goal": {"type": "string", "minLength": 1},
                 "requirements": {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["requirement_id", "status", "evidence"],
+                        "required": [
+                            "source_text",
+                            "student_understanding",
+                            "acceptance_evidence",
+                        ],
                         "properties": {
-                            "requirement_id": {"type": "string", "minLength": 1},
-                            "status": {
-                                "type": "string",
-                                "enum": [
-                                    "covered",
-                                    "partial",
-                                    "not_covered",
-                                    "missing",
-                                    "untested",
-                                ],
+                            "source_text": {"type": "string", "minLength": 1},
+                            "student_understanding": {"type": "string", "minLength": 1},
+                            "acceptance_evidence": {"type": "string"},
+                            "priority": {"type": "string"},
+                            "is_core": {"type": "boolean"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "boundaries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "constraints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "assumptions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["goal", "requirements"],
+            "additionalProperties": False,
+        },
+        allowed_phases=frozenset({Phase.SPEC}),
+        read_only=False,
+    ),
+    ToolSpec(
+        name="record_plan",
+        description=(
+            "Record structured plan evidence (alternatives, the final choice "
+            "with reasons, and concrete plan steps) and render PLAN.md."
+        ),
+        args_schema={
+            "type": "object",
+            "properties": {
+                "decisions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["chosen_option", "rationale"],
+                        "properties": {
+                            "chosen_option": {"type": "string", "minLength": 1},
+                            "rationale": {"type": "string", "minLength": 1},
+                            "rejected_options": {
+                                "type": "array",
+                                "items": {"type": "string"},
                             },
-                            "evidence": {"type": "string"},
-                            "risk": {
-                                "oneOf": [
-                                    {"type": "string"},
-                                    {"type": "null"},
-                                ],
-                            },
-                            "is_core": {
-                                "type": "boolean",
+                            "requirement_refs": {
+                                "type": "array",
+                                "items": {"type": "string"},
                             },
                         },
                         "additionalProperties": False,
                     },
                 },
-                "risks": {
+                "plan_steps": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": {
+                        "type": "object",
+                        "required": ["description"],
+                        "properties": {
+                            "description": {"type": "string", "minLength": 1},
+                            "verification": {"type": "string"},
+                            "requirement_refs": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "planned_paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
                 },
             },
-            "required": ["requirements"],
+            "required": ["decisions", "plan_steps"],
             "additionalProperties": False,
+        },
+        allowed_phases=frozenset({Phase.PLAN}),
+        read_only=False,
+    ),
+    ToolSpec(
+        name="record_review",
+        description=(
+            "Record structured review evidence. For tasks with structured "
+            "learning evidence, use requirement_reviews and "
+            "delivery_recommendation; legacy tasks use requirements and risks."
+        ),
+        args_schema={
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "requirements": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["requirement_id", "status", "evidence"],
+                                "properties": {
+                                    "requirement_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": [
+                                            "covered",
+                                            "partial",
+                                            "not_covered",
+                                            "missing",
+                                            "untested",
+                                        ],
+                                    },
+                                    "evidence": {"type": "string"},
+                                    "risk": {
+                                        "oneOf": [
+                                            {"type": "string"},
+                                            {"type": "null"},
+                                        ],
+                                    },
+                                    "is_core": {"type": "boolean"},
+                                },
+                                "additionalProperties": False,
+                            },
+                        },
+                        "risks": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["requirements"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "requirement_reviews": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": [
+                                    "requirement_id",
+                                    "change_refs",
+                                    "test_refs",
+                                    "status",
+                                    "risk",
+                                ],
+                                "properties": {
+                                    "requirement_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                    "change_refs": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                            "pattern": "^C-[0-9]+$",
+                                            "description": (
+                                                "Existing change evidence ID from "
+                                                "sections.learning_evidence.changes; "
+                                                "never a file path or memory ID."
+                                            ),
+                                        },
+                                    },
+                                    "test_refs": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                            "pattern": "^T-[0-9]+$",
+                                            "description": (
+                                                "Existing test attempt ID from "
+                                                "sections.learning_evidence.test_attempts; "
+                                                "never a command, path, or memory ID."
+                                            ),
+                                        },
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": [
+                                            "covered",
+                                            "partial",
+                                            "not_covered",
+                                            "missing",
+                                            "untested",
+                                        ],
+                                    },
+                                    "risk": {
+                                        "oneOf": [
+                                            {"type": "string"},
+                                            {"type": "null"},
+                                        ],
+                                    },
+                                },
+                                "additionalProperties": False,
+                            },
+                        },
+                        "quality_findings": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "untested_risks": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "plan_deviations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "delivery_recommendation": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["requirement_reviews", "delivery_recommendation"],
+                    "additionalProperties": False,
+                },
+            ],
         },
         allowed_phases=frozenset({Phase.REVIEW}),
         read_only=False,
@@ -432,45 +630,114 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="record_knowledge",
-        description="Record structured knowledge items.",
+        description=(
+            "Record structured knowledge items. Legacy tasks use items; tasks "
+            "with structured learning evidence use grounded knowledge cards."
+        ),
         args_schema={
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["category", "summary", "detail"],
-                        "properties": {
-                            "category": {
-                                "type": "string",
-                                "enum": [
-                                    "requirement_understanding",
-                                    "design_decision",
-                                    "testing_experience",
-                                    "error_fix",
-                                    "reusable_pattern",
-                                    "bug_fix",
-                                    "test_insight",
-                                    "process_improvement",
-                                    "other",
-                                ],
-                            },
-                            "summary": {"type": "string", "minLength": 1},
-                            "detail": {"type": "string", "minLength": 1},
-                            "source_trace_id": {
-                                "oneOf": [
-                                    {"type": "string"},
-                                    {"type": "null"},
-                                ],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["category", "summary", "detail"],
+                                "properties": {
+                                    "category": {
+                                        "type": "string",
+                                        "enum": [
+                                            "requirement_understanding",
+                                            "design_decision",
+                                            "testing_experience",
+                                            "error_fix",
+                                            "reusable_pattern",
+                                            "bug_fix",
+                                            "test_insight",
+                                            "process_improvement",
+                                            "other",
+                                        ],
+                                    },
+                                    "summary": {"type": "string", "minLength": 1},
+                                    "detail": {"type": "string", "minLength": 1},
+                                    "source_trace_id": {
+                                        "oneOf": [
+                                            {"type": "string"},
+                                            {"type": "null"},
+                                        ],
+                                    },
+                                },
+                                "additionalProperties": False,
                             },
                         },
-                        "additionalProperties": False,
                     },
+                    "required": ["items"],
+                    "additionalProperties": False,
                 },
-            },
-            "required": ["items"],
-            "additionalProperties": False,
+                {
+                    "type": "object",
+                    "properties": {
+                        "cards": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": [
+                                    "category",
+                                    "problem",
+                                    "context",
+                                    "principle",
+                                    "solution",
+                                    "evidence_refs",
+                                    "applicable_when",
+                                    "not_applicable_when",
+                                    "common_mistake",
+                                    "transfer_example",
+                                ],
+                                "properties": {
+                                    "category": {"type": "string", "minLength": 1},
+                                    "problem": {"type": "string", "minLength": 1},
+                                    "context": {"type": "string", "minLength": 1},
+                                    "principle": {"type": "string", "minLength": 1},
+                                    "solution": {"type": "string", "minLength": 1},
+                                    "evidence_refs": {
+                                        "type": "array",
+                                        "minItems": 1,
+                                        "items": {
+                                            "type": "string",
+                                            "pattern": "^(R|D|P|C|T|F|REC)-[0-9]+$",
+                                            "description": (
+                                                "Existing ID from sections.learning_evidence; "
+                                                "never a file path, hash, trace event, or "
+                                                "memory ID."
+                                            ),
+                                        },
+                                    },
+                                    "applicable_when": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                    "not_applicable_when": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                    "common_mistake": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                    "transfer_example": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                },
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["cards"],
+                    "additionalProperties": False,
+                },
+            ],
         },
         allowed_phases=frozenset({Phase.DELIVER}),
         read_only=False,

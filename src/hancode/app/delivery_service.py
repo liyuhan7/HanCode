@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from hancode.core.delivery_evidence import (
     DeliveryEvidence,
@@ -44,19 +45,55 @@ class DeliveryService:
         self,
         project_root: Path,
         task_id: str,
-        requirements: Sequence[CoreRequirementCoverage | LegacyRequirementCoverage],
-        risks: Sequence[str],
+        requirements: Sequence[CoreRequirementCoverage | LegacyRequirementCoverage] | None = None,
+        risks: Sequence[str] = (),
+        *,
+        requirement_reviews: Sequence[Mapping[str, object]] | None = None,
+        quality_findings: Sequence[str] = (),
+        untested_risks: Sequence[str] = (),
+        plan_deviations: Sequence[str] = (),
+        delivery_recommendation: str | None = None,
     ) -> Path:
         task_root = task_path(project_root, task_id)
+        if requirement_reviews is not None:
+            from hancode.app.learning_service import LearningService
+
+            LearningService().record_review(
+                project_root,
+                task_id,
+                requirement_reviews=requirement_reviews,
+                quality_findings=quality_findings,
+                untested_risks=untested_risks,
+                plan_deviations=plan_deviations,
+                delivery_recommendation=delivery_recommendation or "",
+            )
+            return task_root / "REVIEW.md"
+        if requirements is None:
+            raise ValueError("Legacy review evidence requires requirements.")
+        if _has_learning_evidence(project_root, task_id):
+            raise ValueError(
+                "This task requires structured requirement_reviews for record_review."
+            )
         return self._pipeline.record_review(task_root, task_id, requirements, risks)
 
     def record_knowledge(
         self,
         project_root: Path,
         task_id: str,
-        items: Sequence[CoreKnowledgeItem | LegacyKnowledgeItem],
+        items: Sequence[CoreKnowledgeItem | LegacyKnowledgeItem] | None = None,
+        *,
+        cards: Sequence[Mapping[str, object]] | None = None,
     ) -> Path:
         task_root = task_path(project_root, task_id)
+        if cards is not None:
+            from hancode.app.learning_service import LearningService
+
+            LearningService().record_knowledge(project_root, task_id, cards=cards)
+            return task_root / "KNOWLEDGE.md"
+        if items is None:
+            raise ValueError("Legacy knowledge evidence requires items.")
+        if _has_learning_evidence(project_root, task_id):
+            raise ValueError("This task requires structured cards for record_knowledge.")
         return self._pipeline.record_knowledge(task_root, task_id, items)
 
     def record_diff(
@@ -79,12 +116,113 @@ class DeliveryService:
         project_root: Path,
         task_id: str,
     ) -> DeliveryResult:
+        if _has_learning_evidence(project_root, task_id):
+            return self.finalize_learning(project_root, task_id)
         task_root = task_path(project_root, task_id)
         return self._pipeline.finalize(task_root, task_id)
 
     def get_result(self, project_root: Path, task_id: str) -> DeliveryResult:
         """Return the persisted delivery decision through the unified pipeline."""
         return self.finalize(project_root, task_id)
+
+    def finalize_learning(
+        self,
+        project_root: Path,
+        task_id: str,
+    ) -> DeliveryResult:
+        """Publish the S14 design-format delivery summary (DELIVERABLES.md).
+
+        This is the learning-contract delivery closure. It builds the
+        DELIVERABLES.md "project delivery summary" index from the collected
+        learning snapshot and task state, then returns the submission-eligibility
+        decision from :meth:`evaluate_learning`.
+        """
+        from hancode.core.state import load_state, reconcile_state
+        from hancode.delivery_support.collector import collect_learning_delivery
+        from hancode.delivery_support.renderer import (
+            build_deliverables_markdown,
+            replace_generated_region,
+        )
+        from hancode.delivery_support.result import _write_artifact
+        from hancode.storage.workspace import task_path
+
+        task_root = task_path(project_root, task_id)
+        collected = collect_learning_delivery(project_root, task_id)
+        state = reconcile_state(task_root, load_state(task_root))
+        snapshot = collected.snapshot
+
+        evidence_digest = getattr(snapshot, "digest", None)
+        latest_diff = None
+        for change in snapshot.changes:
+            if change.diff_digest:
+                latest_diff = change.diff_digest
+
+        core = tuple(r for r in snapshot.requirements if r.is_core)
+        core_covered = sum(
+            1 for requirement in core if collected.matrix.coverage.get(requirement.id) == "covered"
+        )
+        submission_files = tuple(
+            sorted(
+                set(state.files_changed)
+                | {
+                    artifact
+                    for artifact, present in state.artifacts.items()
+                    if present
+                }
+                | {"DELIVERABLES.md"}
+            )
+        )
+        coverage_rows = [
+            (
+                f"{r.id}：{collected.matrix.coverage.get(r.id, 'not_covered')}；"
+                f"{r.student_understanding}"
+            )
+            for r in snapshot.requirements
+        ]
+
+        result = self.evaluate_learning(project_root, task_id)
+        body = build_deliverables_markdown(
+            task_id=task_id,
+            status=result.status.value,
+            test_status=(
+                snapshot.test_attempts[-1].status
+                if snapshot.test_attempts
+                else state.latest_test_status
+            ),
+            build_status=state.latest_build_status,
+            core_covered=core_covered,
+            core_total=len(core),
+            run_notes="运行方式以项目配置为准；见 SPEC.md 的输入、输出和边界条件。",
+            test_notes="见 TEST_REPORT.md 的测试尝试与失败记录。",
+            submission_files=submission_files,
+            coverage_rows=coverage_rows,
+            learning_links=(
+                ("SPEC.md", "需求理解"),
+                ("PLAN.md", "实现计划"),
+                ("IMPLEMENTATION.md", "实现记录"),
+                ("TEST_REPORT.md", "测试与失败记录"),
+                ("REVIEW.md", "最终审查"),
+                ("KNOWLEDGE.md", "知识复盘"),
+            ),
+            known_limits=(),  # REVIEW.md 承载已知限制；此处不重复正文
+            evidence_digest=evidence_digest,
+            diff_digest=latest_diff,
+            checkpoint_id=state.latest_checkpoint,
+        )
+        existing = task_root / "DELIVERABLES.md"
+        rendered = replace_generated_region(
+            existing.read_text(encoding="utf-8") if existing.is_file() else "",
+            body,
+        )
+        _write_artifact(
+            task_root,
+            "DELIVERABLES.md",
+            rendered,
+            state_transform=lambda current: replace(current, status=result.status),
+        )
+        if latest_diff is not None:
+            self._pipeline.record_diff(task_root, task_id, latest_diff)
+        return result
 
     def evaluate_learning(self, project_root: Path, task_id: str) -> DeliveryResult:
         """Run Collect → Validate over structured learning evidence (S14-R5).
@@ -167,3 +305,9 @@ class DeliveryService:
         from hancode.storage.export import export_task_profile
 
         return export_task_profile(project_root, task_id, output_dir, profile)
+
+
+def _has_learning_evidence(project_root: Path, task_id: str) -> bool:
+    from hancode.app.learning_service import LearningService
+
+    return bool(LearningService().load_snapshot(project_root, task_id).requirements)

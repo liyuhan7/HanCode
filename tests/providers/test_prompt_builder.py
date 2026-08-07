@@ -498,6 +498,32 @@ def test_review_system_prompt_persists_remediation_record() -> None:
     assert "task memory" in system_content
 
 
+def test_review_prompt_distinguishes_test_failure_from_delivery_write_denial() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(phase=Phase.REVIEW),
+        tool_catalog=_make_catalog(),
+    )
+    system_content = prompt.messages[0].content
+    assert "TEST failure" in system_content
+    assert "not a test failure" in system_content
+    assert "does not block record_review" in system_content
+    assert "generated only by the delivery pipeline" in system_content
+
+
+def test_review_prompt_directs_record_review_after_one_evidence_pass() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        context=_make_context(phase=Phase.REVIEW),
+        tool_catalog=_make_catalog(),
+    )
+
+    system_content = prompt.messages[0].content
+    assert "one evidence pass" in system_content
+    assert "call record_review" in system_content
+    assert "Do not search memory for C-* or T-*" in system_content
+
+
 def test_system_contract_forbids_retrying_same_memory_tool_after_failed_read() -> None:
     from hancode.providers.prompt_contract import BASE_SYSTEM_CONTRACT
 

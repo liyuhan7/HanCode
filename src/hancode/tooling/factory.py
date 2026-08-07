@@ -19,7 +19,13 @@ from hancode.storage.test_strategies import TestStrategyStore
 from hancode.storage.memory import FilesystemMemoryStore
 from hancode.tooling.build_tools import run_build as _run_build_tool
 from hancode.tooling.checkpoint_tools import list_checkpoints
-from hancode.tooling.delivery_tools import record_knowledge, record_review, read_test_report
+from hancode.tooling.delivery_tools import read_test_report
+from hancode.tooling.learning_tools import (
+    guarded_record_knowledge,
+    guarded_record_review,
+    record_plan,
+    record_requirements,
+)
 from hancode.tooling.diff_tools import get_diff
 from hancode.tooling.file_tools import (
     edit_file,
@@ -214,11 +220,19 @@ def build_default_tool_registry(
         )
         registry.register(
             "record_review",
-            partial(record_review, project_root, task_root.name),
+            partial(guarded_record_review, project_root, task_root.name),
         )
         registry.register(
             "record_knowledge",
-            partial(record_knowledge, project_root, task_root.name),
+            partial(guarded_record_knowledge, project_root, task_root.name),
+        )
+        registry.register(
+            "record_requirements",
+            partial(record_requirements, project_root, task_root.name),
+        )
+        registry.register(
+            "record_plan",
+            partial(record_plan, project_root, task_root.name),
         )
         registry.register(
             "record_test_strategy",

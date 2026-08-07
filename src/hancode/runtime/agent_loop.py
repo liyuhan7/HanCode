@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 import inspect
 import json
 from pathlib import Path
@@ -3660,10 +3660,20 @@ class AgentLoop:
 
             if action.type is ActionType.FINISH_PHASE:
                 if routing.phase is Phase.DELIVER and self._delivery_pipeline is not None:
+                    delivery_result: object
                     try:
-                        delivery_result = self._delivery_pipeline.finalize(
-                            task_path(self._project_root, task_id), task_id
-                        )
+                        if _has_structured_learning_evidence(
+                            self._project_root, task_id, state
+                        ):
+                            from hancode.app.delivery_service import DeliveryService
+
+                            delivery_result = DeliveryService().finalize_learning(
+                                self._project_root, task_id
+                            )
+                        else:
+                            delivery_result = self._delivery_pipeline.finalize(
+                                task_path(self._project_root, task_id), task_id
+                            )
                     except HanCodeError as exc:
                         # finalize() may have persisted DELIVERABLES.md state
                         # before failing; reload so _block() does not overwrite it.
@@ -3802,11 +3812,12 @@ class AgentLoop:
             )
 
         if final_routing.completed:
+            completed_state = _state_after_phase_finish(state, final_routing.phase)
             state = self._save_if_changed(
                 task_id,
                 state,
                 replace(
-                    state,
+                    completed_state,
                     status=TaskStatus.COMPLETED,
                     current_phase=final_routing.phase,
                 ),
@@ -5395,12 +5406,22 @@ class AgentLoop:
                         ),
                     )
             state = self._save_if_changed(task_id, state, updated_state)
+            self._record_learning_evidence_after_tool(
+                task_id,
+                state,
+                action,
+                tool_result,
+                source_write=source_write,
+            )
             pipeline = self._delivery_pipeline
             if pipeline is not None:
                 task_root = task_path(self._project_root, task_id)
                 if (
                     action.tool_name == "run_tests"
                     and _test_strategy_error_code(tool_result) is None
+                    and not _has_structured_learning_evidence(
+                        self._project_root, task_id, state
+                    )
                 ):
                     pipeline.record_test(
                         task_root,
@@ -5433,6 +5454,155 @@ class AgentLoop:
         except Exception:
             return state, _state_persistence_error(phase)
         return state, None
+
+    def _record_learning_evidence_after_tool(
+        self,
+        task_id: str,
+        state: TaskState,
+        action: Action,
+        tool_result: ToolResult,
+        *,
+        source_write: bool,
+    ) -> None:
+        if not (
+            (source_write and tool_result.success)
+            or (
+                action.tool_name == "run_tests"
+                and _test_strategy_error_code(tool_result) is None
+            )
+        ):
+            return
+        if not _has_structured_learning_evidence(
+            self._project_root, task_id, state
+        ):
+            return
+        if source_write and tool_result.success:
+            self._record_learning_change(task_id, state, action)
+        if (
+            action.tool_name == "run_tests"
+            and _test_strategy_error_code(tool_result) is None
+        ):
+            self._record_learning_test_history(task_id, tool_result)
+
+    def _record_learning_change(
+        self,
+        task_id: str,
+        state: TaskState,
+        action: Action,
+    ) -> None:
+        from hancode.app.learning_service import LearningService
+
+        raw_path = action.args.get("path")
+        if not isinstance(raw_path, str):
+            raise ValueError("A successful source write must include a path.")
+        normalized_path = normalize_project_relative_path(raw_path)
+        service = LearningService()
+        snapshot = service.load_snapshot(self._project_root, task_id)
+        plan_step_refs = tuple(
+            step.id
+            for step in snapshot.plan_steps
+            if any(
+                _same_project_path(normalized_path, planned_path)
+                for planned_path in step.planned_paths
+            )
+        )
+        requirement_refs = tuple(
+            sorted(
+                {
+                    requirement_ref
+                    for step in snapshot.plan_steps
+                    if step.id in plan_step_refs
+                    for requirement_ref in step.requirement_refs
+                }
+            )
+        )
+        file_digest = _hash_file_if_exists(self._project_root / normalized_path)
+        diff_digest = file_digest or _sha256_text(
+            f"{action.tool_name}:{normalized_path}:{action.reason or ''}"
+        )
+        action_id = compute_action_digest(
+            action_type=action.type,
+            phase=action.phase,
+            tool_name=action.tool_name or "source_write",
+            args=action.args,
+            reason=action.reason or "",
+        )
+        service.record_change(
+            self._project_root,
+            task_id,
+            pre_change_checkpoint_id=state.latest_checkpoint,
+            action_id=f"action:{action_id}",
+            changed_paths=[normalized_path],
+            diff_digest=diff_digest,
+            reason=redact_text(
+                action.reason or f"Approved source write changed {normalized_path}."
+            ),
+            requirement_refs=requirement_refs,
+            plan_step_refs=plan_step_refs,
+        )
+
+    def _record_learning_test_history(
+        self,
+        task_id: str,
+        tool_result: ToolResult,
+    ) -> None:
+        from hancode.app.learning_service import LearningService
+
+        report = _feedback_report_for_test_result(tool_result)
+        output = _test_output_for_learning(tool_result)
+        service = LearningService()
+        snapshot = service.load_snapshot(self._project_root, task_id)
+        tested_change_ids = tuple(change.id for change in snapshot.changes)
+        requirement_refs = tuple(
+            sorted(
+                {
+                    requirement_ref
+                    for change in snapshot.changes
+                    for requirement_ref in change.requirement_refs
+                }
+            )
+        )
+        timestamp = _learning_timestamp()
+        attempt = service.record_test_attempt(
+            self._project_root,
+            task_id,
+            command=redact_text(tool_result.command or "run_tests"),
+            started_at=timestamp,
+            finished_at=timestamp,
+            exit_code=(
+                tool_result.exit_code
+                if isinstance(tool_result.exit_code, int)
+                else (0 if report.passed else 1)
+            ),
+            status=(
+                "passed"
+                if report.passed
+                else ("timed_out" if tool_result.timed_out else "failed")
+            ),
+            passed_count=report.passed_count,
+            failed_count=report.failed_count,
+            failure_category=(
+                None if report.passed else report.failure_category.value
+            ),
+            summary=redact_text(report.summary),
+            output_digest=_sha256_text(output),
+            tested_change_ids=tested_change_ids,
+            requirement_refs=requirement_refs,
+        )
+        if report.passed:
+            return
+
+        failure = TestRemediationStore(self._project_root).load_failure(task_id)
+        service.record_failure(
+            self._project_root,
+            task_id,
+            test_attempt_id=attempt.id,
+            failure_digest=failure.digest,
+            category=failure.category.value,
+            summary=redact_text(failure.diagnostic_excerpt),
+            failing_tests=failure.failed_tests,
+            affected_paths=(),
+        )
 
     def _record_test_result_trace(
         self,
@@ -6486,6 +6656,7 @@ def _trace_action(
     command = action.args.get("command")
     if action.tool_name == "run_tests" and isinstance(command, str):
         args["command"] = redact_text(command)
+    args.update(_trace_record_args(action))
     target_zone = getattr(decision, "target_zone", None)
     reason = redact_text(action.reason or "Run the configured test command.")
     policy_decision = None
@@ -6509,6 +6680,79 @@ def _trace_action(
         "reason": reason,
         "policy_decision": policy_decision,
     }
+
+
+def _trace_record_args(action: Action) -> dict[str, object]:
+    if action.tool_name == "record_requirements":
+        return {"requirement_count": _list_length(action.args.get("requirements"))}
+    if action.tool_name == "record_plan":
+        return {
+            "decision_count": _list_length(action.args.get("decisions")),
+            "plan_step_count": _list_length(action.args.get("plan_steps")),
+        }
+    if action.tool_name == "record_test_strategy":
+        return {
+            "framework": redact_text(str(action.args.get("framework", ""))),
+            "test_file_count": _list_length(action.args.get("test_files")),
+        }
+    if action.tool_name == "record_review":
+        reviews = action.args.get("requirement_reviews")
+        return {
+            "requirement_reviews": _trace_review_refs(reviews),
+        }
+    if action.tool_name == "record_knowledge":
+        cards = action.args.get("cards")
+        return {
+            "cards": _trace_knowledge_refs(cards),
+        }
+    return {}
+
+
+def _list_length(value: object) -> int:
+    return len(value) if isinstance(value, (list, tuple)) else 0
+
+
+def _trace_review_refs(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    traced: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        traced.append(
+            {
+                "requirement_id": _safe_trace_id(item.get("requirement_id")),
+                "change_refs": _safe_trace_ids(item.get("change_refs")),
+                "test_refs": _safe_trace_ids(item.get("test_refs")),
+            }
+        )
+    return traced
+
+
+def _trace_knowledge_refs(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    traced: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        traced.append(
+            {
+                "category": redact_text(str(item.get("category", ""))),
+                "evidence_refs": _safe_trace_ids(item.get("evidence_refs")),
+            }
+        )
+    return traced
+
+
+def _safe_trace_ids(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [_safe_trace_id(item) for item in value]
+
+
+def _safe_trace_id(value: object) -> str:
+    return redact_text(value) if isinstance(value, str) else ""
 
 
 def _state_after_tool(
@@ -6597,6 +6841,34 @@ def _state_after_tool(
             return _state_after_phase_finish(reviewed_state, Phase.REVIEW)
         return reviewed_state
 
+    if result.success and action.tool_name in {"record_requirements", "record_plan"}:
+        artifact_name = (
+            result.output.get("artifact")
+            if isinstance(result.output, Mapping)
+            else None
+        )
+        artifacts = dict(state.artifacts)
+        phase_completed = dict(state.phase_completed)
+        recorded_state = state
+        if artifact_name == "SPEC.md":
+            recorded_state = replace(
+                state,
+                artifacts={**artifacts, "SPEC.md": True},
+                phase_completed={**phase_completed, Phase.SPEC.value: True},
+            )
+        elif artifact_name == "PLAN.md":
+            recorded_state = replace(
+                state,
+                artifacts={**artifacts, "PLAN.md": True},
+                phase_completed={**phase_completed, Phase.PLAN.value: True},
+            )
+        if (
+            action.phase in {Phase.SPEC, Phase.PLAN}
+            and build_phase_gate(action.phase, recorded_state).can_finish
+        ):
+            return _state_after_phase_finish(recorded_state, action.phase)
+        return recorded_state
+
     if not source_write and result.success and action.tool_name in {"write_file", "edit_file"}:
         path = action.args.get("path")
         artifact_name = _artifact_name(path) if isinstance(path, str) else None
@@ -6668,6 +6940,16 @@ def _delivery_gate_error(phase: Phase, blockers: object) -> StructuredError:
     )
 
 
+def _has_structured_learning_evidence(
+    project_root: Path, task_id: str, state: TaskState
+) -> bool:
+    if state.learning_contract_version is None:
+        return False
+    from hancode.app.learning_service import LearningService
+
+    return bool(LearningService().load_snapshot(project_root, task_id).requirements)
+
+
 def _feedback_report_for_test_result(result: ToolResult) -> FeedbackReport:
     output = "\n".join(
         value
@@ -6679,6 +6961,30 @@ def _feedback_report_for_test_result(result: ToolResult) -> FeedbackReport:
         result.exit_code if result.exit_code is not None else (0 if result.success else 1),
         result.timed_out,
     )
+
+
+def _test_output_for_learning(result: ToolResult) -> str:
+    output = "\n".join(
+        value
+        for value in (result.error_summary, result.stdout, result.stderr)
+        if isinstance(value, str) and value
+    )
+    return redact_text(output)
+
+
+def _learning_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _same_project_path(left: str, right: str) -> bool:
+    try:
+        return left == normalize_project_relative_path(right)
+    except ValueError:
+        return left == right.replace("\\", "/")
 
 
 def _test_strategy_error_code(result: ToolResult) -> str | None:
