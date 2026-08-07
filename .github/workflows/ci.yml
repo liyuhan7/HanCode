@@ -27,7 +27,7 @@ jobs:
       - name: Run quality gates
         run: |
           uv run pytest
-          uv run ruff check src tests scripts
+          uv run ruff check src tests
           uv run mypy src
 
       - name: Build and smoke test distribution

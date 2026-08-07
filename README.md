@@ -71,6 +71,14 @@ uv build
 uv tool install dist/hancode-0.1.0-py3-none-any.whl
 ```
 
+项目已发布到 PyPI，可直接安装：
+
+```powershell
+pip install hancode
+# 或隔离安装为命令行工具：
+uv tool install hancode
+```
+
 安装完成后可直接使用 `hancode` 命令。
 
 ## 快速开始：MockLLM
@@ -193,7 +201,7 @@ uv build
 uv run hancode --help
 uv run hancode demo --provider mock
 uv run pytest
-uv run ruff check src tests scripts
+uv run ruff check src tests
 uv run mypy src
 ```
 
@@ -202,4 +210,54 @@ uv run mypy src
 ## 项目定位与非目标
 
 HanCode 的定位是课程项目场景里的受控 Coding Agent Harness，围绕 workspace 隔离、phase gate、trace logging、checkpoint rollback、工具治理、反馈闭环和凭据边界展开。
+
+## 目录结构
+
+```text
+HanCode/
+├── AGENTS.md                  # 本仓库的开发代理工作约定
+├── Makefile                   # 常用任务入口（test / lint / typecheck / build）
+├── pyproject.toml             # 包元数据、依赖与构建配置（wheel / sdist）
+├── README.md                  # 本文件
+├── LICENSE                    # MIT 许可证
+├── .env.example               # 环境变量模板（不含真实密钥）
+├── .gitlab-ci.yml             # GitLab CI（含 unit-test job）
+├── .github/workflows/ci.yml   # GitHub Actions CI
+├── docs/                      # 交付文档：SPEC / PLAN / SPEC_PROCESS / AGENT_LOG / 系统架构
+├── src/hancode/               # Harness 内核（Python 包）
+│   ├── app/                   # 应用层：凭据、任务、审批、交付服务
+│   ├── core/                  # 核心模型与机制
+│   ├── delivery_support/      # 交付物导出与校验
+│   ├── demo_support/          # 离线 MockLLM 演示（确定性 fixture）
+│   ├── interfaces/            # CLI 与 TUI 入口
+│   ├── policy/                # 工具策略、路径安全、审批策略
+│   ├── providers/             # LLM Provider（mock / openai_compatible）
+│   ├── runtime/               # AgentLoop、memory、feedback、checkpoint
+│   ├── storage/               # 运行时存储
+│   ├── tooling/               # 工具实现
+│   └── _demo_fixture/         # 打包进 wheel 的离线 demo 样例项目
+├── examples/
+│   ├── broken_project/        # 离线 demo fixture（含 SHA-256 校验）
+│   └── .hancode-template/     # 脚手架期望快照
+└── tests/                     # 单元 / 集成 / E2E 测试
+```
+
+## 第三方依赖与许可证
+
+项目依赖均为宽松许可证，各自的许可证如下（版本约束见 `pyproject.toml`）：
+
+| 依赖 | 许可证 |
+|------|--------|
+| pydantic | MIT |
+| typer | MIT |
+| keyring | MIT |
+| python-dotenv | BSD-3-Clause |
+| httpx | BSD-3-Clause |
+| jsonschema | MIT |
+| textual | MIT |
+| pytest（dev） | MIT |
+| ruff（dev） | MIT |
+| mypy（dev） | MIT |
+
+本仓库自身的 `LICENSE` 为 MIT（Copyright (c) 2026 liyuhan7）。
 

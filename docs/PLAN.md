@@ -3072,7 +3072,7 @@ uv run mypy src/hancode/credentials.py src/hancode/cli.py
 ```text
 uv sync --extra dev
 uv run pytest
-uv run ruff check src tests scripts
+uv run ruff check src tests
 uv run mypy src
 uv build
 uv run hancode --help
@@ -3108,7 +3108,7 @@ uv run hancode demo --provider mock
 ```powershell
 uv sync --extra dev
 uv run pytest
-uv run ruff check src tests scripts
+uv run ruff check src tests
 uv run mypy src
 uv build
 uv run hancode --help
@@ -3453,7 +3453,7 @@ MVP 完成后，至少运行：
 
 ```powershell
 uv run pytest
-uv run ruff check src tests scripts
+uv run ruff check src tests
 uv run mypy src
 uv build
 uv run hancode --help
@@ -3547,7 +3547,7 @@ HanCode MVP 完成必须同时满足：
 * 所有 T1-T27 状态为 [x]。
 * 所有任务都有 commit hash 和验证记录。
 * `uv run pytest` 通过。
-* `uv run ruff check src tests scripts` 通过。
+* `uv run ruff check src tests` 通过。
 * `uv run mypy src` 通过。
 * `uv build` 通过。
 * `uv run hancode --help` 可运行。

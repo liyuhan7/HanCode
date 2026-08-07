@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,21 @@ name = "hancode"
 version = "0.1.0"
 description = "面向学生课程项目的轻量级 Coding Agent Harness，支持 workspace 隔离、阶段门禁、执行追踪和 checkpoint 回退。"
 readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "liyuhan7", email = "241250029@smail.nju.edu.cn" },
+]
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "pydantic>=2.0",
     "typer>=0.12",
@@ -24,6 +38,11 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/liyuhan7/HanCode"
+Repository = "https://github.com/liyuhan7/HanCode"
+Documentation = "https://github.com/liyuhan7/HanCode#readme"
 
 [project.scripts]
 hancode = "hancode.cli:app"
