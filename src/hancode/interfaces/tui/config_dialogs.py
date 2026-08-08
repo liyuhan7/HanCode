@@ -52,8 +52,14 @@ class ConfigConfirmDialog(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class CredentialInput(Input):
-    """Input that can read an external terminal clipboard on Ctrl+V."""
+class SystemClipboardInput(Input):
+    """Input that reads/writes the real OS clipboard on Ctrl+C / Ctrl+V.
+
+    Textual 8 keeps its own in-memory clipboard (``App.clipboard``), so the
+    stock ``Input`` can neither paste from nor copy to other applications.
+    This subclass bridges the system clipboard while falling back to
+    Textual's in-memory clipboard when no helper is available.
+    """
 
     BINDINGS = [
         *Input.BINDINGS,
@@ -69,6 +75,16 @@ class CredentialInput(Input):
         if not clipboard:
             return
         self.replace(clipboard.splitlines()[0], *self.selection)
+
+    def action_copy(self) -> None:
+        selected = self.selected_text
+        if selected:
+            _write_system_clipboard(selected)
+        super().action_copy()
+
+
+class CredentialInput(SystemClipboardInput):
+    """Input that can read an external terminal clipboard on Ctrl+V."""
 
 
 class CredentialEditorDialog(ModalScreen[str | None]):
@@ -128,8 +144,22 @@ def _read_system_clipboard() -> str | None:
     """Read the OS clipboard without invoking a shell or logging its content."""
     if sys.platform == "win32":
         commands = (
-            ("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"),
-            ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"),
+            (
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+                "Get-Clipboard -Raw",
+            ),
+            (
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+                "Get-Clipboard -Raw",
+            ),
         )
     elif sys.platform == "darwin":
         commands = (("pbpaste",),)
@@ -160,6 +190,57 @@ def _read_system_clipboard() -> str | None:
     return None
 
 
+def _write_system_clipboard(text: str) -> bool:
+    """Write text to the OS clipboard without invoking a shell or logging it."""
+    if sys.platform == "win32":
+        commands = (
+            (
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; "
+                "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+            ),
+            (
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; "
+                "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+            ),
+        )
+    elif sys.platform == "darwin":
+        commands = (("pbcopy",),)
+    else:
+        commands = (
+            ("wl-copy",),
+            ("xclip", "-selection", "clipboard"),
+            ("xsel", "--clipboard", "--input"),
+        )
+
+    for command in commands:
+        if shutil.which(command[0]) is None:
+            continue
+        try:
+            result = subprocess.run(
+                command,
+                input=text,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=1.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return True
+    return False
+
+
 class StringListEditor(ModalScreen[tuple[str, ...] | None]):
     BINDINGS = [("escape", "cancel", "取消")]
 
@@ -172,7 +253,9 @@ class StringListEditor(ModalScreen[tuple[str, ...] | None]):
         with Vertical(id="config-list-dialog"):
             yield Static(self._title, markup=False, classes="config-dialog-title")
             yield ListView(id="config-list-values")
-            yield Input(placeholder="输入新的相对路径或 glob 规则", id="config-list-input")
+            yield SystemClipboardInput(
+                placeholder="输入新的相对路径或 glob 规则", id="config-list-input"
+            )
             with Horizontal(classes="config-dialog-actions"):
                 yield Button("添加", id="config-list-add", variant="primary")
                 yield Button("删除选中项", id="config-list-remove", variant="warning")

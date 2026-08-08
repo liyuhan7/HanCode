@@ -31,6 +31,7 @@ from hancode.interfaces.tui.config_dialogs import (
     ConfigConfirmDialog,
     CredentialEditorDialog,
     StringListEditor,
+    SystemClipboardInput,
 )
 from hancode.interfaces.tui.config_presenters import (
     CONFIG_GROUPS,
@@ -315,13 +316,13 @@ class ConfigScreen(Screen[ConfigUpdateResult | None]):
             if field.kind is ConfigFieldKind.READONLY:
                 yield Static(str(value), id=field.widget_id, markup=False, classes="config-readonly")
             elif field.kind is ConfigFieldKind.TEXT:
-                yield Input(
+                yield SystemClipboardInput(
                     value="" if value is None else str(value),
                     placeholder="未配置" if field.nullable else "",
                     id=field.widget_id,
                 )
             elif field.kind is ConfigFieldKind.INTEGER:
-                yield Input(value=str(value), id=field.widget_id)
+                yield SystemClipboardInput(value=str(value), id=field.widget_id)
             elif field.kind is ConfigFieldKind.CHOICE:
                 selected = "" if value is None else str(value)
                 yield Select(

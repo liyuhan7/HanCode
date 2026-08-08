@@ -6982,9 +6982,18 @@ def _sha256_text(value: str) -> str:
 
 def _same_project_path(left: str, right: str) -> bool:
     try:
-        return left == normalize_project_relative_path(right)
+        normalized_right = normalize_project_relative_path(right)
     except ValueError:
+        # Invalid planned path: fall back to a plain normalized comparison
+        # only; never apply suffix matching to an un-normalized path.
         return left == right.replace("\\", "/")
+    if left == normalized_right:
+        return True
+    # Planned and written paths may differ only by directory prefix
+    # (e.g. plan "index.html" vs written "src/index.html"). Treat a
+    # "/"-separated suffix relation as the same file so the evidence
+    # chain (plan_step_refs/requirement_refs) is not broken.
+    return left.endswith("/" + normalized_right) or normalized_right.endswith("/" + left)
 
 
 def _test_strategy_error_code(result: ToolResult) -> str | None:

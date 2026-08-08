@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from hancode.core.learning_evidence import LearningSnapshot, TestAttemptEvidence
 from hancode.core.models import TaskStatus
 from hancode.delivery_support.collector import CollectedDelivery
 
@@ -45,11 +46,14 @@ def validate_learning_delivery(collected: CollectedDelivery) -> DeliveryValidati
     if collected.build_required and collected.latest_build_status != "passed":
         blockers.append("配置了 Build 命令，但 Build 尚未通过。")
 
-    # A passing test must not predate the latest change (stale coverage).
+    # A passing test must cover the latest change (no stale coverage).
     if snapshot.changes and snapshot.test_attempts:
-        latest_change_index = _last_change_event_order(snapshot)
-        latest_pass_index = _last_passing_test_order(snapshot)
-        if latest_pass_index is not None and latest_pass_index < latest_change_index:
+        latest_change_id = snapshot.changes[-1].id
+        latest_passing_attempt = _last_passing_attempt(snapshot)
+        if (
+            latest_passing_attempt is not None
+            and latest_change_id not in latest_passing_attempt.tested_change_ids
+        ):
             blockers.append("最新通过的测试早于最新代码修改，覆盖已过期。")
 
     # Failure history requires a complete recovery chain.
@@ -89,20 +93,11 @@ def validate_learning_delivery(collected: CollectedDelivery) -> DeliveryValidati
     )
 
 
-def _last_change_event_order(snapshot: object) -> int:
-    # Change/test attempts are appended in event order; their sequence in the
-    # snapshot tuples matches append order, so the count is a valid ordinal.
-    return len(getattr(snapshot, "changes", ()))
-
-
-def _last_passing_test_order(snapshot: object) -> int | None:
-    attempts = getattr(snapshot, "test_attempts", ())
-    passing_indices = [
-        index + 1
-        for index, attempt in enumerate(attempts)
-        if attempt.status == "passed"
-    ]
-    return passing_indices[-1] if passing_indices else None
+def _last_passing_attempt(snapshot: LearningSnapshot) -> TestAttemptEvidence | None:
+    for attempt in reversed(snapshot.test_attempts):
+        if attempt.status == "passed":
+            return attempt
+    return None
 
 
 def _known_evidence_ids(snapshot: object) -> set[str]:
