@@ -43,7 +43,7 @@ uv tool install hancode
 
 ```powershell
 uv build
-uv tool install dist/hancode-0.1.0-py3-none-any.whl
+uv tool install dist/hancode-0.1.1-py3-none-any.whl
 ```
 
 安装完成后可直接使用 `hancode` 命令。

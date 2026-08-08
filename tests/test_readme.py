@@ -57,7 +57,7 @@ def test_readme_documents_source_and_wheel_installation() -> None:
     assert "从源码安装" in README
     assert "Python 3.11+" in README
     assert "wheel" in README
-    assert "uv tool install dist/hancode-0.1.0-py3-none-any.whl" in README
+    assert "uv tool install dist/hancode-0.1.1-py3-none-any.whl" in README
     assert ".env" in README
     assert "明文风险" in README
 

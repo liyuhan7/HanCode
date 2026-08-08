@@ -57,7 +57,7 @@ _CODE_FENCE_RE = re.compile(
     r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL
 )
 
-_USER_AGENT = "hancode/0.1.0"
+_USER_AGENT = "hancode/0.1.1"
 
 
 @dataclass(frozen=True, slots=True)
